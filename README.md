@@ -15,6 +15,14 @@ Brick-wall peak limiter via volume automation envelope. Analyzes selected audio 
 
 **Note:** Volume automation is post-FX. To measure results with a plugin, route the track to a bus and place the meter there.
 
+### Envelope-based Limiter (Item) V1.0
+
+Same as Envelope-based Limiter V1.0 but writes to the **item's own take volume envelope** instead of the track volume envelope. Keeps the track envelope clean.
+
+- All the same features as the track version
+- Automation lives on the item — moves with it if repositioned
+- Take volume envelope is pre-FX, so you can measure directly with plugins on the same track
+
 ### RCBit Limiter V1.0
 
 Split-based peak limiter using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts) for bit-accurate gain reduction. Instead of writing automation, it splits the audio item at peak boundaries and applies RCBitRangeGain as Take FX only on peak segments.
@@ -48,7 +56,7 @@ Then load via Actions > Show action list > Load ReaScript.
 3. Adjust parameters in the dialog box
 4. Click OK
 
-Both scripts are fully undoable.
+All scripts are fully undoable.
 
 ## License
 
