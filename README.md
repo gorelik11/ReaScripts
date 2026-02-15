@@ -25,7 +25,7 @@ Split-based peak limiter using [JS:RCBitRangeGain](https://github.com/RCJacH/Rea
 - Non-peak segments remain completely clean with no plugins
 - Configurable ceiling (dB), attack (ms), release (ms), and analysis window (ms)
 
-**Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH
+**Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH. Install via ReaPack: **Extensions > ReaPack > Import repositories** and add `https://github.com/RCJacH/ReaScripts/raw/master/index.xml`
 
 ## Installation
 
