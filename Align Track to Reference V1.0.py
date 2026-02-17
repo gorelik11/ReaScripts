@@ -1,0 +1,696 @@
+"""
+Align Track to Reference V1.0
+Aligns a target track's timing to a reference track by splitting and moving items.
+Works with any time signature, any tempo, grid-free material.
+No external dependencies (no NumPy, no soundfile).
+
+Usage:
+  1. Run from REAPER (Actions > ReaScript)
+  2. Enter reference track number, target track number, and threshold
+  3. Script creates a new track with aligned version of target
+"""
+
+import wave
+import struct
+import math
+
+# When running inside REAPER, RPR_ functions are available globally
+# No need to import reapy
+
+
+def get_track_name(track_id):
+    """Get track name, handling variable return tuple size."""
+    result = RPR_GetSetMediaTrackInfo_String(track_id, "P_NAME", "", False)
+    if isinstance(result, tuple):
+        # Filter out known non-name strings and pointers
+        for item in result:
+            if isinstance(item, str) and item != "P_NAME" and item != "":
+                # Skip items that look like memory pointers
+                if item.startswith("(MediaTrack*)") or item.startswith("0x"):
+                    continue
+                return item
+    return ""
+
+
+def get_source_filename(source):
+    """Get source filename, handling variable return tuple size."""
+    result = RPR_GetMediaSourceFileName(source, "", 512)
+    if isinstance(result, tuple):
+        for item in result:
+            if isinstance(item, str) and ("/" in item or "\\" in item):
+                return item
+    return ""
+
+
+def get_user_input():
+    """Ask user for track numbers and threshold via REAPER dialog."""
+    result = RPR_GetUserInputs(
+        "Align Track to Reference V1.0",
+        3,
+        "Reference track #,Target track #,Threshold (ms)",
+        "1,2,15",
+        512
+    )
+    # Handle variable return count from different REAPER versions
+    # REAPER Python API returns: (bool, title, num_inputs, captions, retvals_csv, bufsize)
+    if isinstance(result, tuple):
+        retval = result[0]
+        # Find the CSV string: it's the string element that contains user input
+        retvals_csv = None
+        for i in range(len(result) - 1, -1, -1):
+            if isinstance(result[i], str) and "," in result[i]:
+                retvals_csv = result[i]
+                break
+        if retvals_csv is None:
+            # Fallback: try index 4 (typical position)
+            for i in range(len(result) - 1, -1, -1):
+                if isinstance(result[i], str):
+                    retvals_csv = result[i]
+                    break
+        if retvals_csv is None:
+            return None
+    else:
+        return None
+    if not retval:
+        return None
+    parts = retvals_csv.split(",")
+    if len(parts) != 3:
+        return None
+    try:
+        ref_num = int(parts[0].strip())
+        target_num = int(parts[1].strip())
+        threshold_ms = float(parts[2].strip())
+    except ValueError:
+        RPR_ShowMessageBox("Invalid input. Please enter numbers.", "Error", 0)
+        return None
+    return ref_num, target_num, threshold_ms
+
+
+def read_wav_segment(filepath, offset_sec, length_sec, target_sr=22050):
+    """Read a segment of a WAV file and return mono samples as floats.
+    Supports PCM (16/24/32-bit) and float (32/64-bit) WAV files.
+    Decimates to target_sr for speed - fine for onset detection.
+    Uses only Python stdlib."""
+
+    def parse_wav_header(f):
+        """Parse WAV header, return format info and data chunk location."""
+        riff = f.read(4)
+        if riff not in (b'RIFF', b'RF64'):
+            return None
+        f.read(4)  # file size
+        if f.read(4) != b'WAVE':
+            return None
+
+        fmt_info = None
+        data_offset = None
+        data_size = None
+        fmt_data = None
+
+        while True:
+            chunk_header = f.read(8)
+            if len(chunk_header) < 8:
+                break
+            chunk_id = chunk_header[:4]
+            chunk_size = struct.unpack('<I', chunk_header[4:8])[0]
+
+            if chunk_id == b'fmt ':
+                fmt_data = f.read(chunk_size)
+                audio_format = struct.unpack('<H', fmt_data[0:2])[0]
+                n_channels = struct.unpack('<H', fmt_data[2:4])[0]
+                sr = struct.unpack('<I', fmt_data[4:8])[0]
+                bits = struct.unpack('<H', fmt_data[14:16])[0]
+
+                is_float = (audio_format == 3)
+                if audio_format == 65534 and len(fmt_data) >= 26:
+                    sub_format = struct.unpack('<H', fmt_data[24:26])[0]
+                    is_float = (sub_format == 3)
+
+                fmt_info = {
+                    'channels': n_channels, 'sr': sr, 'bits': bits,
+                    'is_float': is_float
+                }
+            elif chunk_id == b'data':
+                data_offset = f.tell()
+                data_size = chunk_size
+                break
+            else:
+                f.seek(chunk_size, 1)
+
+        if not fmt_info or data_offset is None:
+            return None
+        fmt_info['data_offset'] = data_offset
+        fmt_info['data_size'] = data_size
+        return fmt_info
+
+    def read_and_decimate(f, fmt_info, offset_sec, length_sec, target_sr):
+        """Read audio with decimation for speed."""
+        sr = fmt_info['sr']
+        n_ch = fmt_info['channels']
+        bits = fmt_info['bits']
+        is_float = fmt_info['is_float']
+        bps = bits // 8
+        frame_size = bps * n_ch
+        total_frames = fmt_info['data_size'] // frame_size
+
+        start_frame = int(offset_sec * sr)
+        length_frames = int(length_sec * sr)
+        if start_frame >= total_frames:
+            return [], sr
+        if start_frame + length_frames > total_frames:
+            length_frames = total_frames - start_frame
+
+        # Decimation factor
+        decimate = max(1, sr // target_sr)
+        out_sr = sr / decimate
+
+        f.seek(fmt_info['data_offset'] + start_frame * frame_size)
+
+        # Read in chunks to avoid massive memory usage
+        chunk_frames = 4096
+        samples = []
+        frames_read = 0
+        frame_counter = 0
+
+        # Determine unpack format for one frame
+        if is_float and bits == 32:
+            sample_fmt = 'f'
+        elif is_float and bits == 64:
+            sample_fmt = 'd'
+        elif not is_float and bits == 16:
+            sample_fmt = 'h'
+        elif not is_float and bits == 32:
+            sample_fmt = 'i'
+        elif not is_float and bits == 24:
+            sample_fmt = None  # handled specially
+        else:
+            return [], sr
+
+        while frames_read < length_frames:
+            read_count = min(chunk_frames, length_frames - frames_read)
+            raw = f.read(read_count * frame_size)
+            if not raw:
+                break
+
+            actual_frames = len(raw) // frame_size
+
+            if sample_fmt and bits != 24:
+                n_vals = actual_frames * n_ch
+                try:
+                    all_vals = struct.unpack('<' + sample_fmt * n_vals,
+                                            raw[:actual_frames * frame_size])
+                except struct.error:
+                    break
+
+                for i in range(actual_frames):
+                    if frame_counter % decimate == 0:
+                        idx = i * n_ch
+                        s = 0.0
+                        for ch in range(n_ch):
+                            s += all_vals[idx + ch]
+                        s /= n_ch
+                        # Normalize int formats
+                        if sample_fmt == 'h':
+                            s /= 32768.0
+                        elif sample_fmt == 'i':
+                            s /= 2147483648.0
+                        samples.append(s)
+                    frame_counter += 1
+            else:
+                # 24-bit
+                for i in range(actual_frames):
+                    if frame_counter % decimate == 0:
+                        s = 0.0
+                        for ch in range(n_ch):
+                            idx = (i * n_ch + ch) * 3
+                            if idx + 3 <= len(raw):
+                                b = raw[idx:idx + 3]
+                                val = b[0] | (b[1] << 8) | (b[2] << 16)
+                                if val >= 0x800000:
+                                    val -= 0x1000000
+                                s += val / 8388608.0
+                        samples.append(s / n_ch)
+                    frame_counter += 1
+
+            frames_read += actual_frames
+
+        return samples, out_sr
+
+    # Try wave module first (PCM only)
+    try:
+        with wave.open(filepath, 'rb') as wf:
+            sr = wf.getframerate()
+            sampwidth = wf.getsampwidth()
+            n_ch = wf.getnchannels()
+            n_total = wf.getnframes()
+
+            start_frame = int(offset_sec * sr)
+            length_frames = int(length_sec * sr)
+            if start_frame >= n_total:
+                return [], sr
+            if start_frame + length_frames > n_total:
+                length_frames = n_total - start_frame
+
+            decimate = max(1, sr // target_sr)
+            out_sr = sr / decimate
+
+            wf.setpos(start_frame)
+
+            samples = []
+            chunk_frames = 4096
+            frames_read = 0
+            frame_counter = 0
+
+            while frames_read < length_frames:
+                read_count = min(chunk_frames, length_frames - frames_read)
+                raw = wf.readframes(read_count)
+                actual = len(raw) // (sampwidth * n_ch)
+
+                if actual == 0:
+                    break
+
+                if sampwidth == 2:
+                    vals = struct.unpack('<' + 'h' * (actual * n_ch),
+                                        raw[:actual * sampwidth * n_ch])
+                    for i in range(actual):
+                        if frame_counter % decimate == 0:
+                            s = sum(vals[i * n_ch + ch] for ch in range(n_ch))
+                            samples.append(s / n_ch / 32768.0)
+                        frame_counter += 1
+                elif sampwidth == 3:
+                    for i in range(actual):
+                        if frame_counter % decimate == 0:
+                            s = 0.0
+                            for ch in range(n_ch):
+                                idx = (i * n_ch + ch) * 3
+                                b = raw[idx:idx + 3]
+                                val = b[0] | (b[1] << 8) | (b[2] << 16)
+                                if val >= 0x800000:
+                                    val -= 0x1000000
+                                s += val / 8388608.0
+                            samples.append(s / n_ch)
+                        frame_counter += 1
+                elif sampwidth == 4:
+                    vals = struct.unpack('<' + 'i' * (actual * n_ch),
+                                        raw[:actual * sampwidth * n_ch])
+                    for i in range(actual):
+                        if frame_counter % decimate == 0:
+                            s = sum(vals[i * n_ch + ch] for ch in range(n_ch))
+                            samples.append(s / n_ch / 2147483648.0)
+                        frame_counter += 1
+
+                frames_read += actual
+
+            if samples:
+                return samples, out_sr
+    except Exception:
+        pass
+
+    # Fallback: raw parse for float WAVs
+    try:
+        with open(filepath, 'rb') as f:
+            fmt_info = parse_wav_header(f)
+            if not fmt_info:
+                return [], 0
+            return read_and_decimate(f, fmt_info, offset_sec, length_sec, target_sr)
+    except Exception:
+        return [], 0
+
+
+def get_active_comp_items(track_id):
+    """Get only the active comp items (not stacked full takes)."""
+    n_items = RPR_GetTrackNumMediaItems(track_id)
+    if n_items == 0:
+        return []
+
+    all_items = []
+    for i in range(n_items):
+        item_id = RPR_GetTrackMediaItem(track_id, i)
+        pos = RPR_GetMediaItemInfo_Value(item_id, "D_POSITION")
+        length = RPR_GetMediaItemInfo_Value(item_id, "D_LENGTH")
+
+        active_take = RPR_GetActiveTake(item_id)
+        if not active_take:
+            continue
+        source = RPR_GetMediaItemTake_Source(active_take)
+        if not source:
+            continue
+
+        filename = get_source_filename(source)
+        offset = RPR_GetMediaItemTakeInfo_Value(active_take, "D_STARTOFFS")
+        vol = RPR_GetMediaItemTakeInfo_Value(active_take, "D_VOL")
+
+        all_items.append({
+            'item_id': item_id,
+            'position': pos,
+            'length': length,
+            'file': filename,
+            'offset': offset,
+            'volume': vol,
+            'index': i
+        })
+
+    if not all_items:
+        return []
+
+    # Separate comp items from full stacked takes
+    lengths = sorted([item['length'] for item in all_items])
+    max_len = max(lengths)
+    min_len = min(lengths)
+
+    # If all items are similar length, return all
+    if max_len < min_len * 3:
+        return all_items
+
+    median_len = lengths[len(lengths) // 2]
+
+    # Group by position to detect stacked takes
+    position_groups = {}
+    for item in all_items:
+        pos_key = round(item['position'], 1)
+        if pos_key not in position_groups:
+            position_groups[pos_key] = []
+        position_groups[pos_key].append(item)
+
+    full_take_threshold = median_len * 2
+    comp_items = []
+
+    for pos_key, group in position_groups.items():
+        if len(group) > 3 and all(item['length'] > full_take_threshold for item in group):
+            continue  # Skip stacked full takes
+        else:
+            comp_items.extend(group)
+
+    comp_items.sort(key=lambda x: x['position'])
+    return comp_items
+
+
+def detect_onsets(comp_items, threshold_factor=3.0):
+    """Detect transient onsets from audio. Pure Python, no NumPy."""
+    all_onsets = []
+
+    for item in comp_items:
+        if not item['file']:
+            continue
+
+        samples, sr = read_wav_segment(item['file'], item['offset'], item['length'])
+        if len(samples) < 512 or sr == 0:
+            continue
+
+        hop = 256
+        frame_size = 512
+        n_frames = (len(samples) - frame_size) // hop
+        if n_frames < 3:
+            continue
+
+        # Energy per frame
+        energy = []
+        for i in range(n_frames):
+            start = i * hop
+            frame = samples[start:start + frame_size]
+            e = sum(s * s for s in frame)
+            energy.append(e)
+
+        # Onset strength (positive energy increase)
+        onset_strength = []
+        for i in range(1, len(energy)):
+            diff = energy[i] - energy[i - 1]
+            onset_strength.append(max(diff, 0.0))
+
+        if len(onset_strength) < 3:
+            continue
+
+        # Calculate mean and std
+        n = len(onset_strength)
+        mean_str = sum(onset_strength) / n
+        variance = sum((x - mean_str) ** 2 for x in onset_strength) / n
+        std_str = math.sqrt(variance)
+
+        if std_str == 0:
+            continue
+
+        threshold = mean_str + threshold_factor * std_str
+        min_dist_frames = int(0.05 * sr / hop)  # 50ms min between onsets
+
+        # Peak finding
+        peaks = []
+        for idx in range(1, len(onset_strength) - 1):
+            if onset_strength[idx] > threshold:
+                if (onset_strength[idx] > onset_strength[idx - 1] and
+                        onset_strength[idx] >= onset_strength[idx + 1]):
+                    if not peaks or (idx - peaks[-1]) >= min_dist_frames:
+                        peaks.append(idx)
+
+        for peak in peaks:
+            abs_time = item['position'] + (peak * hop) / sr
+            if abs_time <= item['position'] + item['length']:
+                all_onsets.append(abs_time)
+
+    all_onsets.sort()
+    return all_onsets
+
+
+def match_onsets(ref_onsets, target_onsets, max_match_window=0.055):
+    """Match target onsets to nearest reference onsets."""
+    matches = []
+
+    for t_onset in target_onsets:
+        best_idx = -1
+        best_diff = float('inf')
+
+        for i, r_onset in enumerate(ref_onsets):
+            diff = abs(t_onset - r_onset)
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+
+        if best_idx >= 0 and best_diff < max_match_window:
+            min_diff = t_onset - ref_onsets[best_idx]
+            matches.append({
+                'target_time': t_onset,
+                'ref_time': ref_onsets[best_idx],
+                'diff_sec': min_diff,
+                'diff_ms': min_diff * 1000
+            })
+
+    return matches
+
+
+def group_adjustments(adjustments, min_gap=0.08):
+    """Group nearby adjustments. Keep the one with largest difference."""
+    if not adjustments:
+        return []
+
+    groups = []
+    current_group = [adjustments[0]]
+
+    for adj in adjustments[1:]:
+        if adj['target_time'] - current_group[-1]['target_time'] < min_gap:
+            current_group.append(adj)
+        else:
+            groups.append(current_group)
+            current_group = [adj]
+    groups.append(current_group)
+
+    result = []
+    for group in groups:
+        best = max(group, key=lambda x: abs(x['diff_ms']))
+        result.append(best)
+    return result
+
+
+def create_aligned_track(target_track_idx, comp_items):
+    """Create a new track with only the comp items from target."""
+    RPR_InsertTrackAtIndex(target_track_idx + 1, True)
+    RPR_TrackList_AdjustWindows(False)
+
+    new_track_idx = target_track_idx + 1
+    new_track_id = RPR_GetTrack(0, new_track_idx)
+
+    # Get target track name
+    target_track_id = RPR_GetTrack(0, target_track_idx)
+    target_name = get_track_name(target_track_id)
+    RPR_GetSetMediaTrackInfo_String(new_track_id, "P_NAME", target_name + " (Aligned)", True)
+
+    # Copy only comp items to new track
+    for ci in comp_items:
+        src_item = ci['item_id']
+        pos = RPR_GetMediaItemInfo_Value(src_item, "D_POSITION")
+        length = RPR_GetMediaItemInfo_Value(src_item, "D_LENGTH")
+
+        new_item = RPR_AddMediaItemToTrack(new_track_id)
+        RPR_SetMediaItemInfo_Value(new_item, "D_POSITION", pos)
+        RPR_SetMediaItemInfo_Value(new_item, "D_LENGTH", length)
+
+        # Copy all takes
+        n_takes = RPR_GetMediaItemNumTakes(src_item)
+        for t in range(n_takes):
+            src_take = RPR_GetMediaItemTake(src_item, t)
+            src_source = RPR_GetMediaItemTake_Source(src_take)
+            new_take = RPR_AddTakeToMediaItem(new_item)
+            RPR_SetMediaItemTake_Source(new_take, src_source)
+            offset = RPR_GetMediaItemTakeInfo_Value(src_take, "D_STARTOFFS")
+            RPR_SetMediaItemTakeInfo_Value(new_take, "D_STARTOFFS", offset)
+            vol = RPR_GetMediaItemTakeInfo_Value(src_take, "D_VOL")
+            RPR_SetMediaItemTakeInfo_Value(new_take, "D_VOL", vol)
+
+        # Set active take
+        active_take_idx = RPR_GetMediaItemInfo_Value(src_item, "I_CURTAKE")
+        RPR_SetMediaItemInfo_Value(new_item, "I_CURTAKE", active_take_idx)
+
+    return new_track_idx, new_track_id
+
+
+def apply_adjustments(track_id, adjustments):
+    """Split and move items. Works right-to-left."""
+    n_items = RPR_GetTrackNumMediaItems(track_id)
+    comp_tracking = []
+    for i in range(n_items):
+        item_id = RPR_GetTrackMediaItem(track_id, i)
+        pos = RPR_GetMediaItemInfo_Value(item_id, "D_POSITION")
+        length = RPR_GetMediaItemInfo_Value(item_id, "D_LENGTH")
+        comp_tracking.append({'id': item_id, 'pos': pos, 'length': length})
+
+    adjustments.sort(key=lambda x: x['target_time'], reverse=True)
+
+    successful = 0
+    for adj in adjustments:
+        onset_time = adj['target_time']
+        shift = -adj['diff_sec']
+        split_time = onset_time - 0.005
+
+        # Find containing item
+        found = None
+        for ci in comp_tracking:
+            if ci['pos'] <= split_time < ci['pos'] + ci['length']:
+                found = ci
+                break
+
+        if not found:
+            continue
+
+        if split_time <= found['pos'] + 0.005 or split_time >= found['pos'] + found['length'] - 0.005:
+            new_pos = found['pos'] + shift
+            RPR_SetMediaItemInfo_Value(found['id'], "D_POSITION", new_pos)
+            found['pos'] = new_pos
+            successful += 1
+        else:
+            new_item_id = RPR_SplitMediaItem(found['id'], split_time)
+            if new_item_id:
+                new_pos = RPR_GetMediaItemInfo_Value(new_item_id, "D_POSITION")
+                new_len = RPR_GetMediaItemInfo_Value(new_item_id, "D_LENGTH")
+                adjusted_pos = new_pos + shift
+                RPR_SetMediaItemInfo_Value(new_item_id, "D_POSITION", adjusted_pos)
+                found['length'] = split_time - found['pos']
+                comp_tracking.append({'id': new_item_id, 'pos': adjusted_pos, 'length': new_len})
+                successful += 1
+
+    return successful
+
+
+def main():
+    user_input = get_user_input()
+    if not user_input:
+        return
+
+    ref_num, target_num, threshold_ms = user_input
+    n_tracks = RPR_CountTracks(0)
+
+    ref_idx = ref_num - 1
+    target_idx = target_num - 1
+
+    if ref_idx < 0 or ref_idx >= n_tracks:
+        RPR_ShowMessageBox("Reference track {} not found.".format(ref_num), "Error", 0)
+        return
+    if target_idx < 0 or target_idx >= n_tracks:
+        RPR_ShowMessageBox("Target track {} not found.".format(target_num), "Error", 0)
+        return
+
+    ref_track_id = RPR_GetTrack(0, ref_idx)
+    target_track_id = RPR_GetTrack(0, target_idx)
+
+    ref_name = get_track_name(ref_track_id)
+    target_name = get_track_name(target_track_id)
+
+    RPR_ShowConsoleMsg("\n=== Align Track to Reference V1.0 ===\n")
+    RPR_ShowConsoleMsg("Reference: Track {} ({})\n".format(ref_num, ref_name))
+    RPR_ShowConsoleMsg("Target: Track {} ({})\n".format(target_num, target_name))
+    RPR_ShowConsoleMsg("Threshold: {}ms\n\n".format(threshold_ms))
+
+    # Step 1: Get active comp items
+    RPR_ShowConsoleMsg("Analyzing tracks...\n")
+    ref_comp = get_active_comp_items(ref_track_id)
+    target_comp = get_active_comp_items(target_track_id)
+
+    RPR_ShowConsoleMsg("  Reference items: {}\n".format(len(ref_comp)))
+    RPR_ShowConsoleMsg("  Target items: {}\n".format(len(target_comp)))
+
+    if not ref_comp or not target_comp:
+        RPR_ShowMessageBox("No items found on one or both tracks.", "Error", 0)
+        return
+
+    # Step 2: Detect onsets
+    RPR_ShowConsoleMsg("Detecting onsets...\n")
+    ref_onsets = detect_onsets(ref_comp)
+    target_onsets = detect_onsets(target_comp)
+
+    RPR_ShowConsoleMsg("  Reference onsets: {}\n".format(len(ref_onsets)))
+    RPR_ShowConsoleMsg("  Target onsets: {}\n".format(len(target_onsets)))
+
+    if not ref_onsets or not target_onsets:
+        RPR_ShowMessageBox("Could not detect onsets. Check audio files.", "Error", 0)
+        return
+
+    # Step 3: Match onsets
+    RPR_ShowConsoleMsg("Matching onsets...\n")
+    matches = match_onsets(ref_onsets, target_onsets)
+    RPR_ShowConsoleMsg("  Matched pairs: {}\n".format(len(matches)))
+
+    significant = [m for m in matches if abs(m['diff_ms']) > threshold_ms]
+    RPR_ShowConsoleMsg("  Above threshold ({}ms): {}\n".format(threshold_ms, len(significant)))
+
+    if not significant:
+        RPR_ShowMessageBox(
+            "No timing differences above {}ms found.\n"
+            "Tracks are already well aligned, or try a lower threshold.".format(threshold_ms),
+            "Result", 0
+        )
+        return
+
+    grouped = group_adjustments(significant)
+    RPR_ShowConsoleMsg("  After grouping: {} adjustments\n\n".format(len(grouped)))
+
+    # Step 4: Create aligned track
+    RPR_ShowConsoleMsg("Creating aligned track...\n")
+    RPR_Undo_BeginBlock()
+
+    new_track_idx, new_track_id = create_aligned_track(target_idx, target_comp)
+    RPR_ShowConsoleMsg("  Created track {}\n".format(new_track_idx + 1))
+
+    # Step 5: Apply adjustments
+    RPR_ShowConsoleMsg("Applying adjustments...\n")
+    successful = apply_adjustments(new_track_id, grouped)
+
+    RPR_UpdateArrange()
+    RPR_Undo_EndBlock("Align Track to Reference", -1)
+
+    # Report
+    RPR_ShowConsoleMsg("\n=== DONE ===\n")
+    RPR_ShowConsoleMsg("  Adjustments applied: {}/{}\n".format(successful, len(grouped)))
+    RPR_ShowConsoleMsg("  New track: {}\n".format(new_track_idx + 1))
+
+    if significant:
+        diffs = [abs(m['diff_ms']) for m in significant]
+        avg = sum(diffs) / len(diffs)
+        max_d = max(diffs)
+        RPR_ShowConsoleMsg("  Avg correction: {:.1f}ms\n".format(avg))
+        RPR_ShowConsoleMsg("  Max correction: {:.1f}ms\n".format(max_d))
+
+    RPR_ShowMessageBox(
+        "Alignment complete!\n\n"
+        "Applied {} adjustments to new track {}.\n"
+        "Original track is untouched.".format(successful, new_track_idx + 1),
+        "Align Track to Reference", 0
+    )
+
+
+main()
