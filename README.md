@@ -35,6 +35,23 @@ Split-based peak limiter using [JS:RCBitRangeGain](https://github.com/RCJacH/Rea
 
 **Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH. Install via ReaPack: **Extensions > ReaPack > Import repositories** and add `https://github.com/RCJacH/ReaScripts/raw/master/index.xml`
 
+See V3.0 below for the latest version with improved region detection and attack/release handling.
+
+### RCBit Limiter V3.0
+
+Improved split-based peak limiter using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts). Same concept as V1.0 — splits the item at peak boundaries and applies RCBitRangeGain only on peak segments — but with significantly better region detection logic.
+
+- Binary classification: each analysis window is either PEAK or CLEAN
+- Attack/release expansion on peak regions with proper adjacent-region shrinking (no cascade merging)
+- Minimum region length (20ms) — tiny regions absorbed into neighbors
+- Proper Macro/Bit Ratio calculation — gains < 0.15 dB are skipped (no unnecessary FX)
+- Fallback to project sample rate when source sample rate is unavailable
+- Configurable ceiling (dB), attack (ms), release (ms), and analysis window (ms)
+
+**Note:** Works with full items — select the item from its beginning. If the item's start is trimmed, peak detection will be offset. Split items work perfectly.
+
+**Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH.
+
 ### RCBit LUFS Limiter V3.0
 
 Combined LUFS gain staging and peak limiting in a single pass using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts). Measures the item's integrated LUFS via SWS, calculates the gain needed to reach the target, then splits and applies RCBitRangeGain to each segment — boosting quiet parts and limiting peaks that would exceed the ceiling.
