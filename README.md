@@ -35,6 +35,21 @@ Split-based peak limiter using [JS:RCBitRangeGain](https://github.com/RCJacH/Rea
 
 **Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH. Install via ReaPack: **Extensions > ReaPack > Import repositories** and add `https://github.com/RCJacH/ReaScripts/raw/master/index.xml`
 
+### RCBit LUFS Limiter V3.0
+
+Combined LUFS gain staging and peak limiting in a single pass using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts). Measures the item's integrated LUFS via SWS, calculates the gain needed to reach the target, then splits and applies RCBitRangeGain to each segment — boosting quiet parts and limiting peaks that would exceed the ceiling.
+
+- LUFS measurement via SWS `NF_AnalyzeTakeLoudness` (accurate, gated)
+- Binary classification: each analysis window is either BOOST or PEAK
+- Attack/release expansion on peak regions with proper adjacent-region shrinking
+- Minimum region length (20ms) — tiny regions absorbed into neighbors
+- Adjacent regions with identical RCBit params are merged to reduce splits
+- Single RCBit per split — never doubles up
+- Mono items automatically corrected for pan law
+- Configurable target LUFS, peak ceiling (dB), attack (ms), release (ms), and analysis window (ms)
+
+**Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH and SWS extension.
+
 ### Align Track to Reference V1.0
 
 Cross-instrument timing alignment by splitting and moving waveforms. Aligns a target track to a reference track without stretch markers and without quantizing to a grid.
