@@ -48,6 +48,8 @@ Combined LUFS gain staging and peak limiting in a single pass using [JS:RCBitRan
 - Mono items automatically corrected for pan law
 - Configurable target LUFS, peak ceiling (dB), attack (ms), release (ms), and analysis window (ms)
 
+**Note:** The script works with full items — select the item from its beginning. If the item's start is trimmed (e.g., from lanes usage), peak detection will be offset. Split items work perfectly.
+
 **Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH and SWS extension.
 
 ### Align Track to Reference V1.0
