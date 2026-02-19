@@ -88,6 +88,24 @@ Same concept as V3.0 — LUFS gain staging + peak limiting via splits and RCBitR
 
 **Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH and SWS extension.
 
+### LUFS Envelope Limiter V1.0
+
+Combined LUFS gain staging + peak limiting via **take volume envelope** — no splits, no FX, pure automation. Same analysis as the RCBit LUFS Limiter but writes continuous gain to the item's take volume envelope instead of splitting and adding JSFX.
+
+- **No quantization**: gain is written as exact linear values (no JSFX step size rounding)
+- **No splits**: the item stays as one piece, making it easy to undo or adjust
+- **Per-window gain precision**: each 5ms window gets its exact required gain
+- Attack/release smoothing: gradual transitions between boost and peak regions
+- LUFS measurement via SWS, mono pan-law correction
+- SR fallback chain for reliable operation
+- Configurable target LUFS, peak ceiling (dB), attack (ms), release (ms), and analysis window (ms)
+
+**Trade-off vs RCBit approach**: The envelope applies pre-FX gain (standard volume automation), while RCBitRangeGain provides bit-accurate gain reduction. For mastering with specific bit-depth requirements, use the RCBit version. For general loudness/peak control, the envelope approach is simpler and more precise.
+
+**Note:** Works with full items — select the item from its beginning.
+
+**Requires:** SWS extension (for LUFS analysis and take envelope access). No JSFX plugins needed.
+
 ### Align Track to Reference V1.0
 
 Cross-instrument timing alignment by splitting and moving waveforms. Aligns a target track to a reference track without stretch markers and without quantizing to a grid.
