@@ -56,6 +56,25 @@ Improved split-based peak limiter using [JS:RCBitRangeGain](https://github.com/R
 
 Combined LUFS gain staging and peak limiting in a single pass using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts). Measures the item's integrated LUFS via SWS, calculates the gain needed to reach the target, then splits and applies RCBitRangeGain to each segment — boosting quiet parts and limiting peaks that would exceed the ceiling.
 
+See V4.0 below for the latest version with BR quantization for mastering accuracy.
+
+### RCBit LUFS Limiter V4.0
+
+Same concept as V3.0 — LUFS gain staging + peak limiting via splits and RCBitRangeGain — but with mastering-grade accuracy improvements.
+
+- **BR quantization**: Peak regions floor-quantize Bit Ratio to the JSFX step size (default 0.05), ensuring peaks never exceed the ceiling due to rounding. Boost regions round to nearest step.
+- SR fallback chain: source → parent source → project SR → 44100
+- LUFS guard: handles -inf LUFS (silent/offline items) gracefully
+- All V3 features: binary classification, attack/release with shrink-adjacent, tiny region absorption, single RCBit per split
+- Configurable target LUFS, peak ceiling (dB), attack (ms), release (ms), and analysis window (ms)
+- Default settings optimized for mastering: -9 LUFS, -0.5 dB ceiling, 0ms attack, 70ms release
+
+**Note:** Works with full items — select the item from its beginning. If the item's start is trimmed, peak detection will be offset. Split items work perfectly.
+
+**Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH and SWS extension.
+
+### RCBit LUFS Limiter V3.0 (Legacy)
+
 - LUFS measurement via SWS `NF_AnalyzeTakeLoudness` (accurate, gated)
 - Binary classification: each analysis window is either BOOST or PEAK
 - Attack/release expansion on peak regions with proper adjacent-region shrinking
