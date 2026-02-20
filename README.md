@@ -56,23 +56,24 @@ Improved split-based peak limiter using [JS:RCBitRangeGain](https://github.com/R
 
 Combined LUFS gain staging and peak limiting in a single pass using [JS:RCBitRangeGain](https://github.com/RCJacH/ReaScripts). Measures the item's integrated LUFS via SWS, calculates the gain needed to reach the target, then splits and applies RCBitRangeGain to each segment — boosting quiet parts and limiting peaks that would exceed the ceiling.
 
-See V5.0 above for the latest version with dual-instance architecture and track scope.
+See V5.0 for the latest envelope-based version (no splits).
 
 ### RCBit LUFS Limiter V5.0
 
-Dual-instance architecture for LUFS gain staging + peak limiting. Builds on V4.0 with flexible scope, limiter modes, and LUFS measurement methods.
+Envelope-based LUFS gain staging + peak limiting using RCBitRangeGain FX parameter automation. Unlike previous split-based versions, V5.0 writes automation envelopes to RCBit parameters — no splits, cleaner project, editable envelopes.
 
-- **Combined mode**: Single RCBit per split (like V4.0) — boost splits get LUFS gain, peak splits get ceiling-limited gain
-- **Micro mode**: Dual RCBit instances — Instance 1 applies constant LUFS gain to ALL splits, Instance 2 applies peak correction via Micro shift only on peak splits
-- **Item scope**: Process selected item only (like V4.0)
-- **Track scope**: Process all items on the selected item's track with uniform LUFS gain
-- **SWS LUFS**: Direct take analysis (like V4.0)
-- **MonoRun/StereoRun LUFS**: Renders track to mono/stereo stem, measures post-FX loudness, cleans up
-- **LUFS=0**: Pure peak limiting mode — skips LUFS measurement, only applies reduction to peaks exceeding ceiling
-- All V4 features: BR quantization, SR fallback chain, LUFS guard, binary classification, attack/release with shrink-adjacent, tiny region absorption
-- 8-field dialog: Target LUFS, Peak Ceiling, Attack, Release, Window, Scope, Limiter mode, LUFS Source
+- **Combined mode**: Single RCBit instance with Macro+BR envelopes — boost regions get LUFS gain, peak regions get ceiling-limited gain
+- **Micro mode**: Dual RCBit instances — Instance 1 applies constant LUFS Macro+BR, Instance 2 uses Micro shift envelope for peak correction (smoother transitions than split-based approach)
+- **TakeFX scope**: RCBit on the item itself (raw audio, pre-insert FX)
+- **TrackFX scope**: RCBit on track insert FX chain (post-plugins — covers scenarios where plugins changed loudness)
+- **SWS LUFS**: Direct take analysis via `NF_AnalyzeTakeLoudness`
+- **MonoRun/StereoRun LUFS**: Renders track to mono/stereo stem, measures post-FX loudness, cleans up automatically
+- **LUFS=0**: Pure peak limiting mode — skips LUFS measurement, only reduces peaks exceeding ceiling
+- Square-step envelope shapes for discrete parameter changes (no interpolation)
+- All V4 analysis features: BR quantization, SR fallback chain, LUFS guard, binary classification, attack/release with shrink-adjacent, tiny region absorption
+- 8-field dialog: Target LUFS, Peak Ceiling, Attack, Release, Window, FX Scope, Limiter mode, LUFS Source
 
-**Note:** Works with full items — select the item from its beginning. If the item's start is trimmed, peak detection will be offset. Split items work perfectly.
+**Note:** Works with full items — select the item from its beginning.
 
 **Requires:** JS:RCBitRangeGain JSFX plugin by RCJacH and SWS extension.
 
@@ -80,7 +81,7 @@ Dual-instance architecture for LUFS gain staging + peak limiting. Builds on V4.0
 
 Same concept as V3.0 — LUFS gain staging + peak limiting via splits and RCBitRangeGain — but with mastering-grade accuracy improvements.
 
-See V5.0 above for the latest version with dual-instance architecture and track scope.
+See V5.0 for the latest envelope-based version (no splits).
 
 - **BR quantization**: Peak regions floor-quantize Bit Ratio to the JSFX step size (default 0.05), ensuring peaks never exceed the ceiling due to rounding. Boost regions round to nearest step.
 - SR fallback chain: source → parent source → project SR → 44100
