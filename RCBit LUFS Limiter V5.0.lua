@@ -68,38 +68,94 @@ local function measure_lufs_sws(take)
 end
 
 local function measure_lufs_render(track, start_time, end_time, mono)
-  local ts_s, ts_e = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
-  local tc_before = reaper.CountTracks(0)
-  local solos = {}
-  for i = 0, tc_before - 1 do
-    local tr = reaper.GetTrack(0, i)
-    solos[i] = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO")
-    reaper.SetMediaTrackInfo_Value(tr, "I_SOLO", 0)
+  local proj_sr = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
+  if proj_sr == 0 then proj_sr = 44100 end
+  local sr = math.floor(proj_sr)
+
+  local accessor = reaper.CreateTrackAudioAccessor(track)
+  if not accessor then return nil end
+
+  local read_ch = 2
+  local out_ch = mono and 1 or 2
+  local duration = end_time - start_time
+  local total_samples = math.floor(duration * sr)
+  if total_samples <= 0 then
+    reaper.DestroyAudioAccessor(accessor)
+    return nil
   end
-  reaper.SetMediaTrackInfo_Value(track, "I_SOLO", 2)
-  reaper.GetSet_LoopTimeRange(true, false, start_time, end_time, false)
-  reaper.SetOnlyTrackSelected(track)
-  reaper.Main_OnCommand(mono and 41716 or 41720, 0)
-  local new_count = reaper.CountTracks(0)
-  local lufs = nil
-  if new_count > tc_before then
-    local stem_track = reaper.GetTrack(0, new_count - 1)
-    local stem_item = reaper.GetTrackMediaItem(stem_track, 0)
-    if stem_item then
-      local stem_take = reaper.GetActiveTake(stem_item)
-      if stem_take then
-        local ok2, integrated = reaper.NF_AnalyzeTakeLoudness(stem_take, true)
-        if ok2 and integrated and integrated > -200 then lufs = integrated end
+
+  -- Write temp WAV (32-bit float)
+  local tmp_path = os.tmpname() .. "_lufs_measure.wav"
+  local f = io.open(tmp_path, "wb")
+  if not f then
+    reaper.DestroyAudioAccessor(accessor)
+    return nil
+  end
+
+  local data_size = total_samples * out_ch * 4
+  f:write("RIFF")
+  f:write(string.pack("<I4", 36 + data_size))
+  f:write("WAVE")
+  f:write("fmt ")
+  f:write(string.pack("<I4", 16))
+  f:write(string.pack("<I2", 3))
+  f:write(string.pack("<I2", out_ch))
+  f:write(string.pack("<I4", sr))
+  f:write(string.pack("<I4", sr * out_ch * 4))
+  f:write(string.pack("<I2", out_ch * 4))
+  f:write(string.pack("<I2", 32))
+  f:write("data")
+  f:write(string.pack("<I4", data_size))
+
+  local chunk_size = 8192
+  local buf = reaper.new_array(chunk_size * read_ch)
+  local written = 0
+  local t = start_time
+
+  while written < total_samples do
+    local remaining = math.min(chunk_size, total_samples - written)
+    buf.clear()
+    reaper.GetAudioAccessorSamples(accessor, sr, read_ch, t, remaining, buf)
+    for i = 0, remaining - 1 do
+      if mono then
+        local l = buf[i * read_ch + 1]
+        local r = (read_ch >= 2) and buf[i * read_ch + 2] or l
+        f:write(string.pack("<f", (l + r) * 0.5))
+      else
+        for ch = 1, out_ch do
+          f:write(string.pack("<f", buf[i * read_ch + ch]))
+        end
       end
     end
-    reaper.DeleteTrack(stem_track)
+    t = t + remaining / sr
+    written = written + remaining
   end
-  for i = 0, math.min(reaper.CountTracks(0) - 1, tc_before - 1) do
-    local tr = reaper.GetTrack(0, i)
-    if tr then reaper.SetMediaTrackInfo_Value(tr, "I_SOLO", solos[i] or 0) end
-  end
-  reaper.SetMediaTrackInfo_Value(track, "B_MUTE", 0)
-  reaper.GetSet_LoopTimeRange(true, false, ts_s, ts_e, false)
+
+  f:close()
+  reaper.DestroyAudioAccessor(accessor)
+
+  -- Must temporarily allow UI refresh for NF_AnalyzeTakeLoudness
+  reaper.PreventUIRefresh(-1)
+
+  local tc_before = reaper.CountTracks(0)
+  reaper.InsertTrackAtIndex(tc_before, false)
+  local temp_track = reaper.GetTrack(0, tc_before)
+  local temp_item = reaper.AddMediaItemToTrack(temp_track)
+  reaper.SetMediaItemInfo_Value(temp_item, "D_POSITION", 0)
+  reaper.SetMediaItemInfo_Value(temp_item, "D_LENGTH", duration)
+  local temp_take = reaper.AddTakeToMediaItem(temp_item)
+  local src = reaper.PCM_Source_CreateFromFile(tmp_path)
+  if src then reaper.SetMediaItemTake_Source(temp_take, src) end
+  reaper.UpdateItemInProject(temp_item)
+
+  local lufs = nil
+  local ok2, integrated = reaper.NF_AnalyzeTakeLoudness(temp_take, true)
+  if ok2 and integrated and integrated > -200 then lufs = integrated end
+
+  reaper.DeleteTrack(temp_track)
+  os.remove(tmp_path)
+
+  reaper.PreventUIRefresh(1)
   return lufs
 end
 
