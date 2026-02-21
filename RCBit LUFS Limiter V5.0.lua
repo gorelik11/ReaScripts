@@ -254,18 +254,16 @@ local function write_env_points(env, regions, value_func, shape, item_pos, item_
 end
 
 -- ============ DIALOG ============
+-- Step 1: Numeric parameters
 local retval, user_input = reaper.GetUserInputs(
-  "RCBit LUFS Limiter V5.0", 8,
+  "RCBit LUFS Limiter V5.0", 5,
   "Target LUFS (0=limit only):,"
   .. "Peak Ceiling (dB):,"
   .. "Attack (ms):,"
   .. "Release (ms):,"
   .. "Analysis Window (ms):,"
-  .. "FX Scope (TakeFX/TrackFX):,"
-  .. "Limiter (Combined/Micro):,"
-  .. "LUFS Source (SWS/MonoRun/StereoRun):,"
-  .. "extrawidth=120",
-  "-9,-0.5,0,70,5,TakeFX,Combined,SWS"
+  .. "extrawidth=100",
+  "-9,-0.5,0,70,5"
 )
 if not retval then return end
 
@@ -277,19 +275,49 @@ local CEILING_DB = tonumber(vals[2])
 local ATTACK_SEC = tonumber(vals[3]) / 1000
 local RELEASE_SEC = tonumber(vals[4]) / 1000
 local WINDOW_SEC = tonumber(vals[5]) / 1000
-local FX_SCOPE = vals[6] or "TakeFX"
-local LIMITER_MODE = vals[7] or "Combined"
-local LUFS_SOURCE = vals[8] or "SWS"
 
 if not TARGET_LUFS or not CEILING_DB or not ATTACK_SEC or not RELEASE_SEC or not WINDOW_SEC then
   reaper.ShowMessageBox("Invalid input. Please enter numeric values.", "Error", 0)
   return
 end
 
--- Normalize string params
-FX_SCOPE = (FX_SCOPE == "TrackFX") and "TrackFX" or "TakeFX"
-LIMITER_MODE = (LIMITER_MODE == "Micro") and "Micro" or "Combined"
-if LUFS_SOURCE ~= "MonoRun" and LUFS_SOURCE ~= "StereoRun" then LUFS_SOURCE = "SWS" end
+-- Step 2: FX Scope (clickable)
+local scope_ret = reaper.ShowMessageBox(
+  "Where to place RCBit FX?\n\n"
+  .. "YES = Item FX (TakeFX)\n"
+  .. "NO = Track Insert FX (TrackFX)",
+  "FX Scope", 3) -- Yes/No/Cancel
+if scope_ret == 2 then return end -- Cancel
+local FX_SCOPE = (scope_ret == 6) and "TakeFX" or "TrackFX"
+
+-- Step 3: Limiter Mode (clickable)
+local mode_ret = reaper.ShowMessageBox(
+  "Limiter mode?\n\n"
+  .. "YES = Combined (single RCBit, Macro+BR envelope)\n"
+  .. "NO = Micro (dual RCBit: LUFS instance + Micro-shift limiter)",
+  "Limiter Mode", 3)
+if mode_ret == 2 then return end
+local LIMITER_MODE = (mode_ret == 6) and "Combined" or "Micro"
+
+-- Step 4: LUFS Source (clickable, only if LUFS is active)
+local LUFS_SOURCE = "SWS"
+if TARGET_LUFS ~= 0 then
+  local src_ret = reaper.ShowMessageBox(
+    "LUFS measurement method?\n\n"
+    .. "YES = SWS (item analysis, fastest)\n"
+    .. "NO = Dry Run (track audio accessor, captures FX chain)",
+    "LUFS Source", 3)
+  if src_ret == 2 then return end
+  if src_ret == 7 then -- No = dry run
+    local ch_ret = reaper.ShowMessageBox(
+      "Dry run channel mode?\n\n"
+      .. "YES = Mono\n"
+      .. "NO = Stereo",
+      "Dry Run Channels", 3)
+    if ch_ret == 2 then return end
+    LUFS_SOURCE = (ch_ret == 6) and "MonoRun" or "StereoRun"
+  end
+end
 
 -- ============ MAIN ============
 reaper.Undo_BeginBlock()
