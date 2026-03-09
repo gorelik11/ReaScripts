@@ -21,10 +21,35 @@ madmom requires Python 3.10 or 3.11. Python 3.12+ is not supported due to depend
 
 ### macOS
 
-Download from [python.org](https://www.python.org/downloads/release/python-3110/) or use Homebrew:
+> **Detailed visual guide:** John Tidey wrote an excellent step-by-step PDF guide for installing Python for REAPER on macOS, with screenshots of every step including the REAPER Preferences setup: [REAPER Python install for macOS (PDF)](https://www.dropbox.com/scl/fi/ni7mcve8z4123nef1vrg7/REAPER-AAF-python-script-install-for-MacOS.pdf?rlkey=j1enceherfgka4qfku4pzjmop&e=2&dl=0)
+
+1. Go to [python.org/downloads/macos](https://www.python.org/downloads/macos/)
+2. Click **"Latest Python 3 Release - Python 3.11.x"**
+3. Scroll to bottom, download **macOS 64-bit universal2 installer**
+4. Run the installer to completion
+
+Python will be installed to `/Library/Frameworks/Python.framework`.
+
+Alternatively, use Homebrew:
 
 ```bash
 brew install python@3.11
+```
+
+#### Configure REAPER to use Python
+
+1. Open REAPER → **Preferences** → **Plug-ins** → **ReaScript**
+2. Check **"Enable Python for use with ReaScript"**
+3. Set **Custom path to Python dll directory** to: `/Library/Frameworks/Python.framework`
+4. Set **Force ReaScript to use specific Python .dylib** to: `libpython3.11.dylib`
+5. Click **Apply** and restart REAPER
+
+#### Install pip (if not already present)
+
+```bash
+python3 --version
+curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+python3 get-pip.py
 ```
 
 Verify:
