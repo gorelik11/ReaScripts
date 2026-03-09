@@ -8,12 +8,29 @@ A guide to setting up neural-network-powered audio analysis tools for REAPER usi
 - **Auto Align to Grid** — Detect onsets in a recording and align them to the tempo map grid using either split-and-move (preserves audio exactly) or stretch markers (no splits, continuous audio).
 - **AI-Powered** — Uses pre-trained recurrent neural networks (madmom) for musically intelligent beat and onset detection, not just simple transient detection.
 
+## Which Claude Interface Do I Need?
+
+This workflow was built and tested with **Claude Code** (Anthropic's CLI agent), which can run Python, execute shell commands, and control REAPER directly. That's the recommended way to use it.
+
+| Capability | Claude Code | Claude Desktop + MCP | Claude Web |
+|---|---|---|---|
+| Run madmom analysis | Yes | No | No |
+| Control REAPER directly | Yes (reapy + MCP) | Yes (MCP only) | No |
+| Generate & execute scripts | Yes | Generate only | Generate only |
+| Full iterative workflow | Yes | Partial | No |
+
+- **Claude Code** — Full workflow. Claude runs the analysis, generates scripts, executes them in REAPER, checks results, and iterates autonomously.
+- **Claude Desktop** — If you configure [Total REAPER MCP](https://github.com/shiehn/total-reaper-mcp), Claude Desktop can control REAPER (set tempo markers, manage tracks, etc.), but cannot run Python/madmom. You'd run the analysis step yourself, then let Claude apply the results.
+- **Claude Web (claude.ai)** — Can help you write and understand the scripts, but cannot execute anything. Purely advisory.
+
+Even without any Claude interface, the Python and Lua code examples below are fully functional — you can run them manually from the terminal and REAPER's action list.
+
 ## Prerequisites
 
 - **REAPER** (v6.37+ recommended, v7.x tested)
 - **SWS Extension** for REAPER ([download](https://www.sws-extension.org/))
 - **macOS** (tested on macOS; Linux/Windows should work with path adjustments)
-- **Claude Code** (Anthropic's CLI agent) — orchestrates the Python analysis and REAPER script execution
+- **Claude Code** (Anthropic's CLI agent) — orchestrates the Python analysis and REAPER script execution. Optional if running scripts manually.
 
 ## Step 1: Install Python 3.11
 
