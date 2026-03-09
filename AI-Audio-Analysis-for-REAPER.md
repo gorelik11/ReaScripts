@@ -38,7 +38,7 @@ madmom requires Python 3.10 or 3.11. Python 3.12+ is not supported due to depend
 
 ### macOS
 
-> **Detailed visual guide:** John Tidey wrote an excellent step-by-step PDF guide for installing Python for REAPER on macOS, with screenshots of every step including the REAPER Preferences setup: [REAPER Python install for macOS (PDF)](https://www.dropbox.com/scl/fi/ni7mcve8z4123nef1vrg7/REAPER-AAF-python-script-install-for-MacOS.pdf?rlkey=j1enceherfgka4qfku4pzjmop&e=2&dl=0)
+> **Detailed visual guide:** John Tidey wrote an excellent step-by-step PDF guide for installing Python for REAPER on macOS, with screenshots of every step including the REAPER Preferences setup: [REAPER Python install for macOS (PDF)](REAPER-Python-Install-macOS-Guide.pdf)
 
 1. Go to [python.org/downloads/macos](https://www.python.org/downloads/macos/)
 2. Click **"Latest Python 3 Release - Python 3.11.x"**
