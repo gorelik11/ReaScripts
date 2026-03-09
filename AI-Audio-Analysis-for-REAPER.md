@@ -280,10 +280,17 @@ REAPER BPM is **always quarter-note based**, regardless of the time signature de
 The Lua script receives the calculated tempo data and sets markers:
 
 ```lua
--- Clear existing tempo markers (iterate backwards!)
+-- IMPORTANT: Only delete tempo markers within the item's time range!
+-- This preserves tempo maps for other songs in the same project.
+local item_start = -- start of rendered item (project time)
+local item_end   = -- end of rendered item (project time)
+
 local n = reaper.CountTempoTimeSigMarkers(0)
 for i = n - 1, 0, -1 do
-    reaper.DeleteTempoTimeSigMarker(0, i)
+    local _, _, _, t = reaper.GetTempoTimeSigMarker(0, i)
+    if t >= item_start and t <= item_end then
+        reaper.DeleteTempoTimeSigMarker(0, i)
+    end
 end
 
 -- Add new markers (one per bar at each downbeat)
