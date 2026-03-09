@@ -27,7 +27,7 @@ Even without any Claude interface, the Python and Lua code examples below are fu
 
 ## Prerequisites
 
-- **REAPER** (v6.37+ recommended, v7.x tested)
+- **REAPER** (any version)
 - **SWS Extension** for REAPER ([download](https://www.sws-extension.org/))
 - **macOS** (tested on macOS; Linux/Windows should work with path adjustments)
 - **Claude Code** (Anthropic's CLI agent) — orchestrates the Python analysis and REAPER script execution. Optional if running scripts manually.
