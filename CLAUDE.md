@@ -240,8 +240,8 @@ Do NOT load agents for simple/quick tasks — only when strategic perspective or
 ---
 
 ## Knowledge Base
-Vault: ~/Knowledge/
-Section: reascripts/
+Vault: `~/Knowledge/` — git clone of `gorelik11/knowledge-vault` (private, shared across all machines)
+This project's section: [`reascripts/`](file:///Users/macbook/Knowledge/reascripts/index.md)
 
 ### Protocol
 1. At session start, read `~/Knowledge/reascripts/index.md`
@@ -249,5 +249,6 @@ Section: reascripts/
 3. When a subtopic appears, read the subtopic .md
 4. NEVER load files from other sections without user request
 5. When unsure if a file is needed — don't load it
-6. brain.md — only during memory reorganization or by user request
-7. Cross-project files (_infrastructure/, _agents/, _shared/) — load when their topic appears
+6. `~/Knowledge/brain.md` — load on demand when cross-project context, machines, or strategic decisions are needed
+7. Cross-project files (`_infrastructure/`, `_agents/`, `_shared/`) — load when their topic appears
+8. Adjacent code project: `~/projects/midi-composition/` (REAPER + madmom infra is shared)
