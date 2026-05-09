@@ -1,0 +1,352 @@
+{
+  "v2_hop256": {
+    "ref_onsets": [
+      0.576,
+      0.832,
+      1.152,
+      1.792,
+      2.08,
+      2.4213,
+      2.7093,
+      3.36,
+      3.7013,
+      4.4907,
+      4.64,
+      4.96,
+      5.2693
+    ],
+    "target_onsets": [
+      0.896,
+      2.0693,
+      2.4,
+      2.7413,
+      3.0933,
+      3.2213,
+      3.36,
+      3.68,
+      4.0107,
+      4.1387,
+      4.3093,
+      4.4373,
+      4.5867,
+      4.7253,
+      4.928,
+      5.2693
+    ],
+    "ref_count": 13,
+    "target_count": 16,
+    "timing_resolution_ms": 10.67
+  },
+  "v3_hop64": {
+    "ref_onsets": [
+      0.5893,
+      0.6133,
+      0.64,
+      0.664,
+      0.6907,
+      0.7173,
+      0.8427,
+      1.1653,
+      1.5013,
+      1.552,
+      1.5867,
+      1.6133,
+      1.808,
+      2.0987,
+      2.1333,
+      2.224,
+      2.248,
+      2.272,
+      2.4293,
+      2.4853,
+      2.5893,
+      2.7147,
+      3.3707,
+      3.712,
+      3.736,
+      4.3413,
+      4.496,
+      4.6613,
+      4.6907,
+      4.7147,
+      4.7387,
+      4.768,
+      4.7973,
+      4.8347,
+      4.992,
+      5.016,
+      5.0427,
+      5.0693,
+      5.104,
+      5.2773
+    ],
+    "target_onsets": [
+      0.9173,
+      1.792,
+      1.9413,
+      2.0853,
+      2.1093,
+      2.1387,
+      2.4133,
+      2.4667,
+      2.4933,
+      2.5227,
+      2.76,
+      3.104,
+      3.2373,
+      3.3787,
+      3.6907,
+      3.7493,
+      4.0187,
+      4.144,
+      4.168,
+      4.192,
+      4.3227,
+      4.44,
+      4.4667,
+      4.776,
+      4.9387,
+      4.9653,
+      4.992,
+      5.0347,
+      5.0773,
+      5.2747,
+      5.304
+    ],
+    "ref_count": 40,
+    "target_count": 31,
+    "timing_resolution_ms": 2.67
+  },
+  "v3_matches": [
+    {
+      "target": 1.792,
+      "ref": 1.808,
+      "diff_ms": -16.0,
+      "score": 0.681
+    },
+    {
+      "target": 2.0853,
+      "ref": 2.0987,
+      "diff_ms": -13.33,
+      "score": 0.699
+    },
+    {
+      "target": 2.1093,
+      "ref": 2.1333,
+      "diff_ms": -24.0,
+      "score": 0.544
+    },
+    {
+      "target": 2.4133,
+      "ref": 2.4293,
+      "diff_ms": -16.0,
+      "score": 0.638
+    },
+    {
+      "target": 2.4667,
+      "ref": 2.4853,
+      "diff_ms": -18.67,
+      "score": 0.583
+    },
+    {
+      "target": 2.5227,
+      "ref": 2.5893,
+      "diff_ms": -66.67,
+      "score": 0.12
+    },
+    {
+      "target": 2.76,
+      "ref": 2.7147,
+      "diff_ms": 45.33,
+      "score": 0.328
+    },
+    {
+      "target": 3.3787,
+      "ref": 3.3707,
+      "diff_ms": 8.0,
+      "score": 0.688
+    },
+    {
+      "target": 3.6907,
+      "ref": 3.712,
+      "diff_ms": -21.33,
+      "score": 0.783
+    },
+    {
+      "target": 3.7493,
+      "ref": 3.736,
+      "diff_ms": 13.33,
+      "score": 0.666
+    },
+    {
+      "target": 4.3227,
+      "ref": 4.3413,
+      "diff_ms": -18.67,
+      "score": 0.664
+    },
+    {
+      "target": 4.44,
+      "ref": 4.496,
+      "diff_ms": -56.0,
+      "score": 0.234
+    },
+    {
+      "target": 4.776,
+      "ref": 4.768,
+      "diff_ms": 8.0,
+      "score": 0.699
+    },
+    {
+      "target": 4.9387,
+      "ref": 4.992,
+      "diff_ms": -53.33,
+      "score": 0.237
+    },
+    {
+      "target": 4.9653,
+      "ref": 5.016,
+      "diff_ms": -50.67,
+      "score": 0.231
+    },
+    {
+      "target": 4.992,
+      "ref": 5.0427,
+      "diff_ms": -50.67,
+      "score": 0.262
+    },
+    {
+      "target": 5.0347,
+      "ref": 5.0693,
+      "diff_ms": -34.67,
+      "score": 0.46
+    },
+    {
+      "target": 5.0773,
+      "ref": 5.104,
+      "diff_ms": -26.67,
+      "score": 0.51
+    },
+    {
+      "target": 5.2747,
+      "ref": 5.2773,
+      "diff_ms": -2.67,
+      "score": 0.788
+    }
+  ],
+  "xcorr_refined": [
+    {
+      "target": 1.792,
+      "ref": 1.808,
+      "coarse_diff_ms": -16.0,
+      "refined_diff_ms": -28.19
+    },
+    {
+      "target": 2.0853,
+      "ref": 2.0987,
+      "coarse_diff_ms": -13.33,
+      "refined_diff_ms": -5.46
+    },
+    {
+      "target": 2.1093,
+      "ref": 2.1333,
+      "coarse_diff_ms": -24.0,
+      "refined_diff_ms": -25.69
+    },
+    {
+      "target": 2.4133,
+      "ref": 2.4293,
+      "coarse_diff_ms": -16.0,
+      "refined_diff_ms": 23.92
+    },
+    {
+      "target": 2.4667,
+      "ref": 2.4853,
+      "coarse_diff_ms": -18.67,
+      "refined_diff_ms": 20.04
+    },
+    {
+      "target": 2.5227,
+      "ref": 2.5893,
+      "coarse_diff_ms": -66.67,
+      "refined_diff_ms": -102.21
+    },
+    {
+      "target": 2.76,
+      "ref": 2.7147,
+      "coarse_diff_ms": 45.33,
+      "refined_diff_ms": 45.37
+    },
+    {
+      "target": 3.3787,
+      "ref": 3.3707,
+      "coarse_diff_ms": 8.0,
+      "refined_diff_ms": 1.83
+    },
+    {
+      "target": 3.6907,
+      "ref": 3.712,
+      "coarse_diff_ms": -21.33,
+      "refined_diff_ms": -19.94
+    },
+    {
+      "target": 3.7493,
+      "ref": 3.736,
+      "coarse_diff_ms": 13.33,
+      "refined_diff_ms": -3.58
+    },
+    {
+      "target": 4.3227,
+      "ref": 4.3413,
+      "coarse_diff_ms": -18.67,
+      "refined_diff_ms": -18.71
+    },
+    {
+      "target": 4.44,
+      "ref": 4.496,
+      "coarse_diff_ms": -56.0,
+      "refined_diff_ms": -49.44
+    },
+    {
+      "target": 4.776,
+      "ref": 4.768,
+      "coarse_diff_ms": 8.0,
+      "refined_diff_ms": 46.35
+    },
+    {
+      "target": 4.9387,
+      "ref": 4.992,
+      "coarse_diff_ms": -53.33,
+      "refined_diff_ms": -32.79
+    },
+    {
+      "target": 4.9653,
+      "ref": 5.016,
+      "coarse_diff_ms": -50.67,
+      "refined_diff_ms": -13.73
+    },
+    {
+      "target": 4.992,
+      "ref": 5.0427,
+      "coarse_diff_ms": -50.67,
+      "refined_diff_ms": -11.33
+    },
+    {
+      "target": 5.0347,
+      "ref": 5.0693,
+      "coarse_diff_ms": -34.67,
+      "refined_diff_ms": 0.92
+    },
+    {
+      "target": 5.0773,
+      "ref": 5.104,
+      "coarse_diff_ms": -26.67,
+      "refined_diff_ms": 1.33
+    },
+    {
+      "target": 5.2747,
+      "ref": 5.2773,
+      "coarse_diff_ms": -2.67,
+      "refined_diff_ms": -4.58
+    }
+  ]
+}
