@@ -384,6 +384,69 @@ def verify_copied_targets(audit: Audit) -> list[str]:
     return missing
 
 
+def relink_rpp_text(
+    text: str,
+    mapping: dict[str, object],
+    region_id: int,
+    region_name: str,
+) -> tuple[str, int]:
+    region = find_region(text, region_id=region_id, region_name=region_name)
+    replacements = _mapping_replacements(mapping)
+    output: list[str] = []
+    cursor = 0
+    changed = 0
+
+    for start, end, lines in _item_block_spans(text):
+        output.append(text[cursor:start])
+        position = _required_float(lines, "POSITION")
+        length = _required_float(lines, "LENGTH")
+        if position < region.end and position + length > region.start:
+            new_lines, item_changed = _replace_item_file_lines(lines, replacements)
+            changed += item_changed
+            replacement_text = "\n".join(new_lines)
+            if text[start:end].endswith("\n"):
+                replacement_text += "\n"
+            output.append(replacement_text)
+        else:
+            output.append(text[start:end])
+        cursor = end
+
+    output.append(text[cursor:])
+    return "".join(output), changed
+
+
+def verify_project_relinked(
+    rpp_path: Path,
+    mapping: dict[str, object],
+    region_id: int,
+    region_name: str,
+) -> list[str]:
+    text = rpp_path.read_text(encoding="utf-8", errors="replace")
+    region = find_region(text, region_id=region_id, region_name=region_name)
+    replacements = _mapping_replacements(mapping)
+    errors: list[str] = []
+
+    for new_path in replacements.values():
+        if not Path(new_path).exists():
+            errors.append(f"missing relinked target: {new_path}")
+
+    for lines in _item_blocks(text):
+        position = _required_float(lines, "POSITION")
+        length = _required_float(lines, "LENGTH")
+        if not (position < region.end and position + length > region.start):
+            continue
+        for source in _all_values(lines, "FILE"):
+            basename = Path(source).name
+            if basename in replacements:
+                errors.append(f"old source remains in Tutsan: {source}")
+            elif target_name(basename) in replacements:
+                errors.append(f"old source remains in Tutsan: {source}")
+            if basename.endswith(" - R7 Tutsan.wav") and not Path(source).exists():
+                errors.append(f"relinked target missing on disk: {source}")
+
+    return errors
+
+
 def _is_relative_path_inside_root(project_root: Path, path: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(project_root.resolve(strict=False))
@@ -716,6 +779,38 @@ def _item_blocks(text: str) -> list[list[str]]:
     return blocks
 
 
+def _item_block_spans(text: str) -> list[tuple[int, int, list[str]]]:
+    spans: list[tuple[int, int, list[str]]] = []
+    lines = text.splitlines(keepends=True)
+    current: list[str] | None = None
+    start_offset = 0
+    offset = 0
+    depth = 0
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\r\n")
+        stripped = line.strip()
+        if current is None:
+            if stripped.startswith("<ITEM"):
+                current = [line]
+                start_offset = offset
+                depth = 1
+            offset += len(raw_line)
+            continue
+
+        current.append(line)
+        if stripped.startswith("<"):
+            depth += 1
+        elif stripped == ">":
+            depth -= 1
+            if depth == 0:
+                spans.append((start_offset, offset + len(raw_line), current))
+                current = None
+        offset += len(raw_line)
+
+    return spans
+
+
 def _parse_item_block(lines: list[str]) -> ItemSource | None:
     position = _required_float(lines, "POSITION")
     length = _required_float(lines, "LENGTH")
@@ -799,6 +894,41 @@ def _sample_edit_payload(lines: list[str]) -> list[str]:
         payload.append(line)
 
     return payload
+
+
+def _mapping_replacements(mapping: dict[str, object]) -> dict[str, str]:
+    replacements: dict[str, str] = {}
+    for entry in mapping.get("files", []):
+        if not isinstance(entry, dict):
+            continue
+        old_source = str(entry["old_source_file"])
+        new_audio_path = str(entry["new_audio_path"])
+        replacements[Path(old_source).name] = new_audio_path
+    return replacements
+
+
+def _replace_item_file_lines(
+    lines: list[str],
+    replacements: dict[str, str],
+) -> tuple[list[str], int]:
+    changed = 0
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("FILE "):
+            new_lines.append(line)
+            continue
+
+        source = _parse_value(stripped[len("FILE ") :])
+        replacement = replacements.get(Path(source).name)
+        if replacement is None:
+            new_lines.append(line)
+            continue
+
+        indent = line[: len(line) - len(line.lstrip())]
+        new_lines.append(f'{indent}FILE "{replacement}"')
+        changed += 1
+    return new_lines, changed
 
 
 def _parse_value(raw: str) -> str:

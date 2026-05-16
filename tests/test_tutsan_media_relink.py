@@ -6,8 +6,10 @@ from tools.tutsan_media_relink import (
     compare_sample_edits,
     find_region,
     parse_items,
+    relink_rpp_text,
     render_markdown_report,
     render_relink_map,
+    verify_project_relinked,
     verify_copied_targets,
 )
 
@@ -520,3 +522,75 @@ def test_verify_copied_targets_still_works_after_root_rename(tmp_path):
 
     assert audit.stop_reasons == []
     assert verify_copied_targets(audit) == []
+
+
+def test_relink_rpp_text_replaces_only_tutsan_matching_sources(tmp_path):
+    audio_dir = tmp_path / "Audio"
+    new_path = audio_dir / "Aniel Vocal 2-11 - R7 Tutsan.wav"
+    mapping = {
+        "files": [
+            {
+                "old_source_file": "Aniel Vocal 2-11.wav",
+                "new_audio_path": str(new_path),
+            }
+        ]
+    }
+    text = """<REAPER_PROJECT 0.1 "7.72/macOS-arm64" 0
+  MARKER 7 100.0 Tutsan 1 0 1 B {REGION-GUID} 0 1
+  MARKER 7 130.0 "" 1
+  <TRACK
+    <ITEM
+      POSITION 110.0
+      LENGTH 5.0
+      IGUID {TUTSAN-GUID}
+      NAME "Aniel Vocal 2-11.wav"
+      <SOURCE WAVE
+        FILE "Aniel Vocal 2-11.wav"
+      >
+      SAMPLEEDITS 1 1 96000
+      <SPLS 0
+        SPL 10 0.1
+      >
+    >
+    <ITEM
+      POSITION 200.0
+      LENGTH 5.0
+      IGUID {OTHER-GUID}
+      NAME "Aniel Vocal 2-11.wav"
+      <SOURCE WAVE
+        FILE "Aniel Vocal 2-11.wav"
+      >
+    >
+  >
+>
+"""
+
+    relinked, changed = relink_rpp_text(text, mapping, 7, "Tutsan")
+
+    assert changed == 1
+    assert f'FILE "{new_path}"' in relinked
+    assert relinked.count('FILE "Aniel Vocal 2-11.wav"') == 1
+    assert "SAMPLEEDITS 1 1 96000" in relinked
+    assert ">    <ITEM" not in relinked
+
+
+def test_verify_project_relinked_passes_when_targets_exist(tmp_path):
+    audio_dir = tmp_path / "Audio"
+    write_file(audio_dir / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan")
+    rpp_path = tmp_path / "Project.RPP"
+    rpp_path.write_text(
+        SYNTHETIC_RPP.replace(
+            'FILE "Aniel Vocal 2-11.wav"',
+            f'FILE "{audio_dir}/Aniel Vocal 2-11 - R7 Tutsan.wav"',
+        )
+    )
+    mapping = {
+        "files": [
+            {
+                "old_source_file": "Aniel Vocal 2-11.wav",
+                "new_audio_path": str(audio_dir / "Aniel Vocal 2-11 - R7 Tutsan.wav"),
+            }
+        ]
+    }
+
+    assert verify_project_relinked(rpp_path, mapping, 7, "Tutsan") == []
