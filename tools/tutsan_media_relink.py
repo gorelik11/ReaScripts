@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
+import re
 import shlex
 
 
@@ -26,6 +30,31 @@ class ItemSource:
 
     def overlaps(self, start: float, end: float) -> bool:
         return self.position < end and self.end > start
+
+
+@dataclass(frozen=True)
+class SampleEditItem:
+    guid: str
+    name: str | None
+    position: float
+    length: float
+    source_files: tuple[str, ...]
+    payload_hash: str
+    payload_length: int
+    sampleedit_count: int
+    spl_count: int
+
+
+@dataclass(frozen=True)
+class SampleEditComparison:
+    before_count: int
+    after_count: int
+    preserved_count: int
+    changed_count: int
+    missing_guids: list[str]
+    new_guids: list[str]
+    changed_guids: list[str]
+    path_changed_guids: list[str]
 
 
 @dataclass(frozen=True)
@@ -72,6 +101,7 @@ class Audit:
     duplicates: dict[str, DuplicateInfo]
     non_tutsan_relative_sources: list[str]
     stop_reasons: list[str]
+    sample_edit_comparison: SampleEditComparison | None = None
 
 
 def find_region(text: str, region_id: int, region_name: str) -> Region:
@@ -98,7 +128,12 @@ def find_region(text: str, region_id: int, region_name: str) -> Region:
 
 
 def parse_items(text: str) -> list[ItemSource]:
-    return [_parse_item_block(block) for block in _item_blocks(text)]
+    items: list[ItemSource] = []
+    for block in _item_blocks(text):
+        item = _parse_item_block(block)
+        if item is not None:
+            items.append(item)
+    return items
 
 
 def stat_file(path: Path) -> FileMeta:
@@ -133,6 +168,7 @@ def build_audit(
     audio_dir: Path,
     region_id: int,
     region_name: str,
+    sample_edit_reference: Path | None = None,
 ) -> Audit:
     text = rpp_path.read_text(encoding="utf-8", errors="replace")
     region = find_region(text, region_id=region_id, region_name=region_name)
@@ -167,8 +203,10 @@ def build_audit(
         root_path = project_root / source_file
         if not _is_relative_path_inside_root(project_root, root_path):
             stop_reasons.append(f"relative source escapes project root: {source_file}")
-        audio_target_path = audio_dir / basename
         renamed_basename = target_name(basename)
+        audio_original_path = audio_dir / basename
+        root_renamed_path = project_root / renamed_basename
+        audio_target_path = audio_dir / renamed_basename
         metadata = stat_file(root_path)
         candidate = Candidate(
             source_file=source_file,
@@ -176,7 +214,7 @@ def build_audit(
             root_path=root_path,
             audio_target_path=audio_target_path,
             renamed_basename=renamed_basename,
-            root_renamed_path=project_root / renamed_basename,
+            root_renamed_path=root_renamed_path,
             item_count=len(source_items),
             tutsan_item_count=len(tutsan_items),
             metadata=metadata,
@@ -185,6 +223,15 @@ def build_audit(
 
         if not metadata.exists:
             stop_reasons.append(f"missing source: {source_file}")
+        if len(tutsan_items) != len(source_items):
+            stop_reasons.append(
+                f"source used inside and outside Tutsan: {source_file} "
+                f"({len(tutsan_items)}/{len(source_items)} items in Tutsan)"
+            )
+        if root_renamed_path.exists():
+            stop_reasons.append(f"target exists in project root: {renamed_basename}")
+        if audio_target_path.exists():
+            stop_reasons.append(f"target exists in audio dir: {renamed_basename}")
 
         basename_sources = relative_sources_by_basename.get(basename, [])
         if len(basename_sources) > 1:
@@ -192,14 +239,14 @@ def build_audit(
             stop_reasons.append(f"ambiguous relative basename: {basename} ({joined})")
 
         root_meta = metadata
-        audio_meta = stat_file(audio_target_path)
+        audio_meta = stat_file(audio_original_path)
         if root_meta.exists and audio_meta.exists:
             duplicates.setdefault(
                 basename,
                 DuplicateInfo(
                     basename=basename,
                     root_path=root_path,
-                    audio_path=audio_target_path,
+                    audio_path=audio_original_path,
                     root_exists=root_meta.exists,
                     audio_exists=audio_meta.exists,
                     root_size=root_meta.size,
@@ -211,13 +258,97 @@ def build_audit(
                 ),
             )
 
+    sample_edit_comparison = None
+    if sample_edit_reference is not None:
+        reference_text = sample_edit_reference.read_text(
+            encoding="utf-8", errors="replace"
+        )
+        sample_edit_comparison = compare_sample_edits(
+            reference_text,
+            text,
+            region_id=region_id,
+            region_name=region_name,
+        )
+        stop_reasons.extend(_sample_edit_stop_reasons(sample_edit_comparison))
+
     return Audit(
         region=region,
         candidates=candidates,
         duplicates=duplicates,
         non_tutsan_relative_sources=non_tutsan_relative_sources,
         stop_reasons=stop_reasons,
+        sample_edit_comparison=sample_edit_comparison,
     )
+
+
+def compare_sample_edits(
+    before_text: str,
+    after_text: str,
+    region_id: int,
+    region_name: str,
+) -> SampleEditComparison:
+    before = sample_edit_items_by_guid(before_text, region_id, region_name)
+    after = sample_edit_items_by_guid(after_text, region_id, region_name)
+    before_guids = set(before)
+    after_guids = set(after)
+    shared_guids = sorted(before_guids & after_guids)
+    changed_guids = [
+        guid
+        for guid in shared_guids
+        if before[guid].payload_hash != after[guid].payload_hash
+        or before[guid].payload_length != after[guid].payload_length
+    ]
+    path_changed_guids = [
+        guid
+        for guid in shared_guids
+        if before[guid].source_files != after[guid].source_files
+    ]
+
+    return SampleEditComparison(
+        before_count=len(before),
+        after_count=len(after),
+        preserved_count=len(shared_guids) - len(changed_guids),
+        changed_count=len(changed_guids),
+        missing_guids=sorted(before_guids - after_guids),
+        new_guids=sorted(after_guids - before_guids),
+        changed_guids=changed_guids,
+        path_changed_guids=path_changed_guids,
+    )
+
+
+def sample_edit_items_by_guid(
+    text: str,
+    region_id: int,
+    region_name: str,
+) -> dict[str, SampleEditItem]:
+    region = find_region(text, region_id=region_id, region_name=region_name)
+    items: dict[str, SampleEditItem] = {}
+    for lines in _item_blocks(text):
+        position = _required_float(lines, "POSITION")
+        length = _required_float(lines, "LENGTH")
+        if not (position < region.end and position + length > region.start):
+            continue
+
+        payload = _sample_edit_payload(lines)
+        if not payload:
+            continue
+
+        guid = _required_value(lines, "IGUID")
+        payload_text = "\n".join(payload)
+        items[guid] = SampleEditItem(
+            guid=guid,
+            name=_optional_value(lines, "NAME"),
+            position=position,
+            length=length,
+            source_files=tuple(_all_values(lines, "FILE")),
+            payload_hash=hashlib.sha256(payload_text.encode("utf-8")).hexdigest(),
+            payload_length=len(payload_text),
+            sampleedit_count=sum(
+                1 for line in payload if line.strip().startswith("SAMPLEEDITS ")
+            ),
+            spl_count=sum(1 for line in payload if re.match(r"^\s*SPL\s+", line)),
+        )
+    return items
 
 
 def _is_relative_path_inside_root(project_root: Path, path: Path) -> bool:
@@ -226,6 +357,245 @@ def _is_relative_path_inside_root(project_root: Path, path: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def render_markdown_report(audit: Audit) -> str:
+    lines = [
+        "# Tutsan Media Relink Audit",
+        "",
+        "## Region",
+        "",
+        f"- Name: {audit.region.name}",
+        f"- Start: {audit.region.start}",
+        f"- End: {audit.region.end}",
+        "",
+        "## Stop Reasons",
+        "",
+    ]
+    if audit.stop_reasons:
+        lines.extend(f"- {reason}" for reason in audit.stop_reasons)
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Tutsan Candidates", ""])
+    if audit.candidates:
+        lines.append(
+            "| Source | Renamed | Root path | Audio target | Items | Tutsan items | Size |"
+        )
+        lines.append("| --- | --- | --- | --- | ---: | ---: | ---: |")
+        for candidate in audit.candidates:
+            size = "" if candidate.metadata.size is None else str(candidate.metadata.size)
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        candidate.source_file,
+                        candidate.renamed_basename,
+                        str(candidate.root_path),
+                        str(candidate.audio_target_path),
+                        str(candidate.item_count),
+                        str(candidate.tutsan_item_count),
+                        size,
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Basename Duplicates", ""])
+    if audit.duplicates:
+        lines.append("| Basename | Root size | Audio size | Root path | Audio path |")
+        lines.append("| --- | ---: | ---: | --- | --- |")
+        for duplicate in audit.duplicates.values():
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        duplicate.basename,
+                        _fmt_optional(duplicate.root_size),
+                        _fmt_optional(duplicate.audio_size),
+                        str(duplicate.root_path),
+                        str(duplicate.audio_path),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Non-Tutsan Relative Sources", ""])
+    if audit.non_tutsan_relative_sources:
+        for source in sorted(audit.non_tutsan_relative_sources):
+            lines.append(f"- {source}")
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Sample Edit Preservation", ""])
+    if audit.sample_edit_comparison is None:
+        lines.append("- Not checked")
+    else:
+        comparison = audit.sample_edit_comparison
+        lines.extend(
+            [
+                f"- Before items: {comparison.before_count}",
+                f"- After items: {comparison.after_count}",
+                f"- Preserved payloads: {comparison.preserved_count}",
+                f"- Changed payloads: {comparison.changed_count}",
+                f"- Missing GUIDs: {len(comparison.missing_guids)}",
+                f"- New GUIDs: {len(comparison.new_guids)}",
+                f"- Path-changed preserved items: {len(comparison.path_changed_guids)}",
+            ]
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def render_relink_map(audit: Audit) -> dict[str, object]:
+    return {
+        "region": {
+            "name": audit.region.name,
+            "start": audit.region.start,
+            "end": audit.region.end,
+        },
+        "files": [
+            {
+                "old_source_file": candidate.source_file,
+                "old_root_path": str(candidate.root_path),
+                "new_basename": candidate.renamed_basename,
+                "renamed_root_path": str(candidate.root_renamed_path),
+                "new_audio_path": str(candidate.audio_target_path),
+                "item_count": candidate.item_count,
+                "tutsan_item_count": candidate.tutsan_item_count,
+            }
+            for candidate in audit.candidates
+        ],
+    }
+
+
+def audit_to_dict(audit: Audit) -> dict[str, object]:
+    return {
+        "region": {
+            "name": audit.region.name,
+            "start": audit.region.start,
+            "end": audit.region.end,
+        },
+        "stop_reasons": audit.stop_reasons,
+        "candidates": [
+            {
+                "source_file": candidate.source_file,
+                "basename": candidate.basename,
+                "root_path": str(candidate.root_path),
+                "audio_target_path": str(candidate.audio_target_path),
+                "renamed_basename": candidate.renamed_basename,
+                "root_renamed_path": str(candidate.root_renamed_path),
+                "item_count": candidate.item_count,
+                "tutsan_item_count": candidate.tutsan_item_count,
+                "metadata": _file_meta_to_dict(candidate.metadata),
+            }
+            for candidate in audit.candidates
+        ],
+        "duplicates": {
+            basename: {
+                "basename": duplicate.basename,
+                "root_path": str(duplicate.root_path),
+                "audio_path": str(duplicate.audio_path),
+                "root_exists": duplicate.root_exists,
+                "audio_exists": duplicate.audio_exists,
+                "root_size": duplicate.root_size,
+                "audio_size": duplicate.audio_size,
+                "root_created": duplicate.root_created,
+                "audio_created": duplicate.audio_created,
+                "root_modified": duplicate.root_modified,
+                "audio_modified": duplicate.audio_modified,
+            }
+            for basename, duplicate in audit.duplicates.items()
+        },
+        "non_tutsan_relative_sources": audit.non_tutsan_relative_sources,
+        "sample_edit_comparison": (
+            None
+            if audit.sample_edit_comparison is None
+            else _sample_edit_comparison_to_dict(audit.sample_edit_comparison)
+        ),
+    }
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_reports(audit: Audit, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_json(out_dir / "tutsan-media-audit.json", audit_to_dict(audit))
+    (out_dir / "tutsan-media-audit.md").write_text(
+        render_markdown_report(audit), encoding="utf-8"
+    )
+    write_json(out_dir / "tutsan-relink-map.json", render_relink_map(audit))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Audit Tutsan media relink safety.")
+    parser.add_argument("--rpp", required=True, type=Path)
+    parser.add_argument("--project-root", required=True, type=Path)
+    parser.add_argument("--audio-dir", required=True, type=Path)
+    parser.add_argument("--region-id", default=7, type=int)
+    parser.add_argument("--region-name", default="Tutsan")
+    parser.add_argument("--out-dir", default=Path(".codex_tmp"), type=Path)
+    parser.add_argument("--sample-edit-reference", type=Path)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    audit = build_audit(
+        rpp_path=args.rpp,
+        project_root=args.project_root,
+        audio_dir=args.audio_dir,
+        region_id=args.region_id,
+        region_name=args.region_name,
+        sample_edit_reference=args.sample_edit_reference,
+    )
+    write_reports(audit, args.out_dir)
+    return 2 if audit.stop_reasons else 0
+
+
+def _file_meta_to_dict(meta: FileMeta) -> dict[str, object]:
+    return {
+        "path": str(meta.path),
+        "exists": meta.exists,
+        "size": meta.size,
+        "created": meta.created,
+        "modified": meta.modified,
+    }
+
+
+def _sample_edit_comparison_to_dict(
+    comparison: SampleEditComparison,
+) -> dict[str, object]:
+    return {
+        "before_count": comparison.before_count,
+        "after_count": comparison.after_count,
+        "preserved_count": comparison.preserved_count,
+        "changed_count": comparison.changed_count,
+        "missing_guids": comparison.missing_guids,
+        "new_guids": comparison.new_guids,
+        "changed_guids": comparison.changed_guids,
+        "path_changed_guids": comparison.path_changed_guids,
+    }
+
+
+def _sample_edit_stop_reasons(
+    comparison: SampleEditComparison,
+) -> list[str]:
+    reasons: list[str] = []
+    if comparison.missing_guids:
+        reasons.append(f"sample edit items missing: {len(comparison.missing_guids)}")
+    if comparison.changed_guids:
+        reasons.append(f"sample edit payloads changed: {len(comparison.changed_guids)}")
+    return reasons
+
+
+def _fmt_optional(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _parse_marker_line(line: str) -> tuple[int, float, str, str] | None:
@@ -279,11 +649,13 @@ def _item_blocks(text: str) -> list[list[str]]:
     return blocks
 
 
-def _parse_item_block(lines: list[str]) -> ItemSource:
+def _parse_item_block(lines: list[str]) -> ItemSource | None:
     position = _required_float(lines, "POSITION")
     length = _required_float(lines, "LENGTH")
     name = _optional_value(lines, "NAME")
-    source_file = _required_value(lines, "FILE")
+    source_file = _optional_value(lines, "FILE")
+    if source_file is None:
+        return None
 
     return ItemSource(
         position=position,
@@ -317,6 +689,51 @@ def _optional_value(lines: list[str], key: str) -> str | None:
     return None
 
 
+def _all_values(lines: list[str], key: str) -> list[str]:
+    values: list[str] = []
+    prefix = f"{key} "
+    for line in lines:
+        stripped = line.strip()
+        if stripped == key:
+            values.append("")
+        elif stripped.startswith(prefix):
+            values.append(_parse_value(stripped[len(prefix) :]))
+    return values
+
+
+def _sample_edit_payload(lines: list[str]) -> list[str]:
+    payload: list[str] = []
+    collecting = False
+    sample_depth = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("SAMPLEEDITS "):
+            collecting = True
+            sample_depth = 0
+            payload.append(line)
+            continue
+
+        if not collecting:
+            continue
+
+        if stripped.startswith("<SPLS"):
+            sample_depth += 1
+            payload.append(line)
+            continue
+
+        if stripped == ">" and sample_depth > 0:
+            sample_depth -= 1
+            payload.append(line)
+            if sample_depth == 0:
+                collecting = False
+            continue
+
+        payload.append(line)
+
+    return payload
+
+
 def _parse_value(raw: str) -> str:
     raw = raw.strip()
     if not raw:
@@ -325,3 +742,7 @@ def _parse_value(raw: str) -> str:
         parts = shlex.split(raw)
         return parts[0] if parts else ""
     return raw
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
