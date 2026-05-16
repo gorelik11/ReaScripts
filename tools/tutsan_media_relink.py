@@ -192,16 +192,19 @@ def build_audit(
             item for item in source_items if item.overlaps(region.start, region.end)
         ]
 
-        if not is_relative:
+        if not tutsan_items:
+            if is_relative:
+                non_tutsan_relative_sources.append(source_file)
             continue
 
-        if not tutsan_items:
-            non_tutsan_relative_sources.append(source_file)
+        if not is_relative and not _is_audio_shadow_source(
+            source_file, project_root, audio_dir
+        ):
             continue
 
         basename = Path(source_file).name
-        root_path = project_root / source_file
-        if not _is_relative_path_inside_root(project_root, root_path):
+        root_path = project_root / (source_file if is_relative else basename)
+        if is_relative and not _is_relative_path_inside_root(project_root, root_path):
             stop_reasons.append(f"relative source escapes project root: {source_file}")
         renamed_basename = target_name(basename)
         audio_original_path = audio_dir / basename
@@ -221,16 +224,17 @@ def build_audit(
         )
         candidates.append(candidate)
 
-        if not metadata.exists:
+        already_renamed = not metadata.exists and root_renamed_path.exists()
+        if not metadata.exists and not already_renamed:
             stop_reasons.append(f"missing source: {source_file}")
-        if len(tutsan_items) != len(source_items):
+        if is_relative and len(tutsan_items) != len(source_items):
             stop_reasons.append(
                 f"source used inside and outside Tutsan: {source_file} "
                 f"({len(tutsan_items)}/{len(source_items)} items in Tutsan)"
             )
-        if root_renamed_path.exists():
+        if root_renamed_path.exists() and not already_renamed:
             stop_reasons.append(f"target exists in project root: {renamed_basename}")
-        if audio_target_path.exists():
+        if audio_target_path.exists() and not already_renamed:
             stop_reasons.append(f"target exists in audio dir: {renamed_basename}")
 
         basename_sources = relative_sources_by_basename.get(basename, [])
@@ -351,12 +355,56 @@ def sample_edit_items_by_guid(
     return items
 
 
+def apply_rename(audit: Audit) -> dict[str, object]:
+    if audit.stop_reasons:
+        raise RuntimeError("stop reasons present; refusing rename")
+
+    renamed: list[tuple[str, str]] = []
+    skipped_existing: list[str] = []
+    for candidate in audit.candidates:
+        if not candidate.root_path.exists() and candidate.root_renamed_path.exists():
+            skipped_existing.append(str(candidate.root_renamed_path))
+            continue
+        if candidate.root_renamed_path.exists():
+            raise RuntimeError(f"rename target exists: {candidate.root_renamed_path}")
+        if not candidate.root_path.exists():
+            raise RuntimeError(f"rename source missing: {candidate.root_path}")
+
+        candidate.root_path.rename(candidate.root_renamed_path)
+        renamed.append((str(candidate.root_path), str(candidate.root_renamed_path)))
+
+    return {"renamed": renamed, "skipped_existing": skipped_existing}
+
+
+def verify_copied_targets(audit: Audit) -> list[str]:
+    missing: list[str] = []
+    for candidate in audit.candidates:
+        if not candidate.audio_target_path.exists():
+            missing.append(f"missing copied target: {candidate.renamed_basename}")
+    return missing
+
+
 def _is_relative_path_inside_root(project_root: Path, path: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(project_root.resolve(strict=False))
     except ValueError:
         return False
     return True
+
+
+def _is_audio_shadow_source(
+    source_file: str,
+    project_root: Path,
+    audio_dir: Path,
+) -> bool:
+    source_path = Path(source_file)
+    try:
+        source_path.resolve(strict=False).relative_to(audio_dir.resolve(strict=False))
+    except ValueError:
+        return False
+    return (project_root / source_path.name).exists() or (
+        project_root / target_name(source_path.name)
+    ).exists()
 
 
 def render_markdown_report(audit: Audit) -> str:
@@ -543,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--region-name", default="Tutsan")
     parser.add_argument("--out-dir", default=Path(".codex_tmp"), type=Path)
     parser.add_argument("--sample-edit-reference", type=Path)
+    parser.add_argument("--apply-rename", action="store_true")
+    parser.add_argument("--verify-copy", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -554,7 +604,24 @@ def main(argv: list[str] | None = None) -> int:
         region_name=args.region_name,
         sample_edit_reference=args.sample_edit_reference,
     )
+
+    action_result: dict[str, object] | None = None
+    copy_errors: list[str] = []
+
+    if args.apply_rename:
+        action_result = apply_rename(audit)
+    if args.verify_copy:
+        copy_errors = verify_copied_targets(audit)
+        audit.stop_reasons[:] = [
+            reason
+            for reason in audit.stop_reasons
+            if reason.startswith("sample edit ")
+        ]
+        audit.stop_reasons.extend(copy_errors)
+
     write_reports(audit, args.out_dir)
+    if action_result is not None:
+        write_json(args.out_dir / "tutsan-rename-result.json", action_result)
     return 2 if audit.stop_reasons else 0
 
 

@@ -1,12 +1,14 @@
 from pathlib import Path
 
 from tools.tutsan_media_relink import (
+    apply_rename,
     build_audit,
     compare_sample_edits,
     find_region,
     parse_items,
     render_markdown_report,
     render_relink_map,
+    verify_copied_targets,
 )
 
 
@@ -127,6 +129,46 @@ def test_build_audit_reports_tutsan_relative_candidate_and_duplicate(tmp_path):
     assert duplicate.audio_exists is True
     assert duplicate.root_size == len(b"new-tutsan")
     assert duplicate.audio_size == len(b"old-other-song")
+    assert audit.stop_reasons == []
+
+
+def test_build_audit_reports_tutsan_audio_shadow_candidate(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    shadow_rpp = SYNTHETIC_RPP.replace(
+        'FILE "Aniel Vocal 2-11.wav"',
+        f'FILE "{audio_dir}/Aniel Vocal 2-11.wav"',
+    )
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(shadow_rpp)
+    write_file(project_root / "Aniel Vocal 2-11.wav", b"new-tutsan")
+    write_file(audio_dir / "Aniel Vocal 2-11.wav", b"old-other-song")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    assert [c.basename for c in audit.candidates] == ["Aniel Vocal 2-11.wav"]
+    assert audit.candidates[0].source_file == str(audio_dir / "Aniel Vocal 2-11.wav")
+    assert audit.candidates[0].root_path == project_root / "Aniel Vocal 2-11.wav"
+    assert audit.stop_reasons == []
+
+
+def test_build_audit_keeps_audio_shadow_candidate_after_root_rename(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    shadow_rpp = SYNTHETIC_RPP.replace(
+        'FILE "Aniel Vocal 2-11.wav"',
+        f'FILE "{audio_dir}/Aniel Vocal 2-11.wav"',
+    )
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(shadow_rpp)
+    write_file(project_root / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan")
+    write_file(audio_dir / "Aniel Vocal 2-11.wav", b"old-other-song")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    assert [c.basename for c in audit.candidates] == ["Aniel Vocal 2-11.wav"]
     assert audit.stop_reasons == []
 
 
@@ -381,3 +423,100 @@ def test_build_audit_stops_when_reference_sample_edit_payload_changed(tmp_path):
     )
 
     assert "sample edit payloads changed: 1" in audit.stop_reasons
+
+
+def test_apply_rename_renames_only_when_no_stop_reasons(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+    old_path = write_file(project_root / "Aniel Vocal 2-11.wav", b"new-tutsan")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+    result = apply_rename(audit)
+
+    new_path = project_root / "Aniel Vocal 2-11 - R7 Tutsan.wav"
+    assert result == {
+        "renamed": [(str(old_path), str(new_path))],
+        "skipped_existing": [],
+    }
+    assert not old_path.exists()
+    assert new_path.read_bytes() == b"new-tutsan"
+
+
+def test_apply_rename_refuses_when_stop_reasons_exist(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    try:
+        apply_rename(audit)
+    except RuntimeError as exc:
+        assert "stop reasons present" in str(exc)
+    else:
+        raise AssertionError("apply_rename should refuse unsafe audit")
+
+
+def test_apply_rename_skips_already_renamed_candidates(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+    new_path = write_file(
+        project_root / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan"
+    )
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+    result = apply_rename(audit)
+
+    assert result == {"renamed": [], "skipped_existing": [str(new_path)]}
+
+
+def test_verify_copied_targets_passes_when_audio_targets_exist(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+    write_file(project_root / "Aniel Vocal 2-11.wav", b"new-tutsan")
+    write_file(audio_dir / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    assert verify_copied_targets(audit) == []
+
+
+def test_verify_copied_targets_reports_missing_audio_target(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+    write_file(project_root / "Aniel Vocal 2-11.wav", b"new-tutsan")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    assert verify_copied_targets(audit) == [
+        "missing copied target: Aniel Vocal 2-11 - R7 Tutsan.wav"
+    ]
+
+
+def test_verify_copied_targets_still_works_after_root_rename(tmp_path):
+    project_root = tmp_path / "11"
+    audio_dir = tmp_path / "1" / "Audio"
+    rpp_path = project_root / "Project.RPP"
+    rpp_path.parent.mkdir(parents=True)
+    rpp_path.write_text(SYNTHETIC_RPP)
+    write_file(project_root / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan")
+    write_file(audio_dir / "Aniel Vocal 2-11 - R7 Tutsan.wav", b"new-tutsan")
+
+    audit = build_audit(rpp_path, project_root, audio_dir, 7, "Tutsan")
+
+    assert audit.stop_reasons == []
+    assert verify_copied_targets(audit) == []
