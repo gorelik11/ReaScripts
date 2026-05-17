@@ -1,5 +1,26 @@
 # ReaScripts Project — Claude Code Context
 
+<EXTREMELY_IMPORTANT>
+BEFORE responding to the user's first message in this session, you MUST
+execute these Read tool calls in order:
+
+1. Read /Users/macbook/Knowledge/brain.md
+2. Read /Users/macbook/Knowledge/reascripts/index.md
+
+This is not optional and not "load if relevant". Execute these two
+Read calls FIRST, then answer the user.
+
+In your response, briefly confirm (one sentence) that you read both
+files — name one specific fact from each that proves you read it.
+Then proceed with the user's actual request.
+
+After this initial load, follow the lazy-load protocol in
+/Users/macbook/Knowledge/CLAUDE.md: when a trigger keyword from
+reascripts/index.md appears in conversation, Read the
+corresponding topic file.
+</EXTREMELY_IMPORTANT>
+
+
 ## Overview
 This repo contains REAPER DAW scripts (Lua, Python, JSFX) for audio production.
 GitHub: https://github.com/gorelik11/ReaScripts
@@ -229,6 +250,16 @@ Find Bus → reset depths → categorize tracks → create bus/folder tracks →
 - Full strategic context: `~/.claude/projects/-Users-dimagorelik/memory/strategic-profile.md`
 - After completing significant tasks, invoke strategic-advisor (sonnet) to check cross-project synergies
 - Use opus only when user explicitly requests deep analysis
+
+## Project Skills
+- JSFX skills are installed locally in `.claude/skills/`:
+  - `reaper-jsfx-core`
+  - `reaper-jsfx-audio`
+  - `reaper-jsfx-ui`
+  - `reaper-jsfx-midi`
+- Source: `https://github.com/mthines/jsfx-agent-skills`
+- Refresh command:
+  `python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py --method git --repo mthines/jsfx-agent-skills --path skills/reaper-jsfx-core skills/reaper-jsfx-audio skills/reaper-jsfx-ui skills/reaper-jsfx-midi`
 
 ### Session Start: Agent Auto-Load (v2.1.42 workaround)
 At the beginning of each session, check `.claude/agents/` for available agent files.
