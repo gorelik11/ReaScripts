@@ -1,3 +1,24 @@
+<EXTREMELY_IMPORTANT>
+
+## EXECUTE FIRST - REQUIRED SESSION LOAD
+
+BEFORE responding to the first user message in this session, you MUST execute
+these two file reads in order:
+
+1. Read `/Users/macbook/Knowledge/brain.md`
+2. Read `/Users/macbook/Knowledge/reascripts/index.md`
+
+This is not optional and not "load if relevant". Read both files FIRST, then
+answer. In your response, briefly confirm in one sentence that you read both,
+naming one specific fact from each file that proves you read it.
+
+After this initial load, follow the lazy-load protocol in
+`/Users/macbook/Knowledge/CLAUDE.md`: when a trigger keyword from
+`reascripts/index.md` appears in conversation, read the corresponding
+topic file.
+
+</EXTREMELY_IMPORTANT>
+
 # ReaScripts
 
 This project contains REAPER automation work: Lua and Python ReaScripts,
