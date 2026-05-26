@@ -26,7 +26,7 @@ move whole from one item to the other and vice versa.
 
 ## Filename
 
-`Swap MIDI Notes In Time Selection V1.0.lua`
+`Swap MIDI Events In Time Selection V1.0.lua`
 
 ## Core Idea — One Coordinate System via Project Time
 
@@ -59,9 +59,12 @@ winEnd   = min(tsEnd,   itemA_end,   itemB_end)
 
 Membership and snapshotting use `[winStart, winEnd)` — the intersection of the
 time selection with both item bodies. Because the window is inside both items, a
-moved event's start always maps to an in-bounds PPQ in the destination take; no
-negative/extrapolated positions. If `winStart >= winEnd` (items do not both
-overlap the time selection) the script aborts early with a notice.
+moved event's **start** always maps to an in-bounds PPQ in the destination take;
+no negative/extrapolated positions. To be precise: the event *start* is clamped
+to both item bodies, but a note *end* may still extend past the destination
+item's right edge (membership is by start) — that tail is tolerated, not
+clamped. If `winStart >= winEnd` (items do not both overlap the time selection)
+the script aborts early with a notice.
 
 ## Algorithm (no splits)
 
@@ -82,10 +85,19 @@ overlap the time selection) the script aborts early with a notice.
    - **Notes** (`MIDI_GetNote`): startppq, endppq, chan, pitch, vel, muted,
      selected. Store start **and** end as project time so duration survives the
      move to a take with a different PPQ origin.
-   - **CC** (`MIDI_CountEvts` + `MIDI_GetCC`): ppqpos→projtime, chanmsg, chan,
-     msg2, msg3, muted, selected, plus curve shape via `MIDI_GetCCShape`.
+   - **CC / channel-pressure / pitch bend / program change**
+     (`MIDI_CountEvts` + `MIDI_GetCC`): ppqpos→projtime, chanmsg, chan, msg2,
+     msg3, muted, selected. Curve shape via `MIDI_GetCCShape` is stored **only
+     if it returns true** — for non-shapeable messages (pitch bend, program
+     change, etc.) it may return false; store a "no shape" marker and skip
+     `MIDI_SetCCShape` for those on re-insert.
    - **Text/Sysex** (`MIDI_GetTextSysexEvt`): ppqpos→projtime, type, raw bytes,
      selected, muted.
+
+   Each snapshot entry also keeps its **original event index**. Snapshot arrays
+   are built in ascending original-index order so insertion order is stable —
+   this makes the `ccBase + k` CC indexing deterministic even when multiple
+   events share the same ppq / project time.
 4. **Delete in-window events from both takes**, iterating indices in
    **descending** order per event class so deletions do not shift the indices of
    not-yet-processed events.
@@ -94,12 +106,14 @@ overlap the time selection) the script aborts early with a notice.
    the destination take's PPQ. **Insert all events with `noSortIn = true`** so
    indices stay stable until the final sort:
    - `MIDI_InsertNote`,
-   - `MIDI_InsertCC`, then restore the curve with `MIDI_SetCCShape`. Because
-     `MIDI_InsertCC` returns no index, capture the CC count **after the
-     deletions** (`ccBase`, via `MIDI_CountEvts`) and insert CCs in a fixed
-     order; with `noSort` each new CC is appended at the tail, so the k-th
-     inserted CC has index `ccBase + k`. Call `MIDI_SetCCShape(take, ccBase+k,
-     shape, beztension)` **before** `MIDI_Sort` (sorting renumbers indices).
+   - `MIDI_InsertCC`, then restore the curve with `MIDI_SetCCShape` **only for
+     entries that captured a shape** (skip pitch bend / program change / other
+     non-shapeable messages). Because `MIDI_InsertCC` returns no index, capture
+     the CC count **after the deletions** (`ccBase`, via `MIDI_CountEvts`) and
+     insert CCs in **ascending original-index order**; with `noSort` each new CC
+     is appended at the tail, so the k-th inserted CC has index `ccBase + k`.
+     Call `MIDI_SetCCShape(take, ccBase+k, shape, beztension)` **before**
+     `MIDI_Sort` (sorting renumbers indices).
    - `MIDI_InsertTextSysexEvt` (raw bytes preserved verbatim, including
      binary-ish payloads).
 6. **Sort** both takes once with `MIDI_Sort(take)` after all inserts and CC
