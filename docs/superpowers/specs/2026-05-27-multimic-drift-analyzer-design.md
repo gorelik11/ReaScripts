@@ -90,21 +90,27 @@ Two layers, so the algorithm is testable independent of REAPER:
     mics; below/above this, mic responses diverge most).
   - `max_delay` = ±200 ms initial search range, **adaptively widened** if the
     correlation peak lands at the search-range edge.
-  - mono downmix of both signals for correlation.
+  - **stereo handled natively** (files are stereo). Delay is estimated **per
+    channel** (L↔L, R↔R) and combined by confidence — *not* via an L+R mono
+    downmix, which can comb-filter/cancel and corrupt the correlation. >2
+    channels: estimate per channel, combine the same way.
   - common analysis SR: if the two devices used different nominal sample rates
     (e.g. 44.1 vs 48 kHz), resample both to a common SR *before* measuring, so
     the reported drift is the residual clock drift, not the nominal-SR gap.
 
 ## Algorithm
 
-1. Load both signals as mono at the common analysis SR; restrict to the
+1. Read both signals (all channels) at the common analysis SR; restrict to the
    overlapping span.
 2. For each window `t_i`:
    - compute **GCC-PHAT** (generalized cross-correlation with phase transform)
-     between reference and target windows;
-   - the correlation peak gives delay `d_i`; refine to **sub-sample** via
-     parabolic interpolation around the peak;
-   - record peak sharpness / prominence as a **confidence** `c_i`.
+     **per channel** (reference-L↔target-L, reference-R↔target-R, …);
+   - each correlation peak gives a delay; refine to **sub-sample** via parabolic
+     interpolation around the peak, and record peak sharpness / prominence as a
+     per-channel **confidence**;
+   - combine the per-channel estimates into one `d_i` (confidence-weighted),
+     since the clock drift is identical across channels; keep the combined
+     confidence `c_i`.
 3. Assemble the curve `(t_i, d_i, c_i)`.
 4. Post-process:
    - drop low-confidence windows (silence / low SNR / transient-dominated);
@@ -134,7 +140,8 @@ runs do not clobber each other.
 
 - **Different nominal SR** → resample to a common SR before measuring.
 - **Silence / low SNR window** → confidence threshold; window dropped, not forced.
-- **Multi-channel sources** → downmix to mono.
+- **Stereo / multi-channel** → handled natively (per-channel delay, combined by
+  confidence); never collapsed to mono for measurement.
 - **Different lengths / partial overlap** → analyze only the common span; warn.
 - **Peak at search-range edge** → widen `max_delay` adaptively and re-search.
 - **Not exactly 2 selected tracks**, or a track with no audio item → clear
@@ -201,7 +208,8 @@ compared by ear:
   perspectives (different Zoom positions) this wobble is often inaudible, which
   is why both modes are worth having.
 
-Both consume Phase 1's per-window delay CSV. Output: a single corrected WAV
-aligned to the reference, imported as a new take/track (original untouched),
-consistent with the `Align Track to Reference` output convention. Spec'd
-separately once the drift character is known.
+Both consume Phase 1's per-window delay CSV. Correction is applied **identically
+to all channels** (one clock relationship), so the output is a single corrected
+**stereo** WAV aligned to the reference, imported as a new take/track (original
+untouched), consistent with the `Align Track to Reference` output convention.
+Spec'd separately once the drift character is known.
