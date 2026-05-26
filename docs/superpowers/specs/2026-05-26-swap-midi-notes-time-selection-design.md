@@ -98,26 +98,33 @@ the script aborts early with a notice.
    are built in ascending original-index order so insertion order is stable —
    this makes the `ccBase + k` CC indexing deterministic even when multiple
    events share the same ppq / project time.
-4. **Delete in-window events from both takes**, iterating indices in
+4. **Suspend sorting on both takes.** Call `MIDI_DisableSort(take)` on each take
+   before any delete/insert. This is the key that makes index bookkeeping
+   deterministic: while sorting is suspended, deletions and insertions do **not**
+   reorder the event lists, so inserted events append predictably at the tail.
+   (Only `MIDI_InsertNote` has a `noSortIn` parameter; `MIDI_InsertCC` and
+   `MIDI_InsertTextSysexEvt` do **not** — `MIDI_DisableSort` is what defers
+   their sorting.)
+5. **Delete in-window events from both takes**, iterating indices in
    **descending** order per event class so deletions do not shift the indices of
-   not-yet-processed events.
-5. **Re-insert cross-wise.** Insert take A's snapshot into take B and take B's
+   not-yet-processed events. Leave the snapshot arrays in their original
+   ascending order (collect the indices to delete separately).
+6. **Re-insert cross-wise.** Insert take A's snapshot into take B and take B's
    snapshot into take A. For each event convert its stored project time(s) to
-   the destination take's PPQ. **Insert all events with `noSortIn = true`** so
-   indices stay stable until the final sort:
-   - `MIDI_InsertNote`,
+   the destination take's PPQ:
+   - `MIDI_InsertNote` (pass `noSortIn = true`).
    - `MIDI_InsertCC`, then restore the curve with `MIDI_SetCCShape` **only for
      entries that captured a shape** (skip pitch bend / program change / other
-     non-shapeable messages). Because `MIDI_InsertCC` returns no index, capture
-     the CC count **after the deletions** (`ccBase`, via `MIDI_CountEvts`) and
-     insert CCs in **ascending original-index order**; with `noSort` each new CC
-     is appended at the tail, so the k-th inserted CC has index `ccBase + k`.
-     Call `MIDI_SetCCShape(take, ccBase+k, shape, beztension)` **before**
-     `MIDI_Sort` (sorting renumbers indices).
+     non-shapeable messages). Capture the destination CC count **after the
+     deletions and before inserting any CC** (`ccBase`, via `MIDI_CountEvts`) and
+     insert CCs in **ascending original-index order**. Because sorting is
+     suspended (step 4), the k-th inserted CC lands at index `ccBase + (k-1)`;
+     call `MIDI_SetCCShape(take, ccBase + (k-1), shape, beztension)` for it.
    - `MIDI_InsertTextSysexEvt` (raw bytes preserved verbatim, including
      binary-ish payloads).
-6. **Sort** both takes once with `MIDI_Sort(take)` after all inserts and CC
-   shape restores are done.
+7. **Re-enable sorting and sort** both takes with `MIDI_Sort(take)` after all
+   inserts and CC shape restores are done. (`MIDI_Sort` both sorts and clears the
+   `MIDI_DisableSort` state.)
 
 ## Edge Cases
 
