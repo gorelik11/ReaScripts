@@ -34,24 +34,51 @@ MIDI positions are stored in PPQ relative to a take; the time selection is in
 project seconds. The whole script hinges on translating between them:
 
 - **Membership / snapshot:** convert each event's PPQ → project time with
-  `MIDI_GetProjTimeFromPPQPos(take, ppq)`, then test against the time selection.
+  `MIDI_GetProjTimeFromPPQPos(take, ppq)`, then test against the effective window
+  (see below).
 - **Insertion into the other take:** convert project time → that take's PPQ with
   `MIDI_GetPPQPosFromProjTime(take, projtime)`.
 
 Consequence: an event keeps the **same absolute project moment** after the swap;
 it simply lives in the other item. When the two items are aligned (same
 position/length) this is identical to "relative to item start". Tempo is handled
-automatically by the conversion functions.
+automatically by the conversion functions (including a tempo-map change inside
+the window).
+
+### Effective Window (bounds safety)
+
+`MIDI_GetPPQPosFromProjTime` extrapolates linearly: a project time outside the
+destination item still yields a PPQ value, which would be negative or far past
+the item. To make the swap well-defined we never operate outside where **both**
+items exist. Define:
+
+```
+winStart = max(tsStart, itemA_start, itemB_start)
+winEnd   = min(tsEnd,   itemA_end,   itemB_end)
+```
+
+Membership and snapshotting use `[winStart, winEnd)` — the intersection of the
+time selection with both item bodies. Because the window is inside both items, a
+moved event's start always maps to an in-bounds PPQ in the destination take; no
+negative/extrapolated positions. If `winStart >= winEnd` (items do not both
+overlap the time selection) the script aborts early with a notice.
 
 ## Algorithm (no splits)
 
-1. **Validate.** Exactly 2 MIDI items selected and a non-empty time selection.
-   Otherwise show a message (`ShowMessageBox` / `MB`) and abort. Resolve each
-   item's active take; both must be MIDI takes.
+1. **Validate (strict).**
+   - Selected **media item** count must be **exactly 2** (`CountSelectedMediaItems`).
+     Any other count (including a stray selected audio item) → message + abort.
+     No "smart" ignoring of audio items — predictability over convenience.
+   - Both items' active takes must exist and be MIDI (`TakeIsMIDI`).
+   - A non-empty time selection must exist.
+   - **Same-source guard:** if both takes resolve to the same `PCM_source`
+     (the items are the same pool / one is a pooled twin of the other),
+     swapping is degenerate and destructive — abort with a clear message.
 2. **Read time selection.** `GetSet_LoopTimeRange(false, false, ...)` →
-   `tsStart`, `tsEnd` (project time).
+   `tsStart`, `tsEnd` (project time). Compute the **effective window**
+   `[winStart, winEnd)` (see *Effective Window* above); abort if empty.
 3. **Snapshot both takes first** (before deleting anything), capturing every
-   in-window event from take A and take B:
+   event whose start falls in `[winStart, winEnd)` from take A and take B:
    - **Notes** (`MIDI_GetNote`): startppq, endppq, chan, pitch, vel, muted,
      selected. Store start **and** end as project time so duration survives the
      move to a take with a different PPQ origin.
@@ -64,11 +91,19 @@ automatically by the conversion functions.
    not-yet-processed events.
 5. **Re-insert cross-wise.** Insert take A's snapshot into take B and take B's
    snapshot into take A. For each event convert its stored project time(s) to
-   the destination take's PPQ:
-   - `MIDI_InsertNote` (with `noSortIn = true`),
-   - `MIDI_InsertCC` (+ `MIDI_SetCCShape` to restore the curve),
-   - `MIDI_InsertTextSysexEvt`.
-6. **Sort** both takes once with `MIDI_Sort(take)`.
+   the destination take's PPQ. **Insert all events with `noSortIn = true`** so
+   indices stay stable until the final sort:
+   - `MIDI_InsertNote`,
+   - `MIDI_InsertCC`, then restore the curve with `MIDI_SetCCShape`. Because
+     `MIDI_InsertCC` returns no index, capture the CC count **after the
+     deletions** (`ccBase`, via `MIDI_CountEvts`) and insert CCs in a fixed
+     order; with `noSort` each new CC is appended at the tail, so the k-th
+     inserted CC has index `ccBase + k`. Call `MIDI_SetCCShape(take, ccBase+k,
+     shape, beztension)` **before** `MIDI_Sort` (sorting renumbers indices).
+   - `MIDI_InsertTextSysexEvt` (raw bytes preserved verbatim, including
+     binary-ish payloads).
+6. **Sort** both takes once with `MIDI_Sort(take)` after all inserts and CC
+   shape restores are done.
 
 ## Edge Cases
 
@@ -82,12 +117,35 @@ automatically by the conversion functions.
 - **Identical/zero overlap:** if neither take has any in-window event, abort
   early *before* opening the undo block — no edit, no undo point, no message
   needed (or a brief "nothing to swap" notice).
+- **Items do not both overlap the time selection:** `winStart >= winEnd` →
+  abort with a notice (handled by the effective-window check, not a crash).
+
+## Pooled / Shared MIDI Sources
+
+Pooled MIDI items share one `PCM_source`; a destructive edit to one changes
+every pooled copy. For V1.0:
+
+- **Same-source guard (enforced):** if the two selected items resolve to the
+  same source, abort (see validation). Swapping an item against its own pool
+  twin is meaningless and would corrupt both views.
+- **Other pooled copies elsewhere (documented limitation):** if one of the two
+  items has *additional* pooled copies elsewhere in the project, those copies
+  change too — this is REAPER's normal pooling behavior. V1.0 does **not**
+  detect or unpool; it edits in place. This caveat is noted in the script
+  header. Auto-unpool/clone-before-edit is explicitly out of scope for V1.0.
 
 ## Wrapping & UX
 
 - Single undo block: `Undo_BeginBlock()` / `Undo_EndBlock(desc, -1)`.
-- `PreventUIRefresh(1)` around the edits, `UpdateArrange()` / `UpdateItemInProject`
-  afterward so the editor/arrange view reflects the change.
+- **Protected execution.** The edit body (snapshot → delete → insert → sort)
+  runs inside `pcall`/`xpcall`. A `cleanup()` that always runs restores
+  `PreventUIRefresh(-1)` and closes the undo block, regardless of success or a
+  Lua runtime error — so a mid-edit error can never leave the UI frozen or an
+  undo block dangling. On caught error: surface the message, end the undo block
+  (REAPER coalesces the partial change as one undoable step the user can revert).
+- `PreventUIRefresh(1)` around the edits; `MIDI_Sort` per take, then
+  `UpdateArrange()` / `UpdateItemInProject` afterward so arrange + open MIDI
+  editor reflect the change.
 - No dialogs, no hardcoded params: operates on the current selection and time
   selection only.
 
@@ -97,10 +155,25 @@ automatically by the conversion functions.
    window untouched in both items.
 2. **Items on different tracks / positions** → swapped events sound at the same
    absolute project time as before.
-3. **Note on boundary** (start inside, end outside) → moves whole, no split.
-4. **Item with CC + sustain + pitch bend** → those events and CC curve shapes
-   move across correctly.
-5. **No time selection / not exactly 2 MIDI items** → clean message, no edits.
+3. **Destination item starts before / after source item** (different positions
+   and lengths) → effective window clamps correctly; no negative/out-of-bounds
+   PPQ; only the overlap region swaps.
+4. **Tempo-map change inside the selection** → durations and positions survive
+   (project-time mapping handles it); no drift.
+5. **Note on boundary** (start inside, end outside) → moves whole, no split;
+   tail past destination right edge tolerated.
+6. **CC shape test** — bezier + linear + square shapes in the window → shapes
+   restored on the destination (guards the `ccBase + k` indexing off-by-one).
+7. **Text/Sysex with binary-ish payload** → bytes preserved verbatim.
+8. **Pooled MIDI item** — (a) two items sharing one source → aborts via
+   same-source guard; (b) an item with a pooled copy elsewhere → in-place edit,
+   copy changes too (documented behavior).
+9. **Selected audio item present** (3 items, one audio) → strict validation
+   aborts with a message; no edits.
+10. **No time selection / not exactly 2 MIDI items / no overlap** → clean
+    message, no edits, no dangling undo block.
+11. **Forced runtime error mid-edit** (manual injection during dev) → `cleanup`
+    restores `PreventUIRefresh` and closes the undo block.
 
 ## Out of Scope (YAGNI)
 
