@@ -10,7 +10,10 @@
 -- (REAPER's normal pooling behavior). Two items sharing one source are rejected.
 
 -- ===== pure helpers (no REAPER deps; unit-tested via lua CLI) =====
--- (added in Tasks 2-4)
+
+function in_window(projTime, winStart, winEnd)
+  return projTime >= winStart and projTime < winEnd
+end
 
 -- ===== REAPER-bound (added in Task 6) =====
 
