@@ -74,6 +74,12 @@ Same as existing alignment scripts:
 - Non-target regions remain untouched.
 - Gap handling and short crossfade are applied after movement.
 - Single undo point for full operation.
+- Multiple selected items are processed independently, item-by-item.
+- Trimmed items are supported: analysis and move timing must account for take
+  source offset (`D_STARTOFFS`) so detection stays sample-accurate to audible
+  item content.
+- Split/move operations are constrained to each item's own bounds; no edit may
+  leak into neighboring items.
 
 ## Algorithm
 
@@ -125,12 +131,16 @@ Same as existing alignment scripts:
   - straight 1/16 groove without triplets,
   - groove with intentional triplet attacks with toggle off/on,
   - sparse percussion (few transients),
-  - dense material (close attacks).
+  - dense material (close attacks),
+  - multiple selected items with different start positions,
+  - trimmed item (non-zero `D_STARTOFFS`) vs full-source item parity.
 - Validate:
   - only above-threshold events are moved,
   - unchanged regions remain bit-identical in position,
   - no unfilled gaps/click-prone boundaries,
-  - behavior differs predictably across `Mode` extremes.
+  - behavior differs predictably across `Mode` extremes,
+  - trimmed items align by audible content (not raw source position),
+  - no cross-item boundary corruption in multi-item processing.
 
 ## Implementation Notes
 
