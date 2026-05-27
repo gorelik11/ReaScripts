@@ -1,7 +1,7 @@
 # Grid Align Transients — Design
 
 **Date:** 2026-05-27
-**Status:** Drafted for user review
+**Status:** Revised for user review
 **Language:** Python ReaScript
 **Base:** `Align Track to Reference V2.0.py` onset/split pipeline
 
@@ -27,6 +27,7 @@ Goal: preserve groove while correcting only obvious timing misses.
   - triplets are **not default**; controlled by a dedicated toggle.
 - Triplets UX: separate button/toggle `Include triplets` (`Off` by default).
 - Correction policy: only transients with deviation above threshold are edited.
+- Editing mode: **in-place** (optimized for time-selection workflow).
 
 ## Approaches Considered
 
@@ -54,9 +55,10 @@ Goal: preserve groove while correcting only obvious timing misses.
 - `Mode (0..100)` — same philosophy as `Align`:
   - low = more musical/conservative,
   - high = more precise/aggressive.
-- `Grid mode`:
-  - `Current grid only`,
-  - `Current grid + 1/16 fallback`.
+  - In this script, `Mode` controls onset sensitivity and grouping window only.
+- `Grid candidates`:
+  - `Current grid`,
+  - `Allow 1/16 candidates` (`Off/On`).
 - `Include triplets` (`Off/On`) — if on, triplet candidates join the grid set.
 - `Max move (ms)` — safety cap for any single correction.
 
@@ -72,7 +74,7 @@ Same as existing alignment scripts:
 
 - Script performs local split+move on detected out-of-grid attacks.
 - Non-target regions remain untouched.
-- Gap handling and short crossfade are applied after movement.
+- Gap handling and short crossfade are applied with **in-item-only** operations.
 - Single undo point for full operation.
 - Multiple selected items are processed independently, item-by-item.
 - Trimmed items are supported: analysis and move timing must account for take
@@ -84,12 +86,19 @@ Same as existing alignment scripts:
 ## Algorithm
 
 1. Detect transients in processing scope
-- Use current onset detector settings interpolated by `Mode`.
+- Use the inherited energy-difference peak-picker from `Align V2` (not REAPER
+  transient API, not madmom), with sensitivity interpolated by `Mode`.
 
 2. Build candidate grid positions
-- Base set: current project grid points (and optional 1/16 fallback set).
-- If `Include triplets=On`, add triplet subdivision points.
-- For each transient, find nearest candidate from the combined set.
+- Build candidates manually in QN space (tempo-map aware), then map QN -> time:
+  `TimeMap2_timeToQN` / `TimeMap2_QNToTime`.
+- Do not use `BR_GetClosestGridDivision` as primary matcher, because its result
+  follows project grid mode and cannot honor script-local toggles reliably.
+- Base family: straight candidates from current grid division.
+- If `Allow 1/16 candidates=On`, union straight 1/16 candidates.
+- If `Include triplets=On`, add triplet family candidates.
+- For each candidate group (see step 4), evaluate straight vs triplet family and
+  pick one family for the whole group by lower aggregate absolute timing error.
 
 3. Decide correction
 - `delta_ms = transient_time - nearest_grid_time`.
@@ -103,12 +112,13 @@ Same as existing alignment scripts:
 
 5. Split and move
 - Create split boundaries around each chosen group.
-- Move selected segment by `-delta` (clamped by `Max move`).
+- If `abs(delta) > Max move`: skip that correction (no partial clamp move).
+- Else move selected segment by `-delta`.
 - Apply right-to-left processing order for stability.
 
 6. Cleanup
 - Fill micro-gaps created by shifts.
-- Apply small overlap/crossfade (same principle as `Align V2`).
+- Apply small overlap/crossfade without modifying neighboring items.
 - Restore selection state where possible.
 
 ## Error Handling
@@ -116,7 +126,10 @@ Same as existing alignment scripts:
 - No valid target items in scope -> clear user message and abort.
 - No detected transients -> message and abort safely.
 - No candidates exceed threshold -> message: nothing to quantize.
+- Candidate family conflict in group -> deterministic tie-break to straight.
 - Invalid dialog input -> reject and show corrective prompt.
+- Item has unsupported `D_PLAYRATE` / reverse / section edge case in V1 ->
+  warn and skip item safely.
 
 ## Non-Goals (V1)
 
@@ -124,6 +137,7 @@ Same as existing alignment scripts:
 - Full-note duration quantization (only attack alignment).
 - Swing/humanize generation.
 - Automatic musical key/rhythm inference.
+- New-track clone workflow (V1 is in-place by decision).
 
 ## Test Strategy
 
@@ -134,6 +148,7 @@ Same as existing alignment scripts:
   - dense material (close attacks),
   - multiple selected items with different start positions,
   - trimmed item (non-zero `D_STARTOFFS`) vs full-source item parity.
+  - items with `D_PLAYRATE != 1.0` and reversed takes (warn/skip behavior).
 - Validate:
   - only above-threshold events are moved,
   - unchanged regions remain bit-identical in position,
@@ -141,16 +156,13 @@ Same as existing alignment scripts:
   - behavior differs predictably across `Mode` extremes,
   - trimmed items align by audible content (not raw source position),
   - no cross-item boundary corruption in multi-item processing.
+  - max-move overflow events are skipped (never partially moved).
+  - group-level family decision preserves intended groove in triplet-toggle mode.
 
 ## Implementation Notes
 
 - Start from `Align Track to Reference V2.0.py` and remove dual-track matching.
 - Replace reference-onset matcher with grid-candidate matcher.
+- Implement grid candidate generation in QN space against project tempo map.
 - Keep reverse-order item processing and one-undo transaction.
 - Keep UI minimal and REAPER-native (`GetUserInputs` + optional extstate memory).
-
-## Open Point Reserved For Plan Stage
-
-- Exact API choice for obtaining project grid candidates across variable tempo/time
-  signature maps (native REAPER calls vs. derived timeline stepping) will be
-  finalized in implementation planning.
