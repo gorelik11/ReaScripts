@@ -37,6 +37,13 @@ local function cc_count(take)
   return cc
 end
 
+local function first_cc_shape(take)
+  local _, _, cc = reaper.MIDI_CountEvts(take)
+  if cc < 1 then return nil end
+  local _, shape = reaper.MIDI_GetCCShape(take, 0)
+  return shape
+end
+
 reaper.Undo_BeginBlock()
 
 -- fresh tracks at the end of the project
@@ -53,6 +60,7 @@ local takeB = reaper.GetActiveTake(itemB)
 
 add_note(takeA, 60, 1.0, 2.0)
 add_cc(takeA, 1, 100, 1.0)
+reaper.MIDI_SetCCShape(takeA, 0, 5, 0) -- bezier shape, to verify shape survives the swap
 add_note(takeB, 67, 1.0, 2.0)
 reaper.MIDI_Sort(takeA)
 reaper.MIDI_Sort(takeB)
@@ -72,6 +80,8 @@ log((pa == 67) and "PASS itemA note now 67" or ("FAIL itemA note = " .. tostring
 log((pb == 60) and "PASS itemB note now 60" or ("FAIL itemB note = " .. tostring(pb)))
 log((cc_count(takeA) == 0) and "PASS itemA CC moved out" or ("FAIL itemA cc = " .. cc_count(takeA)))
 log((cc_count(takeB) == 1) and "PASS itemB received CC" or ("FAIL itemB cc = " .. cc_count(takeB)))
+local sb = first_cc_shape(takeB)
+log((sb == 5) and "PASS CC bezier shape preserved" or ("FAIL CC shape = " .. tostring(sb)))
 
 reaper.Undo_EndBlock("swap midi integration harness", -1)
 

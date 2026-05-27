@@ -154,10 +154,10 @@ function main()
 
   reaper.Undo_BeginBlock()
   reaper.PreventUIRefresh(1)
-  reaper.MIDI_DisableSort(ctx.takeA)
-  reaper.MIDI_DisableSort(ctx.takeB)
 
   local ok, perr = pcall(function()
+    reaper.MIDI_DisableSort(ctx.takeA)
+    reaper.MIDI_DisableSort(ctx.takeB)
     delete_snapshot(ctx.takeA, snapA)
     delete_snapshot(ctx.takeB, snapB)
     insert_snapshot(ctx.takeB, snapA)
