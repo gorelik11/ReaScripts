@@ -21,6 +21,12 @@ function compute_effective_window(tsStart, tsEnd, aStart, aEnd, bStart, bEnd)
   return winStart, winEnd
 end
 
+function extract_pool_id(chunk)
+  -- Pooled MIDI sources carry a "POOLEDEVTS {GUID}" line; pooled copies share it.
+  if not chunk then return nil end
+  return chunk:match("POOLEDEVTS%s+({[%x%-]+})")
+end
+
 -- ===== REAPER-bound (added in Task 6) =====
 
 -- ===== entry point =====

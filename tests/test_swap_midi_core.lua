@@ -25,5 +25,16 @@ do
   check("no overlap -> we <= ws", we <= ws)
 end
 
+-- extract_pool_id: pull the POOLEDEVTS GUID from an item state chunk
+do
+  local chunk = "<ITEM\n<SOURCE MIDI\nHASDATA 1 960 QN\n"
+             .. "POOLEDEVTS {ABCD1234-1111-2222-3333-444455556666}\n>\n>"
+  check("pool id extracted",
+    extract_pool_id(chunk) == "{ABCD1234-1111-2222-3333-444455556666}")
+  check("nil chunk -> nil", extract_pool_id(nil) == nil)
+  check("no pool line -> nil",
+    extract_pool_id("<ITEM\n<SOURCE MIDI\n>\n>") == nil)
+end
+
 if failures == 0 then print("\nALL PASS"); os.exit(0)
 else print("\n" .. failures .. " FAILURE(S)"); os.exit(1) end
