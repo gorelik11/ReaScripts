@@ -15,6 +15,12 @@ function in_window(projTime, winStart, winEnd)
   return projTime >= winStart and projTime < winEnd
 end
 
+function compute_effective_window(tsStart, tsEnd, aStart, aEnd, bStart, bEnd)
+  local winStart = math.max(tsStart, aStart, bStart)
+  local winEnd   = math.min(tsEnd, aEnd, bEnd)
+  return winStart, winEnd
+end
+
 -- ===== REAPER-bound (added in Task 6) =====
 
 -- ===== entry point =====
