@@ -22,7 +22,7 @@ do
 end
 do
   local ws, we = compute_effective_window(0.0, 1.0, 2.0, 3.0, 0.0, 5.0)
-  check("no overlap -> we <= ws", we <= ws)
+  check("no overlap -> we < ws", we < ws)
 end
 
 -- extract_pool_id: pull the POOLEDEVTS GUID from an item state chunk
@@ -34,6 +34,23 @@ do
   check("nil chunk -> nil", extract_pool_id(nil) == nil)
   check("no pool line -> nil",
     extract_pool_id("<ITEM\n<SOURCE MIDI\n>\n>") == nil)
+end
+
+-- compute_effective_window: zero-width time selection collapses the window
+do
+  local ws, we = compute_effective_window(2.0, 2.0, 0.0, 4.0, 0.0, 4.0)
+  check("zero-width TS -> ws == we", ws == we)
+  check("zero-width window excludes all", in_window(2.0, ws, we) == false)
+end
+
+-- extract_pool_id: extra contract cases
+do
+  check("first POOLEDEVTS wins when two present",
+    extract_pool_id("POOLEDEVTS {1A2B3C4D-0000-0000-0000-000000000001}\n"
+                 .. "POOLEDEVTS {FFFFFFFF-0000-0000-0000-000000000002}\n")
+    == "{1A2B3C4D-0000-0000-0000-000000000001}")
+  check("brace-absent GUID -> nil",
+    extract_pool_id("POOLEDEVTS ABCD1234-1111-2222-3333-444455556666\n") == nil)
 end
 
 if failures == 0 then print("\nALL PASS"); os.exit(0)
