@@ -200,6 +200,20 @@ Then load via **Actions > Show action list > Load ReaScript**.
 
 All scripts are fully undoable.
 
+## Grid Align Transients V1.0
+
+In-place transient quantizer. Detects attacks (auto-detect dual-envelope gate, or
+from existing item splits) and moves only above-threshold events to the nearest
+allowed grid candidate.
+
+Parameters: Grid threshold (ms), Transient source (Auto-detect / Existing splits),
+Correction mode (Snap to grid / Adaptive), Allow 1/16 (Off/On), Include triplets (Off/On).
+
+- Time-selection-first scope; time-selection boundaries are hard edges.
+- Adaptive mode inherits the previous transient's lag when both lag behind grid.
+- Max move is automatic (one grid step); larger corrections are skipped.
+- V1 skips unsupported playrate / reversed / section items.
+
 ## License
 
 MIT
