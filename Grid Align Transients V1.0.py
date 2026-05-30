@@ -180,8 +180,7 @@ def plan_corrections(transients_proj, candidates_qn_families, qn_of_time,
     prev_lag = None
     for t in transients_proj:
         t_qn = qn_of_time(t)
-        fam = candidates_qn_families
-        nearest_qn = min(fam, key=lambda p: abs(p - t_qn))
+        nearest_qn = min(candidates_qn_families, key=lambda p: abs(p - t_qn))
         grid_t = time_of_qn(nearest_qn)
         curr_delta = t - grid_t
         move = compute_move(curr_delta, threshold_s, mode, prev_lag, grid_step_s)
@@ -211,7 +210,8 @@ def run_grid_align(config=None):
 
 
 def _run_in_reaper(config):
-    from reaper_python import RPR_GetUserInputs  # noqa: F401
+    # NOTE: the live path needs the REAPER API (reaper_python / reapy) imported
+    # here at call time; intentionally omitted while this remains an outline.
     # 1. Read dialog (GetUserInputs): grid_threshold_ms, transient_source,
     #    correction_mode, allow_sixteenth, include_triplets.
     # 2. resolve_processing_scope from time selection / selected items / all.

@@ -217,6 +217,35 @@ def test_plan_corrections_chain() -> None:
     )
     assert len(edits) == 2
     assert abs(edits[0]["move"] - (-0.04)) < 1e-9
+    # after edit 1, prev_lag lands at exactly 0.0, so adaptive falls back to snap
+    # (strict prev_lag > 0 guard) and edit 2 is also a pure snap.
+    assert abs(edits[1]["move"] - (-0.04)) < 1e-9
+
+
+def test_plan_corrections_branches() -> None:
+    module = load_module(SCRIPT_PATH)
+    ident = lambda x: x  # identity QN<->time (1 QN == 1 sec) for the test
+    fam = [0.0, 1.0, 2.0, 3.0]
+
+    # adaptive inherit FIRES: a within-tolerance transient sets prev_lag>0,
+    # the next (behind, above threshold) inherits it.
+    #   t=0.010 -> within 0.015 tol -> no edit, prev_lag=0.010
+    #   t=1.040 -> delta +0.040 > tol, prev_lag 0.010>0 -> inherit:
+    #              move = prev_lag - delta = 0.010 - 0.040 = -0.030
+    edits = module.plan_corrections(
+        [0.010, 1.040], fam, ident, ident,
+        threshold_s=0.015, mode="adaptive", grid_step_s=1.0,
+    )
+    assert len(edits) == 1, edits
+    assert abs(edits[0]["move"] - (-0.030)) < 1e-9, edits
+
+    # guard-skip: a move larger than grid_step produces NO edit.
+    #   t=0.5, nearest grid 0.0, delta 0.5 > tol; snap move -0.5; abs>0.1 -> skip
+    skipped = module.plan_corrections(
+        [0.5], fam, ident, ident,
+        threshold_s=0.015, mode="snap", grid_step_s=0.1,
+    )
+    assert skipped == [], skipped
 
 
 TESTS = [
@@ -230,6 +259,7 @@ TESTS = [
     test_correction_decision,
     test_report_schema_headless,
     test_plan_corrections_chain,
+    test_plan_corrections_branches,
 ]
 
 
