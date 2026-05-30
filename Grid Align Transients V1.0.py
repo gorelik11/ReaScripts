@@ -247,8 +247,10 @@ def _run_in_reaper(config):
     # 3. For each item (reverse position order), skip via should_skip_item.
     # 4. compute_analysis_window; obtain transients (detect_transients_envelope
     #    on decimated accessor read, OR transients_from_splits).
-    # 5. build_grid_candidates_qn; group; choose_family_for_group per group.
-    # 6. plan_corrections; apply edits right-to-left within item + time-sel bounds.
+    # 5. build_grid_candidates_qn; group_transients(gap_s); per group
+    #    choose_family_for_group then select_family_positions(name) for its QN list.
+    # 6. plan_corrections (anchor = largest-abs-delta member of each group);
+    #    apply edits right-to-left within item + time-sel bounds.
     # 7. fill micro-gaps + in-item crossfade; restore selection; single undo block.
     raise NotImplementedError("REAPER path implemented during in-DAW smoke test")
 

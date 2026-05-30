@@ -811,6 +811,23 @@ git add docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md READ
 git commit -m "docs: add grid align usage notes and manual QA checklist"
 ```
 
+### Task 11: Transient Grouping and Family-Name Bridge (added after final review)
+
+Final review found no helper produced groups (the spec's "group nearby attacks"
+constraint), and no bridge from `choose_family_for_group`'s name result to the
+QN list `plan_corrections` consumes. Added two pure, tested helpers:
+
+- `group_transients(transients_proj, gap_s)` — splits ascending attacks into
+  segments wherever the inter-onset gap exceeds `gap_s`.
+- `select_family_positions(families_qn, name)` — maps `'straight'`/`'triplet'`
+  to that family's QN candidate list.
+
+Intended orchestration flow (in `_run_in_reaper`): detect → `group_transients`
+→ per group `choose_family_for_group` → `select_family_positions` → plan the
+group's move (anchor = largest-abs-delta member). Tests: `test_group_transients`,
+`test_select_family_positions`. Commit: `feat: add transient grouping and
+family-name positions helpers`.
+
 ## Final Verification
 
 - [ ] Run: `python3 grid_align_test_headless.py`
