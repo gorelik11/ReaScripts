@@ -43,9 +43,38 @@ def test_scope_and_guards() -> None:
     assert module.should_skip_item({"playrate": 1.0, "reversed": 0, "section": 0}) is False
 
 
+def test_analysis_window() -> None:
+    module = load_module(SCRIPT_PATH)
+
+    # item at project 10.0s, length 4.0s, trimmed 2.0s into a longer source
+    w = module.compute_analysis_window(item_pos=10.0, item_len=4.0, start_offs=2.0)
+    assert abs(w["src_start"] - 2.0) < 1e-9
+    assert abs(w["src_end"] - 6.0) < 1e-9
+    assert abs(w["proj_start"] - 10.0) < 1e-9
+    assert abs(w["proj_end"] - 14.0) < 1e-9
+
+    # time selection narrower than item clips both ends to the intersection
+    w2 = module.compute_analysis_window(
+        item_pos=10.0, item_len=4.0, start_offs=2.0, time_sel=(11.0, 13.0)
+    )
+    assert abs(w2["proj_start"] - 11.0) < 1e-9
+    assert abs(w2["proj_end"] - 13.0) < 1e-9
+    assert abs(w2["src_start"] - 3.0) < 1e-9
+    assert abs(w2["src_end"] - 5.0) < 1e-9
+
+    # time selection fully outside the item yields empty window
+    assert module.compute_analysis_window(
+        item_pos=10.0, item_len=4.0, start_offs=2.0, time_sel=(20.0, 21.0)
+    ) is None
+
+    # mapping a source time back to project time
+    assert abs(module.source_to_project_time(3.5, item_pos=10.0, start_offs=2.0) - 11.5) < 1e-9
+
+
 def main() -> int:
     test_entrypoint_presence()
     test_scope_and_guards()
+    test_analysis_window()
     print("PASS: scope + guards")
     return 0
 

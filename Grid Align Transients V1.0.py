@@ -24,6 +24,35 @@ def should_skip_item(meta):
     return False
 
 
+def source_to_project_time(src_t, item_pos, start_offs):
+    """Map a source-domain time to project time (playrate==1, guarded)."""
+    return item_pos + (src_t - start_offs)
+
+
+def compute_analysis_window(item_pos, item_len, start_offs, time_sel=None):
+    """Audible item window in source + project domains, clipped to time_sel.
+
+    Returns dict with src_start/src_end/proj_start/proj_end, or None if the
+    time selection does not overlap the item.
+    """
+    proj_start = item_pos
+    proj_end = item_pos + item_len
+    if time_sel is not None:
+        ts_a, ts_b = time_sel
+        proj_start = max(proj_start, ts_a)
+        proj_end = min(proj_end, ts_b)
+        if proj_end <= proj_start:
+            return None
+    src_start = start_offs + (proj_start - item_pos)
+    src_end = start_offs + (proj_end - item_pos)
+    return {
+        "src_start": src_start,
+        "src_end": src_end,
+        "proj_start": proj_start,
+        "proj_end": proj_end,
+    }
+
+
 def run_grid_align(config=None):
     return {"status": "stub"}
 
