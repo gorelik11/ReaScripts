@@ -178,6 +178,15 @@ def test_correction_decision() -> None:
     # max-move guard: a move larger than one grid step is skipped
     assert module.compute_move(0.200, th, "snap", None, step) is None
 
+    # boundary: a move of exactly one grid step is allowed (guard is strictly >)
+    boundary = module.compute_move(curr_delta=step, threshold=th, mode="snap",
+                                   prev_lag=None, grid_step=step)
+    assert boundary is not None and abs(boundary - (-step)) < 1e-9, boundary
+
+    # adaptive inheritance can also trip the max-move guard:
+    # both behind, but prev_lag so large that move = prev_lag - curr_delta > step
+    assert module.compute_move(0.020, th, "adaptive", 0.200, step) is None
+
 
 TESTS = [
     test_entrypoint_presence,

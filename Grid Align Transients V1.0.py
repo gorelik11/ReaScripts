@@ -144,6 +144,15 @@ def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
 
     curr_delta > 0 means the transient is behind (late) its nearest grid point.
     prev_lag is the finalized lag of the previous transient (sec), or None.
+
+    Returns None in TWO distinct situations (the caller distinguishes them by
+    re-testing ``abs(curr_delta) <= threshold``):
+      1. within tolerance  -> no correction needed (clean);
+      2. max-move guard     -> a correction is needed but the required move
+         exceeds one grid step, so it is skipped to avoid landing on a
+         neighbor's hit.
+    grid_step may be None to disable the guard (used only in tests / callers
+    that have already bounded the move); production always passes a step.
     """
     if abs(curr_delta) <= threshold:
         return None  # within tolerance
