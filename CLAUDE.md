@@ -1,6 +1,11 @@
 # ReaScripts Project — Claude Code Context
 
 <EXTREMELY_IMPORTANT>
+SUBAGENT EXCEPTION: If you were dispatched as a subagent (via the Agent/Task
+tool) to perform a specific task, SKIP this entire block. Do NOT read brain.md,
+index.md, or any Knowledge vault file — your context comes from your task
+prompt. The instructions below apply ONLY to the main interactive session.
+
 BEFORE responding to the user's first message in this session, you MUST
 execute these Read tool calls in order:
 
