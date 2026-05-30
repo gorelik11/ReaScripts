@@ -89,6 +89,21 @@ def test_envelope_detector() -> None:
     # silence produces nothing
     assert module.detect_transients_envelope([0.0] * sr, sr) == []
 
+    # retrig lockout: two close attacks (0.20s, 0.245s = 25ms apart onset-to-onset).
+    # Default 30ms lockout suppresses the second; a short 5ms lockout allows both.
+    # NOTE: bursts are 10ms long; 25ms separation gives a 15ms gap between them.
+    # At 20ms separation the slow envelope is still elevated from the first burst's
+    # decay tail, so the fast/slow ratio never exceeds the sensitivity=2.0 threshold
+    # even after the 5ms lockout expires.  25ms separation clears that decay enough.
+    close = [0.0] * (sr * 1)
+    for onset in (0.20, 0.225):
+        start = int(onset * sr)
+        for k in range(int(0.01 * sr)):  # 10ms bursts
+            if start + k < len(close):
+                close[start + k] = 0.9 * (1.0 - k / (0.01 * sr))
+    assert len(module.detect_transients_envelope(close, sr)) == 1, "default 30ms lockout should suppress the 2nd"
+    assert len(module.detect_transients_envelope(close, sr, retrig_ms=5.0)) == 2, "5ms lockout should allow both"
+
 
 TESTS = [
     test_entrypoint_presence,

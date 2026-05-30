@@ -80,7 +80,7 @@ def detect_transients_envelope(samples, sr,
     retrig = retrig_smpls + 1
     onsets = []
     for i, s in enumerate(samples):
-        x = s if s >= 0 else -s
+        x = abs(s)
         env1 = x + (ga1 if env1 < x else gr1) * (env1 - x)
         env2 = x + (ga2 if env2 < x else gr2) * (env2 - x)
         if retrig > retrig_smpls:
@@ -88,6 +88,8 @@ def detect_transients_envelope(samples, sr,
                 onsets.append(i / sr)
                 retrig = 0
         else:
+            # During lockout, hold the slow envelope equal to the fast one so the
+            # ratio resets to ~1.0 and cannot re-trigger until lockout expires.
             env2 = env1
             retrig += 1
     return onsets
