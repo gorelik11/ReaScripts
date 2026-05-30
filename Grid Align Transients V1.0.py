@@ -139,6 +139,25 @@ def choose_family_for_group(group_times_qn, families_qn):
     return "straight" if s <= t else "triplet"
 
 
+def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
+    """Move amount (sec) for one transient, or None to leave it untouched.
+
+    curr_delta > 0 means the transient is behind (late) its nearest grid point.
+    prev_lag is the finalized lag of the previous transient (sec), or None.
+    """
+    if abs(curr_delta) <= threshold:
+        return None  # within tolerance
+    if (mode == "adaptive" and prev_lag is not None
+            and curr_delta > 0 and prev_lag > 0):
+        target_off = prev_lag           # land at grid + prev_lag
+    else:
+        target_off = 0.0                # snap to grid
+    move = target_off - curr_delta
+    if grid_step is not None and abs(move) > grid_step:
+        return None  # would cross into a neighbor slot — skip
+    return move
+
+
 def run_grid_align(config=None):
     return {"status": "stub"}
 

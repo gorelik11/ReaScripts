@@ -150,6 +150,35 @@ def test_group_family() -> None:
     assert module.choose_family_for_group([100.0], {"straight": [100.0], "triplet": []}) == "straight"
 
 
+def test_correction_decision() -> None:
+    module = load_module(SCRIPT_PATH)
+    th = 0.015          # 15 ms threshold
+    step = 0.125        # one grid step (sec)
+
+    # within threshold -> untouched
+    assert module.compute_move(curr_delta=0.010, threshold=th, mode="snap",
+                               prev_lag=None, grid_step=step) is None
+
+    # snap: move straight to grid (negate delta)
+    assert abs(module.compute_move(0.040, th, "snap", None, step) - (-0.040)) < 1e-9
+
+    # adaptive, first event (no prev) -> snap to grid
+    assert abs(module.compute_move(0.040, th, "adaptive", None, step) - (-0.040)) < 1e-9
+
+    # adaptive, both behind -> inherit prev lag: target = grid + prev_lag
+    # move = prev_lag - curr_delta
+    assert abs(module.compute_move(0.040, th, "adaptive", 0.010, step) - (0.010 - 0.040)) < 1e-9
+
+    # adaptive, current rushes (early) -> snap to grid regardless of prev
+    assert abs(module.compute_move(-0.040, th, "adaptive", 0.010, step) - (0.040)) < 1e-9
+
+    # adaptive, current behind but prev ahead -> snap to grid
+    assert abs(module.compute_move(0.040, th, "adaptive", -0.010, step) - (-0.040)) < 1e-9
+
+    # max-move guard: a move larger than one grid step is skipped
+    assert module.compute_move(0.200, th, "snap", None, step) is None
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -158,6 +187,7 @@ TESTS = [
     test_existing_splits_source,
     test_grid_candidates,
     test_group_family,
+    test_correction_decision,
 ]
 
 
