@@ -100,6 +100,31 @@ def transients_from_splits(edge_times, proj_start, proj_end):
     return sorted(t for t in edge_times if proj_start <= t <= proj_end)
 
 
+def _frange_qn(q0, q1, step):
+    """Inclusive QN positions from q0 to q1 at the given step."""
+    out = []
+    n = 0
+    q = q0
+    while q <= q1 + 1e-9:
+        out.append(q)
+        n += 1
+        q = q0 + n * step
+    return out
+
+
+def build_grid_candidates_qn(cfg):
+    """Straight + optional 1/16 + optional triplet candidate families (QN)."""
+    q0, q1 = cfg["qn_start"], cfg["qn_end"]
+    step_straight = cfg["grid_qn"]
+    if cfg.get("allow_sixteenth"):
+        step_straight = min(step_straight, 0.25)
+    straight = _frange_qn(q0, q1, step_straight)
+    triplet = []
+    if cfg.get("include_triplets"):
+        triplet = _frange_qn(q0, q1, step_straight / 3.0)
+    return {"straight": straight, "triplet": triplet}
+
+
 def run_grid_align(config=None):
     return {"status": "stub"}
 

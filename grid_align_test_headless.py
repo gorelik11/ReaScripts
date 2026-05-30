@@ -115,12 +115,32 @@ def test_existing_splits_source() -> None:
     assert module.transients_from_splits([10.0, 14.0], 11.0, 13.0) == []
 
 
+def test_grid_candidates() -> None:
+    module = load_module(SCRIPT_PATH)
+    cfg = {
+        "allow_sixteenth": True,
+        "include_triplets": True,
+        "qn_start": 100.0,
+        "qn_end": 102.0,
+        "grid_qn": 1.0,
+    }
+    out = module.build_grid_candidates_qn(cfg)
+    assert "straight" in out and "triplet" in out
+    assert any(abs(x - 100.25) < 1e-9 for x in out["straight"])
+    assert any(abs(x - (100.0 + 1.0 / 3.0)) < 1e-9 for x in out["triplet"])
+
+    # triplets off -> empty triplet family
+    cfg_no_trip = dict(cfg, include_triplets=False)
+    assert module.build_grid_candidates_qn(cfg_no_trip)["triplet"] == []
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
     test_analysis_window,
     test_envelope_detector,
     test_existing_splits_source,
+    test_grid_candidates,
 ]
 
 
