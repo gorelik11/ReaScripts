@@ -134,6 +134,22 @@ def test_grid_candidates() -> None:
     assert module.build_grid_candidates_qn(cfg_no_trip)["triplet"] == []
 
 
+def test_group_family() -> None:
+    module = load_module(SCRIPT_PATH)
+    families = {
+        "straight": [100.00, 100.25, 100.50, 100.75],
+        "triplet": [100.00, 100.0 + 1.0 / 3.0, 100.0 + 2.0 / 3.0],
+    }
+    # group sits on triplet positions
+    trip_group = [100.01, 100.0 + 1.0 / 3.0 + 0.005, 100.0 + 2.0 / 3.0 - 0.004]
+    assert module.choose_family_for_group(trip_group, families) == "triplet"
+    # group sits on straight positions
+    straight_group = [100.01, 100.26, 100.49]
+    assert module.choose_family_for_group(straight_group, families) == "straight"
+    # tie / no triplet family -> straight
+    assert module.choose_family_for_group([100.0], {"straight": [100.0], "triplet": []}) == "straight"
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -141,6 +157,7 @@ TESTS = [
     test_envelope_detector,
     test_existing_splits_source,
     test_grid_candidates,
+    test_group_family,
 ]
 
 

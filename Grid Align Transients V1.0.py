@@ -125,6 +125,20 @@ def build_grid_candidates_qn(cfg):
     return {"straight": straight, "triplet": triplet}
 
 
+def choose_family_for_group(group_times_qn, families_qn):
+    """Pick the family with lower aggregate abs error; tie-break to straight."""
+    def score(points):
+        total = 0.0
+        for q in group_times_qn:
+            nearest = min(points, key=lambda p: abs(p - q))
+            total += abs(nearest - q)
+        return total
+
+    s = score(families_qn["straight"])
+    t = score(families_qn["triplet"]) if families_qn.get("triplet") else float("inf")
+    return "straight" if s <= t else "triplet"
+
+
 def run_grid_align(config=None):
     return {"status": "stub"}
 
