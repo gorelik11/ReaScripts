@@ -25,7 +25,7 @@ def should_skip_item(meta):
 
 
 def source_to_project_time(src_t, item_pos, start_offs):
-    """Map a source-domain time to project time (playrate==1, guarded)."""
+    """Map a source-domain time to project time. Caller must ensure playrate==1."""
     return item_pos + (src_t - start_offs)
 
 

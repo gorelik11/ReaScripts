@@ -71,11 +71,18 @@ def test_analysis_window() -> None:
     assert abs(module.source_to_project_time(3.5, item_pos=10.0, start_offs=2.0) - 11.5) < 1e-9
 
 
+TESTS = [
+    test_entrypoint_presence,
+    test_scope_and_guards,
+    test_analysis_window,
+]
+
+
 def main() -> int:
-    test_entrypoint_presence()
-    test_scope_and_guards()
-    test_analysis_window()
-    print("PASS: scope + guards")
+    for test in TESTS:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"PASS: {len(TESTS)} checks")
     return 0
 
 
