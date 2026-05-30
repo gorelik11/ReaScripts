@@ -105,11 +105,22 @@ def test_envelope_detector() -> None:
     assert len(module.detect_transients_envelope(close, sr, retrig_ms=5.0)) == 2, "5ms lockout should allow both"
 
 
+def test_existing_splits_source() -> None:
+    module = load_module(SCRIPT_PATH)
+    # split boundaries in project time; window keeps only those inside [11, 13]
+    edges = [10.5, 11.2, 12.0, 12.9, 13.4]
+    inside = module.transients_from_splits(edges, proj_start=11.0, proj_end=13.0)
+    assert inside == [11.2, 12.0, 12.9], inside
+    # empty when none inside
+    assert module.transients_from_splits([10.0, 14.0], 11.0, 13.0) == []
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
     test_analysis_window,
     test_envelope_detector,
+    test_existing_splits_source,
 ]
 
 

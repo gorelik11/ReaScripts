@@ -95,6 +95,11 @@ def detect_transients_envelope(samples, sr,
     return onsets
 
 
+def transients_from_splits(edge_times, proj_start, proj_end):
+    """Keep split boundaries within the analysis window, sorted ascending."""
+    return sorted(t for t in edge_times if proj_start <= t <= proj_end)
+
+
 def run_grid_align(config=None):
     return {"status": "stub"}
 
