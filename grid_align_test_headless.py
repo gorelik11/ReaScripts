@@ -23,9 +23,30 @@ def test_entrypoint_presence() -> None:
     assert hasattr(module, "run_grid_align"), "Missing run_grid_align(config=None) entrypoint"
 
 
+def test_scope_and_guards() -> None:
+    module = load_module(SCRIPT_PATH)
+    ts = module.resolve_processing_scope(
+        {"time_selection": (1.0, 2.0), "selected_items": [object()], "all_items": []}
+    )
+    assert ts["mode"] == "time_selection"
+    assert ts["range"] == (1.0, 2.0)
+
+    sel = module.resolve_processing_scope({"selected_items": [1, 2], "all_items": [9]})
+    assert sel["mode"] == "selected_items"
+
+    full = module.resolve_processing_scope({"all_items": [9]})
+    assert full["mode"] == "full_range"
+
+    assert module.should_skip_item({"playrate": 1.25, "reversed": 0, "section": 0}) is True
+    assert module.should_skip_item({"playrate": 1.0, "reversed": 1, "section": 0}) is True
+    assert module.should_skip_item({"playrate": 1.0, "reversed": 0, "section": 1}) is True
+    assert module.should_skip_item({"playrate": 1.0, "reversed": 0, "section": 0}) is False
+
+
 def main() -> int:
     test_entrypoint_presence()
-    print("PASS: run_grid_align entrypoint present")
+    test_scope_and_guards()
+    print("PASS: scope + guards")
     return 0
 
 
