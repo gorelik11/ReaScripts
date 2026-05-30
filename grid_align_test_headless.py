@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).with_name("Grid Align Transients V1.0.py")
@@ -248,6 +249,10 @@ def test_plan_corrections_branches() -> None:
     assert skipped == [], skipped
 
 
+def test_docs_present() -> None:
+    assert os.path.exists("docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md")
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -260,6 +265,7 @@ TESTS = [
     test_report_schema_headless,
     test_plan_corrections_chain,
     test_plan_corrections_branches,
+    test_docs_present,
 ]
 
 
