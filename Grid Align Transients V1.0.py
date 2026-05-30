@@ -139,6 +139,35 @@ def choose_family_for_group(group_times_qn, families_qn):
     return "straight" if s <= t else "triplet"
 
 
+def group_transients(transients_proj, gap_s):
+    """Group ascending attack times into segments.
+
+    A new group starts whenever the gap to the previous attack exceeds gap_s.
+    Returns a list of groups (each a list of times). This is the segmentation the
+    orchestrator uses so a cluster of close attacks is corrected as one local
+    move instead of fragmenting the item.
+    """
+    groups = []
+    current = []
+    for t in transients_proj:
+        if current and (t - current[-1]) > gap_s:
+            groups.append(current)
+            current = []
+        current.append(t)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def select_family_positions(families_qn, name):
+    """Return the QN candidate list for the chosen family name ('straight'/'triplet').
+
+    Bridges choose_family_for_group (which returns a name) to plan_corrections
+    (which expects the chosen family's QN list).
+    """
+    return families_qn[name]
+
+
 def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
     """Move amount (sec) for one transient, or None to leave it untouched.
 

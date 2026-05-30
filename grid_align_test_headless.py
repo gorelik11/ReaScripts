@@ -249,6 +249,22 @@ def test_plan_corrections_branches() -> None:
     assert skipped == [], skipped
 
 
+def test_group_transients() -> None:
+    module = load_module(SCRIPT_PATH)
+    ts = [0.10, 0.12, 0.50, 0.52, 0.53, 1.20]
+    groups = module.group_transients(ts, gap_s=0.1)
+    assert groups == [[0.10, 0.12], [0.50, 0.52, 0.53], [1.20]], groups
+    assert module.group_transients([], 0.1) == []
+    assert module.group_transients([0.4], 0.1) == [[0.4]]
+
+
+def test_select_family_positions() -> None:
+    module = load_module(SCRIPT_PATH)
+    fams = {"straight": [0.0, 0.25], "triplet": [0.0, 0.333]}
+    assert module.select_family_positions(fams, "triplet") == [0.0, 0.333]
+    assert module.select_family_positions(fams, "straight") == [0.0, 0.25]
+
+
 def test_docs_present() -> None:
     assert os.path.exists("docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md")
 
@@ -266,6 +282,8 @@ TESTS = [
     test_plan_corrections_chain,
     test_plan_corrections_branches,
     test_docs_present,
+    test_group_transients,
+    test_select_family_positions,
 ]
 
 
