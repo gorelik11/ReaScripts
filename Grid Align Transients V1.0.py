@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def resolve_processing_scope(ctx):
     """Pick processing scope: time selection > selected items > full range."""
@@ -51,6 +53,44 @@ def compute_analysis_window(item_pos, item_len, start_offs, time_sel=None):
         "proj_start": proj_start,
         "proj_end": proj_end,
     }
+
+
+# Fixed internal detector constants (not user-exposed).
+_DET_ATT1, _DET_REL1 = 0.001, 0.010   # fast envelope (sec)
+_DET_ATT2, _DET_REL2 = 0.007, 0.015   # slow envelope (sec)
+_DET_SENSITIVITY = 2.0                # fast/slow ratio to trigger
+_DET_RETRIG_MS = 30.0                 # lockout after a trigger
+_DET_FLOOR = 0.001                    # ~ -60 dB noise floor
+
+
+def detect_transients_envelope(samples, sr,
+                               sensitivity=_DET_SENSITIVITY,
+                               retrig_ms=_DET_RETRIG_MS,
+                               floor=_DET_FLOOR):
+    """Return attack times (sec from buffer start) via a dual-envelope gate."""
+    if not samples:
+        return []
+    ga1 = math.exp(-1.0 / (sr * _DET_ATT1))
+    gr1 = math.exp(-1.0 / (sr * _DET_REL1))
+    ga2 = math.exp(-1.0 / (sr * _DET_ATT2))
+    gr2 = math.exp(-1.0 / (sr * _DET_REL2))
+    retrig_smpls = int(retrig_ms / 1000.0 * sr)
+    env1 = abs(samples[0])
+    env2 = env1
+    retrig = retrig_smpls + 1
+    onsets = []
+    for i, s in enumerate(samples):
+        x = s if s >= 0 else -s
+        env1 = x + (ga1 if env1 < x else gr1) * (env1 - x)
+        env2 = x + (ga2 if env2 < x else gr2) * (env2 - x)
+        if retrig > retrig_smpls:
+            if env1 > floor and env2 > 0.0 and (env1 / env2) > sensitivity:
+                onsets.append(i / sr)
+                retrig = 0
+        else:
+            env2 = env1
+            retrig += 1
+    return onsets
 
 
 def run_grid_align(config=None):

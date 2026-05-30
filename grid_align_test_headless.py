@@ -71,10 +71,30 @@ def test_analysis_window() -> None:
     assert abs(module.source_to_project_time(3.5, item_pos=10.0, start_offs=2.0) - 11.5) < 1e-9
 
 
+def test_envelope_detector() -> None:
+    module = load_module(SCRIPT_PATH)
+    sr = 12000
+    samples = [0.0] * (sr * 1)  # 1 second of silence
+    # two sharp attacks: 0.20s and 0.60s, each a short decaying burst
+    for onset in (0.20, 0.60):
+        start = int(onset * sr)
+        for k in range(int(0.05 * sr)):
+            samples[start + k] = 0.9 * (1.0 - k / (0.05 * sr))
+
+    onsets = module.detect_transients_envelope(samples, sr)
+    assert len(onsets) == 2, onsets
+    assert abs(onsets[0] - 0.20) < 0.01, onsets
+    assert abs(onsets[1] - 0.60) < 0.01, onsets
+
+    # silence produces nothing
+    assert module.detect_transients_envelope([0.0] * sr, sr) == []
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
     test_analysis_window,
+    test_envelope_detector,
 ]
 
 
