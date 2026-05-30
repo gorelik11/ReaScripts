@@ -188,6 +188,37 @@ def test_correction_decision() -> None:
     assert module.compute_move(0.020, th, "adaptive", 0.200, step) is None
 
 
+def test_report_schema_headless() -> None:
+    module = load_module(SCRIPT_PATH)
+    report = module.run_grid_align({
+        "headless": True,
+        "grid_threshold_ms": 15.0,
+        "mode": "snap",
+        "transient_source": "auto",
+        "allow_sixteenth": True,
+        "include_triplets": False,
+    })
+    for key in ("edited_segments", "skipped", "neighbor_touched", "crossed_time_selection"):
+        assert key in report, (key, report)
+    assert report["neighbor_touched"] is False
+    assert report["crossed_time_selection"] is False
+    assert isinstance(report["edited_segments"], int)
+
+
+def test_plan_corrections_chain() -> None:
+    module = load_module(SCRIPT_PATH)
+    fam = [0.0, 0.5, 1.0, 1.5]          # straight candidates in QN
+    qn_of_time = lambda t: t            # 1 QN == 1 sec for the test
+    time_of_qn = lambda q: q
+    # first behind by 0.04 (snap), second behind by 0.04 with prev_lag 0 -> snap
+    edits = module.plan_corrections(
+        [0.54, 1.04], fam, qn_of_time, time_of_qn,
+        threshold_s=0.015, mode="adaptive", grid_step_s=0.5,
+    )
+    assert len(edits) == 2
+    assert abs(edits[0]["move"] - (-0.04)) < 1e-9
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -197,6 +228,8 @@ TESTS = [
     test_grid_candidates,
     test_group_family,
     test_correction_decision,
+    test_report_schema_headless,
+    test_plan_corrections_chain,
 ]
 
 

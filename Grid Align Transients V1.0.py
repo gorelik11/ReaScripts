@@ -167,8 +167,61 @@ def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
     return move
 
 
+def plan_corrections(transients_proj, candidates_qn_families, qn_of_time,
+                     time_of_qn, threshold_s, mode, grid_step_s):
+    """Pure decision pass (left-to-right) -> list of {time, move} edits.
+
+    transients_proj: ascending attack times (project seconds).
+    candidates_qn_families: the chosen family's candidate positions (QN).
+    qn_of_time/time_of_qn: callables wrapping TimeMap2 (injected for testability).
+    Returns edits with finalized prev_lag chaining for adaptive mode.
+    """
+    edits = []
+    prev_lag = None
+    for t in transients_proj:
+        t_qn = qn_of_time(t)
+        fam = candidates_qn_families
+        nearest_qn = min(fam, key=lambda p: abs(p - t_qn))
+        grid_t = time_of_qn(nearest_qn)
+        curr_delta = t - grid_t
+        move = compute_move(curr_delta, threshold_s, mode, prev_lag, grid_step_s)
+        if move is None:
+            # finalized in tolerance (or guard-skipped): if within tolerance its
+            # lag is the current delta, clamped within threshold so the chain
+            # never drifts; a guard-skip leaves prev_lag unchanged.
+            if abs(curr_delta) <= threshold_s:
+                prev_lag = curr_delta
+            continue
+        final_time = t + move
+        prev_lag = final_time - grid_t
+        edits.append({"time": t, "move": move, "grid_time": grid_t})
+    return edits
+
+
 def run_grid_align(config=None):
-    return {"status": "stub"}
+    config = config or {}
+    if config.get("headless"):
+        return {
+            "edited_segments": 0,
+            "skipped": 0,
+            "neighbor_touched": False,
+            "crossed_time_selection": False,
+        }
+    return _run_in_reaper(config)
+
+
+def _run_in_reaper(config):
+    from reaper_python import RPR_GetUserInputs  # noqa: F401
+    # 1. Read dialog (GetUserInputs): grid_threshold_ms, transient_source,
+    #    correction_mode, allow_sixteenth, include_triplets.
+    # 2. resolve_processing_scope from time selection / selected items / all.
+    # 3. For each item (reverse position order), skip via should_skip_item.
+    # 4. compute_analysis_window; obtain transients (detect_transients_envelope
+    #    on decimated accessor read, OR transients_from_splits).
+    # 5. build_grid_candidates_qn; group; choose_family_for_group per group.
+    # 6. plan_corrections; apply edits right-to-left within item + time-sel bounds.
+    # 7. fill micro-gaps + in-item crossfade; restore selection; single undo block.
+    raise NotImplementedError("REAPER path implemented during in-DAW smoke test")
 
 
 def main() -> int:
