@@ -26,17 +26,27 @@ def test_entrypoint_presence() -> None:
 
 def test_scope_and_guards() -> None:
     module = load_module(SCRIPT_PATH)
-    ts = module.resolve_processing_scope(
-        {"time_selection": (1.0, 2.0), "selected_items": [object()], "all_items": []}
-    )
-    assert ts["mode"] == "time_selection"
-    assert ts["range"] == (1.0, 2.0)
+    R = module.resolve_processing_scope
 
-    sel = module.resolve_processing_scope({"selected_items": [1, 2], "all_items": [9]})
-    assert sel["mode"] == "selected_items"
+    # 1 selected + time selection -> selected item, clipped to the time sel
+    both = R({"time_selection": (1.0, 2.0), "selected_items": [object()]})
+    assert both["mode"] == "selected_items"
+    assert both["clip"] == (1.0, 2.0)
 
-    full = module.resolve_processing_scope({"all_items": [9]})
-    assert full["mode"] == "full_range"
+    # 1 selected, no time selection -> selected item processed whole (clip None)
+    one = R({"selected_items": [object()]})
+    assert one["mode"] == "selected_items" and one["clip"] is None
+
+    # >=2 selected but NO time selection -> do nothing
+    assert R({"selected_items": [1, 2]})["mode"] == "none"
+
+    # >=2 selected WITH a time selection -> selected items, clipped
+    multi_ts = R({"selected_items": [1, 2], "time_selection": (1.0, 2.0)})
+    assert multi_ts["mode"] == "selected_items" and multi_ts["clip"] == (1.0, 2.0)
+
+    # nothing selected (with or without a time selection) -> do nothing
+    assert R({"time_selection": (1.0, 2.0)})["mode"] == "none"
+    assert R({})["mode"] == "none"
 
     assert module.should_skip_item({"playrate": 1.25, "reversed": 0, "section": 0}) is True
     assert module.should_skip_item({"playrate": 1.0, "reversed": 1, "section": 0}) is True
@@ -269,6 +279,31 @@ def test_docs_present() -> None:
     assert os.path.exists("docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md")
 
 
+def test_entrypoint_no_systemexit() -> None:
+    """Running the file as __main__ must NOT raise SystemExit.
+
+    REAPER runs a ReaScript in an embedded interpreter; a SystemExit there routes
+    to Py_Exit -> C exit() and kills the whole REAPER process. Simulate the
+    __main__ run with a cancelled GetUserInputs dialog and assert it returns
+    cleanly. (Regression guard for the `raise SystemExit(main())` crash.)
+    """
+    import runpy
+    calls = {"dialog": 0}
+
+    def fake_dialog(*a):
+        calls["dialog"] += 1
+        return (0,) + tuple(a)  # retval 0 -> dialog cancel -> run_grid_align returns None
+
+    mocks = {"RPR_GetUserInputs": fake_dialog, "RPR_ShowMessageBox": lambda *a: 0}
+    try:
+        runpy.run_path(str(SCRIPT_PATH), init_globals=mocks, run_name="__main__")
+    except SystemExit as exc:  # pragma: no cover - this is the bug we guard against
+        raise AssertionError(
+            "ReaScript __main__ raised SystemExit -> would terminate REAPER"
+        ) from exc
+    assert calls["dialog"] == 1, "entry point did not reach run_grid_align (guard is moot)"
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -284,6 +319,7 @@ TESTS = [
     test_docs_present,
     test_group_transients,
     test_select_family_positions,
+    test_entrypoint_no_systemexit,
 ]
 
 
