@@ -316,6 +316,31 @@ def test_entrypoint_no_systemexit() -> None:
         ) from exc
 
 
+def test_ext_state_defaults() -> None:
+    module = load_module(SCRIPT_PATH)
+    store = {}
+    module.RPR_GetExtState = lambda sect, key: store.get((sect, key), "")
+    module.RPR_SetExtState = lambda sect, key, val, persist: store.__setitem__((sect, key), val)
+
+    # empty store -> V1 defaults
+    assert module._load_defaults() == {
+        "threshold_ms": 15, "source": "auto", "mode": "snap",
+        "grid": "1/16", "triplets": False}
+
+    # round-trip
+    module._save_defaults({"threshold_ms": 22, "source": "splits",
+                           "mode": "adaptive", "grid": "1/32", "triplets": True})
+    assert module._load_defaults() == {
+        "threshold_ms": 22, "source": "splits", "mode": "adaptive",
+        "grid": "1/32", "triplets": True}
+
+    # invalid stored values fall back to defaults
+    store[("GridAlignTransients", "source")] = "garbage"
+    store[("GridAlignTransients", "grid")] = "1/3"
+    d = module._load_defaults()
+    assert d["source"] == "auto" and d["grid"] == "1/16"
+
+
 TESTS = [
     test_entrypoint_presence,
     test_scope_and_guards,
@@ -333,6 +358,7 @@ TESTS = [
     test_select_family_positions,
     test_entrypoint_no_systemexit,
     test_resolve_fine_qn,
+    test_ext_state_defaults,
 ]
 
 

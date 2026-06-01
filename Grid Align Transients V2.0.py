@@ -265,6 +265,40 @@ _SEG_TAIL = 0.030        # how far past the last attack a group segment extends
 _CROSSFADE_MS = 5        # in-item overlap when filling gaps
 _EDGE_EPS = 0.005        # don't split closer than this to an item edge
 
+_EXT_SECT = "GridAlignTransients"
+_SOURCES = ["auto", "splits"]
+_MODES = ["snap", "adaptive"]
+_GRIDS = ["project", "1/8", "1/16", "1/32"]
+
+
+def _load_defaults():
+    """Read last-used dialog settings from ExtState, with safe fallbacks."""
+    def g(key, default):
+        v = RPR_GetExtState(_EXT_SECT, key)  # noqa: F821
+        return v if v else default
+    try:
+        thr = int(float(g("threshold_ms", "15")))
+    except ValueError:
+        thr = 15
+    src = g("source", "auto")
+    mode = g("mode", "snap")
+    grid = g("grid", "1/16")
+    return {
+        "threshold_ms": thr,
+        "source": src if src in _SOURCES else "auto",
+        "mode": mode if mode in _MODES else "snap",
+        "grid": grid if grid in _GRIDS else "1/16",
+        "triplets": g("triplets", "0") not in ("0", "", "off", "no"),
+    }
+
+
+def _save_defaults(st):
+    RPR_SetExtState(_EXT_SECT, "threshold_ms", str(st["threshold_ms"]), True)  # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "source", st["source"], True)                   # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "mode", st["mode"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "grid", st["grid"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "triplets", "1" if st["triplets"] else "0", True)  # noqa: F821
+
 
 def _get_time_selection():
     """Active time selection as (start, end), or None."""
