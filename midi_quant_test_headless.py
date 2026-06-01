@@ -69,8 +69,19 @@ def test_resolve_scope() -> None:
     assert R({})["mode"] == "none"
 
 
+def test_quantized_start_ppq() -> None:
+    module = load_module(SCRIPT_PATH)
+    # ok: new start leaves >= MIN_NOTE_TICKS before end
+    assert module.quantized_start_ppq(new_start=100, end=960, min_ticks=1) == 100
+    # skip: new start would reach/cross the end (returns None)
+    assert module.quantized_start_ppq(new_start=959, end=960, min_ticks=2) is None
+    assert module.quantized_start_ppq(new_start=960, end=960, min_ticks=1) is None
+    # exact boundary allowed (start + min_ticks == end)
+    assert module.quantized_start_ppq(new_start=959, end=960, min_ticks=1) == 959
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
-         test_resolve_scope]
+         test_resolve_scope, test_quantized_start_ppq]
 
 
 def main() -> int:

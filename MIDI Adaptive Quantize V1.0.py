@@ -102,6 +102,16 @@ def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
     return move
 
 
+MIN_NOTE_TICKS = 1  # never shrink a note below this many PPQ ticks
+
+
+def quantized_start_ppq(new_start, end, min_ticks=MIN_NOTE_TICKS):
+    """New note start in PPQ, or None to skip (would not leave a positive length)."""
+    if new_start > end - min_ticks:
+        return None
+    return new_start
+
+
 def resolve_quant_scope(ctx):
     """Scope precedence: selected notes > selected items (clipped to time sel) > none.
 
