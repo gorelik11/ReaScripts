@@ -112,9 +112,69 @@ def test_report_schema_headless() -> None:
     assert isinstance(rep["moved_notes"], int)
 
 
+def test_run_in_reaper_mock() -> None:
+    """End-to-end in a fake REAPER: one take, three notes; only the off-grid one
+    moves, its end is unchanged, and a degenerate move is skipped."""
+    import types
+    module = load_module(SCRIPT_PATH)
+
+    # one take (id=1), 960 PPQ/QN, tempo 60 BPM so 1 QN == 1 sec, grid = 1 QN.
+    # notes: n0 on-grid (0.000s), n1 late by 0.040s at QN 1, n2 a tiny note whose
+    # move would cross its end (skipped). startppq in ticks (960/QN).
+    notes = [
+        {"start": 0,    "end": 480, "sel": True, "muted": False, "chan": 0, "pitch": 60},
+        {"start": 960 + 38, "end": 1440, "sel": True, "muted": False, "chan": 0, "pitch": 62},
+        {"start": 1882, "end": 1900, "sel": True, "muted": False, "chan": 0, "pitch": 64},  # early+short: snap-right crosses end -> skipped
+    ]
+    set_calls = []
+    g = {}
+    g["RPR_GetUserInputs"] = lambda *a: (1, a[0], a[1], "15,snap,1,0", a[4])
+    g["RPR_GetSet_LoopTimeRange"] = lambda *a: (0, 0, 0.0, 0.0, 0)  # no time sel
+    g["RPR_MIDIEditor_GetActive"] = lambda: 0                       # no editor
+    g["RPR_CountSelectedMediaItems"] = lambda p: 1
+    g["RPR_GetSelectedMediaItem"] = lambda p, i: 100
+    g["RPR_GetActiveTake"] = lambda item: 1
+    g["RPR_TakeIsMIDI"] = lambda take: True
+    g["RPR_MIDI_CountEvts"] = lambda take, a, b, c: (3, take, 3, 0, 0)  # (retval, take, notecnt, cc, text)
+    def get_note(take, i, *a):  # wrapper echoes all params: (retval, take, idx, sel, muted, start, end, chan, pitch, vel)
+        n = notes[i]
+        return (True, take, i, n["sel"], n["muted"], n["start"], n["end"], n["chan"], n["pitch"], 96)
+    g["RPR_MIDI_GetNote"] = get_note
+    def set_note(take, i, sel, muted, startppq, endppq, chan, pitch, vel, noSort):
+        set_calls.append({"i": i, "start": startppq, "end": endppq})
+        notes[i]["start"], notes[i]["end"] = startppq, endppq
+        return True
+    g["RPR_MIDI_SetNote"] = set_note
+    g["RPR_MIDI_DisableSort"] = lambda take: None
+    g["RPR_MIDI_Sort"] = lambda take: None
+    g["RPR_MIDI_GetGrid"] = lambda take, a, b: (1.0, take, 0.0)      # grid = 1 QN
+    g["RPR_MIDI_GetProjTimeFromPPQPos"] = lambda take, ppq: ppq / 960.0      # 1 QN == 1 sec
+    g["RPR_MIDI_GetPPQPosFromProjTime"] = lambda take, t: round(t * 960.0)
+    g["RPR_TimeMap2_timeToQN"] = lambda proj, t: t                  # 1 sec == 1 QN
+    g["RPR_TimeMap2_QNToTime"] = lambda proj, q: q
+    for noop in ("RPR_Undo_BeginBlock", "RPR_UpdateArrange"):
+        g[noop] = lambda *a: None
+    g["RPR_Undo_EndBlock"] = lambda *a: None
+    g["RPR_ShowMessageBox"] = lambda *a: 0
+    for k, v in g.items():
+        setattr(module, k, v)
+
+    rep = module._run_in_reaper({"grid_threshold_ms": 15.0, "mode": "snap",
+                                 "allow_sixteenth": True, "include_triplets": False})
+    moved = {c["i"] for c in set_calls}
+    assert 0 not in moved, "on-grid note must not move"
+    assert 1 in moved, "off-grid note must move"
+    # start-only: the moved note's end is unchanged (1440)
+    n1 = [c for c in set_calls if c["i"] == 1][-1]
+    assert n1["end"] == 1440, n1
+    assert abs(n1["start"] - 960) <= 1, n1  # snapped to QN 1 (=960 ticks)
+    assert rep["ends_unchanged"] is True
+    assert rep["moved_notes"] >= 1 and rep["skipped_notes"] >= 1
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
-         test_report_schema_headless]
+         test_report_schema_headless, test_run_in_reaper_mock]
 
 
 def main() -> int:

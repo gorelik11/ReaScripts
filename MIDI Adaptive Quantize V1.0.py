@@ -168,8 +168,179 @@ def run_quantize(config=None):
     return _run_in_reaper(config)
 
 
+def _read_dialog():
+    res = RPR_GetUserInputs(  # noqa: F821
+        "MIDI Adaptive Quantize V1.0", 4,
+        "Grid threshold (ms),Correction mode (snap/adaptive),Allow 1/16 (0/1),Include triplets (0/1)",
+        "15,snap,1,0", 256)
+    if not isinstance(res, tuple) or not res[0]:
+        return None
+    csv = next((res[i] for i in range(len(res) - 1, -1, -1)
+                if isinstance(res[i], str) and "," in res[i]), None)
+    if csv is None:
+        return None
+    p = [x.strip() for x in csv.split(",")]
+    if len(p) != 4:
+        return None
+    try:
+        thr = float(p[0])
+    except ValueError:
+        RPR_ShowMessageBox("Invalid threshold.", "Error", 0)  # noqa: F821
+        return None
+    return {"grid_threshold_ms": thr,
+            "mode": "adaptive" if p[1].lower().startswith("a") else "snap",
+            "allow_sixteenth": p[2] not in ("0", "", "off", "no"),
+            "include_triplets": p[3] not in ("0", "", "off", "no")}
+
+
+def _note_count(take):
+    # wrapper echoes params: (retval, take, notecnt, cc, text)
+    return RPR_MIDI_CountEvts(take, 0, 0, 0)[2]  # noqa: F821
+
+
+def _get_note(take, i):
+    """Note i as a dict, or None if not found. Wrapper return shape:
+    (retval, take, idx, selected, muted, startppq, endppq, chan, pitch, vel)."""
+    r = RPR_MIDI_GetNote(take, i, 0, 0, 0, 0, 0, 0, 0)  # noqa: F821
+    if not r[0]:
+        return None
+    return {"sel": r[3], "muted": r[4], "start": r[5], "end": r[6],
+            "chan": r[7], "pitch": r[8], "vel": r[9]}
+
+
+def _active_editor_selected_notes():
+    """(take, [note indices]) for selected notes in the active MIDI editor, or (None, [])."""
+    ed = RPR_MIDIEditor_GetActive()  # noqa: F821
+    if not ed:
+        return None, []
+    take = RPR_MIDIEditor_GetTake(ed)  # noqa: F821
+    if not take or not RPR_TakeIsMIDI(take):  # noqa: F821
+        return None, []
+    sel = [i for i in range(_note_count(take))
+           if (_get_note(take, i) or {}).get("sel")]
+    return (take, sel) if sel else (None, [])
+
+
+def _selected_midi_takes():
+    """List of takes for selected MIDI items."""
+    out = []
+    for i in range(RPR_CountSelectedMediaItems(0)):  # noqa: F821
+        take = RPR_GetActiveTake(RPR_GetSelectedMediaItem(0, i))  # noqa: F821
+        if take and RPR_TakeIsMIDI(take):  # noqa: F821
+            out.append(take)
+    return out
+
+
+def _time_selection():
+    r = RPR_GetSet_LoopTimeRange(False, False, 0.0, 0.0, False)  # noqa: F821
+    fs = [x for x in r if isinstance(x, float)]
+    return (fs[0], fs[1]) if len(fs) >= 2 and fs[1] > fs[0] + 1e-4 else None
+
+
+def _quantize_take(take, cfg, note_indices, time_sel):
+    """Decide+apply moves for one take. Returns (moved, skipped)."""
+    grid_qn = RPR_MIDI_GetGrid(take, 0.0, 0.0)[0]  # noqa: F821  (QN)
+    qn_of_time = lambda t: RPR_TimeMap2_timeToQN(0, t)          # noqa: F821,E731
+    time_of_qn = lambda q: RPR_TimeMap2_QNToTime(0, q)         # noqa: F821,E731
+    fine_qn = grid_qn
+    if cfg["allow_sixteenth"]:
+        fine_qn = min(fine_qn, 0.25)
+    if cfg["include_triplets"]:
+        fine_qn = fine_qn / 3.0
+    grid_step_for = lambda q0: time_of_qn(q0 + fine_qn) - time_of_qn(q0)  # noqa: E731
+
+    # gather (index, onset_time, end_ppq), filtered to time selection if any
+    notes = []
+    for i in note_indices:
+        nt = _get_note(take, i)
+        if nt is None:
+            continue
+        t = RPR_MIDI_GetProjTimeFromPPQPos(take, nt["start"])  # noqa: F821
+        if time_sel and not (time_sel[0] <= t <= time_sel[1]):
+            continue
+        notes.append({"i": i, "t": t, "end": nt["end"], "note": nt})
+    if not notes:
+        return 0, 0
+    notes.sort(key=lambda n: n["t"])
+    onsets = [n["t"] for n in notes]
+
+    qn_lo = qn_of_time(min(onsets))
+    q0 = math.floor(qn_lo / grid_qn) * grid_qn
+    families = build_grid_candidates_qn({
+        "allow_sixteenth": cfg["allow_sixteenth"], "include_triplets": cfg["include_triplets"],
+        "grid_qn": grid_qn, "qn_start": q0, "qn_end": qn_of_time(max(onsets)) + grid_qn})
+
+    gap_s = max(0.01, 0.5 * grid_step_for(q0))
+    plans = plan_note_moves(onsets, families, qn_of_time, time_of_qn,
+                            grid_step_for, cfg["grid_threshold_ms"] / 1000.0,
+                            cfg["mode"], gap_s)
+    move_by_t = {}
+    for p in plans:
+        for t in p["onsets"]:
+            move_by_t[round(t, 9)] = p["move"]
+
+    moved = skipped = 0
+    RPR_MIDI_DisableSort(take)  # noqa: F821
+    for n in notes:
+        mv = move_by_t.get(round(n["t"], 9))
+        if mv is None:
+            continue
+        new_sppq = RPR_MIDI_GetPPQPosFromProjTime(take, n["t"] + mv)  # noqa: F821
+        guarded = quantized_start_ppq(new_sppq, n["end"])
+        if guarded is None:
+            skipped += 1
+            continue
+        nt = n["note"]
+        RPR_MIDI_SetNote(take, n["i"], nt["sel"], nt["muted"], guarded, n["end"],  # noqa: F821
+                         nt["chan"], nt["pitch"], nt["vel"], True)
+        moved += 1
+    RPR_MIDI_Sort(take)  # noqa: F821
+    return moved, skipped
+
+
 def _run_in_reaper(config):
-    raise NotImplementedError("REAPER path added in Task 7")
+    from_dialog = config.get("grid_threshold_ms") is None
+    cfg = _read_dialog() if from_dialog else config
+    if cfg is None:
+        return None
+
+    time_sel = _time_selection()
+    note_take, sel_notes = _active_editor_selected_notes()
+    scope = resolve_quant_scope({
+        "selected_notes": sel_notes,
+        "selected_items": [] if sel_notes else _selected_midi_takes(),
+        "time_sel": time_sel})
+
+    if scope["mode"] == "none":
+        if from_dialog:
+            RPR_ShowMessageBox(  # noqa: F821
+                "Nothing to quantize.\n\nSelect notes in the MIDI editor, or select "
+                "MIDI item(s). Nothing selected = no-op.",
+                "MIDI Adaptive Quantize V1.0", 0)
+        return {"moved_notes": 0, "skipped_notes": 0, "ends_unchanged": True}
+
+    RPR_Undo_BeginBlock()  # noqa: F821
+    moved = skipped = 0
+    try:
+        if scope["mode"] == "notes":
+            moved, skipped = _quantize_take(note_take, cfg, scope["notes"], None)
+        else:
+            for take in scope["items"]:
+                all_idx = list(range(_note_count(take)))
+                m, s = _quantize_take(take, cfg, all_idx, scope["clip"])
+                moved += m
+                skipped += s
+    finally:
+        RPR_UpdateArrange()  # noqa: F821
+        RPR_Undo_EndBlock("MIDI Adaptive Quantize V1.0", -1)  # noqa: F821
+
+    report = {"moved_notes": moved, "skipped_notes": skipped, "ends_unchanged": True}
+    if from_dialog:
+        RPR_ShowMessageBox(  # noqa: F821
+            "MIDI Adaptive Quantize V1.0\n\nMoved: {}\nSkipped (would cross end): {}\n"
+            "Mode: {}".format(moved, skipped, cfg["mode"]),
+            "MIDI Adaptive Quantize V1.0", 0)
+    return report
 
 
 def main():
