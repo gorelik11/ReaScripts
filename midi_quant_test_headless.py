@@ -48,7 +48,29 @@ def test_compute_move() -> None:
     assert module.compute_move(0.200, th, "snap", None, step) is None       # max-move guard
 
 
-TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move]
+def test_resolve_scope() -> None:
+    module = load_module(SCRIPT_PATH)
+    R = module.resolve_quant_scope
+
+    # selected notes win outright (no clip applied)
+    s = R({"selected_notes": [1, 2], "selected_items": [9], "time_sel": (1.0, 2.0)})
+    assert s["mode"] == "notes" and s["notes"] == [1, 2] and s["clip"] is None
+
+    # no notes, items + time selection -> items clipped
+    s = R({"selected_items": [9], "time_sel": (1.0, 2.0)})
+    assert s["mode"] == "items" and s["items"] == [9] and s["clip"] == (1.0, 2.0)
+
+    # no notes, items, no time selection -> items whole
+    s = R({"selected_items": [9]})
+    assert s["mode"] == "items" and s["clip"] is None
+
+    # nothing selected -> none (with or without time selection)
+    assert R({"time_sel": (1.0, 2.0)})["mode"] == "none"
+    assert R({})["mode"] == "none"
+
+
+TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
+         test_resolve_scope]
 
 
 def main() -> int:

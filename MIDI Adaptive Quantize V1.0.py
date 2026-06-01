@@ -102,6 +102,23 @@ def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
     return move
 
 
+def resolve_quant_scope(ctx):
+    """Scope precedence: selected notes > selected items (clipped to time sel) > none.
+
+    Selected notes win outright (explicit pick, no clip). Otherwise selected items
+    are the unit, with any time selection as a clip bound applied per note window
+    downstream. Nothing selected -> do nothing.
+    """
+    notes = ctx.get("selected_notes") or []
+    items = ctx.get("selected_items") or []
+    ts = ctx.get("time_sel")
+    if notes:
+        return {"mode": "notes", "notes": notes, "clip": None}
+    if items:
+        return {"mode": "items", "items": items, "clip": ts}
+    return {"mode": "none"}
+
+
 def run_quantize(config=None):
     config = config or {}
     if config.get("headless"):
