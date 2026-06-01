@@ -80,8 +80,29 @@ def test_quantized_start_ppq() -> None:
     assert module.quantized_start_ppq(new_start=959, end=960, min_ticks=1) == 959
 
 
+def test_plan_note_moves() -> None:
+    module = load_module(SCRIPT_PATH)
+    ident = lambda x: x                       # 1 QN == 1 sec for the test
+    families = {"straight": [0.0, 1.0, 2.0, 3.0], "triplet": []}
+    grid_step_for = lambda q0: 1.0            # constant 1s grid step
+
+    # two lone onsets, each 0.04 late of an integer grid point, snap mode
+    moves = module.plan_note_moves(
+        onsets=[1.04, 2.04], families=families, qn_of_time=ident, time_of_qn=ident,
+        grid_step_for=grid_step_for, threshold_s=0.015, mode="snap", gap_s=0.1)
+    assert len(moves) == 2
+    assert abs(moves[0]["move"] - (-0.04)) < 1e-9
+    assert moves[0]["onsets"] == [1.04]
+
+    # within-tolerance onset is left out entirely
+    none_moves = module.plan_note_moves(
+        onsets=[1.005], families=families, qn_of_time=ident, time_of_qn=ident,
+        grid_step_for=grid_step_for, threshold_s=0.015, mode="snap", gap_s=0.1)
+    assert none_moves == []
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
-         test_resolve_scope, test_quantized_start_ppq]
+         test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves]
 
 
 def main() -> int:

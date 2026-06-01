@@ -112,6 +112,38 @@ def quantized_start_ppq(new_start, end, min_ticks=MIN_NOTE_TICKS):
     return new_start
 
 
+def plan_note_moves(onsets, families, qn_of_time, time_of_qn,
+                    grid_step_for, threshold_s, mode, gap_s):
+    """Decide grouped note-start moves (seconds), left->right.
+
+    onsets: ascending note start times (project seconds; chords repeat a time).
+    Returns a list of {"onsets": [group times], "move": seconds}; only groups
+    whose anchor exceeds the threshold (and passes the max-move guard) appear.
+    """
+    groups = group_transients(onsets, gap_s)
+    planned = []
+    prev_lag = None
+    for g in groups:
+        qns = [qn_of_time(t) for t in g]
+        fam = select_family_positions(families, choose_family_for_group(qns, families))
+        anchor_t = anchor_delta = anchor_grid = anchor_qn = None
+        for t, tq in zip(g, qns):
+            nearest_qn = min(fam, key=lambda p: abs(p - tq))
+            grid_t = time_of_qn(nearest_qn)
+            d = t - grid_t
+            if anchor_t is None or abs(d) > abs(anchor_delta):
+                anchor_t, anchor_delta, anchor_grid, anchor_qn = t, d, grid_t, nearest_qn
+        move = compute_move(anchor_delta, threshold_s, mode, prev_lag,
+                            grid_step_for(anchor_qn))
+        if move is None:
+            if abs(anchor_delta) <= threshold_s:
+                prev_lag = anchor_delta
+            continue
+        prev_lag = (anchor_t + move) - anchor_grid
+        planned.append({"onsets": list(g), "move": move})
+    return planned
+
+
 def resolve_quant_scope(ctx):
     """Scope precedence: selected notes > selected items (clipped to time sel) > none.
 
