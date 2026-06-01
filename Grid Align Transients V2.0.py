@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid Align Transients V1.0 (scaffold)."""
+"""Grid Align Transients V2.0 — adaptive transient quantizer with a ReaImGui dialog."""
 
 from __future__ import annotations
 
@@ -741,7 +741,7 @@ def _run_in_reaper(config, show_report=False):
                 "Select the item(s) to align. With 2+ items selected, also make a "
                 "time selection to bound the edit. A single selected item is "
                 "processed whole when there is no time selection.",
-                "Grid Align Transients V1.0", 0)
+                "Grid Align Transients V2.0", 0)
         return {"edited_segments": 0, "skipped": 0,
                 "neighbor_touched": False, "crossed_time_selection": False}
     metas = []
@@ -813,16 +813,16 @@ def _run_in_reaper(config, show_report=False):
     finally:
         RPR_PreventUIRefresh(-1)   # noqa: F821
         RPR_UpdateArrange()        # noqa: F821
-        RPR_Undo_EndBlock("Grid Align Transients V1.0", -1)  # noqa: F821
+        RPR_Undo_EndBlock("Grid Align Transients V2.0", -1)  # noqa: F821
 
     report = {"edited_segments": edited, "skipped": skipped,
               "neighbor_touched": False, "crossed_time_selection": False}
     if show_report:
         RPR_ShowMessageBox(  # noqa: F821
-            "Grid Align Transients V1.0\n\n"
+            "Grid Align Transients V2.0\n\n"
             "Segments corrected: {}\nItems skipped (playrate/reverse/section): {}\n"
             "Mode: {} / source: {}".format(edited, skipped, mode, source_mode),
-            "Grid Align Transients V1.0", 0)
+            "Grid Align Transients V2.0", 0)
     return report
 
 
