@@ -539,6 +539,11 @@ def _fill_gaps(track_id, moved_ids, crossfade_ms=_CROSSFADE_MS):
 _SOURCE_LABELS = ["Auto (detect)", "Existing splits"]
 _MODE_LABELS = ["Snap to grid", "Adaptive (groove)"]
 _GRID_LABELS = ["Project grid", "1/8", "1/16", "1/32"]
+# labels are index-aligned with the value lists (_SOURCES/_MODES/_GRIDS); a Combo
+# returns the chosen index, so a length mismatch would silently mis-map a dropdown.
+assert (len(_SOURCE_LABELS) == len(_SOURCES)
+        and len(_MODE_LABELS) == len(_MODES)
+        and len(_GRID_LABELS) == len(_GRIDS))
 
 _GA = None  # holds {"imgui", "ctx", "ui"} while the dialog is open
 

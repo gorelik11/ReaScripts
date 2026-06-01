@@ -40,17 +40,20 @@ touch described below.
 
 ```
 main()
-  └─ run_grid_align()            # unchanged entry
-       └─ _run_in_reaper(config) # unchanged core; accepts a config dict
-                ▲
-                │ config dict (same shape the core already consumes)
-        _imgui_dialog()          # NEW — replaces _read_user_dialog()
+  └─ run_grid_align()              # entry: routes by config
+       ├─ _run_in_reaper(cfg, show_report)  # core; given a full config dict
+       └─ _open_dialog()           # NEW interactive path (ReaImGui defer loop)
+              └─ _ga_frame()        # per-frame; on Apply -> _run_in_reaper(cfg, show_report=True)
 ```
 
 - `_read_user_dialog()` (the `GetUserInputs` CSV parser) is **removed**.
-- `_imgui_dialog()` is **added**: it builds and runs the ReaImGui window and
-  returns a `config` dict, or `None` on Cancel/close. `_run_in_reaper` keeps its
-  existing `from_dialog` branch logic but obtains `cfg` from `_imgui_dialog()`.
+- The dialog is split for the ImGui defer model: `_open_dialog()` loads ReaImGui
+  (graceful `None` if missing) and kicks a `defer` loop; `_ga_frame()` renders one
+  frame and, on Apply, builds the `config` dict and calls
+  `_run_in_reaper(cfg, show_report=True)`; Cancel/close stops the loop with no edits.
+- `_run_in_reaper(config, show_report=False)` always receives a full config (no
+  `from_dialog` branch). `run_grid_align` routes: `headless` → stub; explicit
+  `grid_threshold_ms` → core directly; otherwise → `_open_dialog()`.
 - Clean boundary: the core never imports or references ImGui; the dialog never
   references RPR edit functions beyond reading defaults.
 
