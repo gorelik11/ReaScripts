@@ -172,9 +172,29 @@ def test_run_in_reaper_mock() -> None:
     assert rep["moved_notes"] >= 1 and rep["skipped_notes"] >= 1
 
 
+def test_entrypoint_no_systemexit() -> None:
+    """Running the file as __main__ must NOT raise SystemExit (Py_Exit kills REAPER)."""
+    import runpy
+    calls = {"dialog": 0}
+
+    def fake_dialog(*a):
+        calls["dialog"] += 1
+        return (0,) + tuple(a)  # retval 0 -> cancel -> run_quantize returns None
+
+    mocks = {"RPR_GetUserInputs": fake_dialog, "RPR_ShowMessageBox": lambda *a: 0,
+             "RPR_GetSet_LoopTimeRange": lambda *a: (0, 0, 0.0, 0.0, 0),
+             "RPR_MIDIEditor_GetActive": lambda: 0,
+             "RPR_CountSelectedMediaItems": lambda p: 0}
+    try:
+        runpy.run_path(str(SCRIPT_PATH), init_globals=mocks, run_name="__main__")
+    except SystemExit as exc:
+        raise AssertionError("entry raised SystemExit -> would kill REAPER") from exc
+    assert calls["dialog"] == 1, "entry did not reach run_quantize"
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
-         test_report_schema_headless, test_run_in_reaper_mock]
+         test_report_schema_headless, test_run_in_reaper_mock, test_entrypoint_no_systemexit]
 
 
 def main() -> int:
