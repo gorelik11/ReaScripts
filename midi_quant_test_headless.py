@@ -172,6 +172,52 @@ def test_run_in_reaper_mock() -> None:
     assert rep["moved_notes"] >= 1 and rep["skipped_notes"] >= 1
 
 
+def test_undo_registers_state_change() -> None:
+    """A MIDI-API edit lands in the undo history only if the state change is
+    explicitly registered (MarkProjectDirty + Undo_OnStateChange2). A bare
+    Undo_BeginBlock/EndBlock pair does NOT record it -> 'undo doesn't save'."""
+    module = load_module(SCRIPT_PATH)
+    notes = [{"start": 960 + 60, "end": 1440, "sel": True, "muted": False,
+              "chan": 0, "pitch": 60}]  # one off-grid note -> at least one move
+    rec = {"dirty": 0, "statechange": [], "endblock2": 0}
+    g = {
+        "RPR_GetSet_LoopTimeRange": lambda *a: (0, 0, 0.0, 0.0, 0),
+        "RPR_MIDIEditor_GetActive": lambda: 0,
+        "RPR_CountSelectedMediaItems": lambda p: 1,
+        "RPR_GetSelectedMediaItem": lambda p, i: 100,
+        "RPR_GetActiveTake": lambda item: 1,
+        "RPR_TakeIsMIDI": lambda take: True,
+        "RPR_MIDI_CountEvts": lambda take, a, b, c: (1, take, 1, 0, 0),
+        "RPR_MIDI_GetNote": lambda take, i, *a: (
+            True, take, i, notes[i]["sel"], notes[i]["muted"], notes[i]["start"],
+            notes[i]["end"], notes[i]["chan"], notes[i]["pitch"], 96),
+        "RPR_MIDI_SetNote": lambda *a: True,
+        "RPR_MIDI_DisableSort": lambda take: None,
+        "RPR_MIDI_Sort": lambda take: None,
+        "RPR_MIDI_GetGrid": lambda take, a, b: (1.0, take, 0.0),
+        "RPR_MIDI_GetProjTimeFromPPQPos": lambda take, ppq: ppq / 960.0,
+        "RPR_MIDI_GetPPQPosFromProjTime": lambda take, t: round(t * 960.0),
+        "RPR_TimeMap2_timeToQN": lambda proj, t: t,
+        "RPR_TimeMap2_QNToTime": lambda proj, q: q,
+        # both old and new undo APIs available so the code can call either:
+        "RPR_Undo_BeginBlock": lambda *a: None,
+        "RPR_Undo_EndBlock": lambda *a: None,
+        "RPR_Undo_BeginBlock2": lambda proj: None,
+        "RPR_MarkProjectDirty": lambda proj: rec.__setitem__("dirty", rec["dirty"] + 1),
+        "RPR_UpdateArrange": lambda: None,
+        "RPR_Undo_OnStateChange2": lambda proj, label: rec["statechange"].append(label),
+        "RPR_Undo_EndBlock2": lambda proj, label, flags: rec.__setitem__("endblock2", rec["endblock2"] + 1),
+        "RPR_ShowMessageBox": lambda *a: 0,
+    }
+    for k, v in g.items():
+        setattr(module, k, v)
+    module._run_in_reaper({"grid_threshold_ms": 15.0, "mode": "snap",
+                           "allow_sixteenth": True, "include_triplets": False})
+    assert rec["dirty"] >= 1, "MarkProjectDirty not called -> undo won't register"
+    assert rec["statechange"], "Undo_OnStateChange2 not called -> edit missing from undo history"
+    assert rec["endblock2"] >= 1, "Undo_EndBlock2 not called"
+
+
 def test_entrypoint_no_systemexit() -> None:
     """Running the file as __main__ must NOT raise SystemExit (Py_Exit kills REAPER)."""
     import runpy
@@ -194,7 +240,8 @@ def test_entrypoint_no_systemexit() -> None:
 
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
-         test_report_schema_headless, test_run_in_reaper_mock, test_entrypoint_no_systemexit]
+         test_report_schema_headless, test_run_in_reaper_mock,
+         test_undo_registers_state_change, test_entrypoint_no_systemexit]
 
 
 def main() -> int:

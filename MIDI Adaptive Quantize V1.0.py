@@ -298,6 +298,32 @@ def _quantize_take(take, cfg, note_indices, time_sel):
     return moved, skipped
 
 
+def _undo_begin():
+    if "RPR_Undo_BeginBlock2" in globals():
+        RPR_Undo_BeginBlock2(0)  # noqa: F821
+    else:
+        RPR_Undo_BeginBlock()  # noqa: F821
+
+
+def _undo_end(label):
+    # MIDI-API edits (MIDI_SetNote) land in the undo history only if the state
+    # change is explicitly registered: MarkProjectDirty + Undo_OnStateChange2.
+    # A bare Undo_BeginBlock/EndBlock pair does NOT record them ("undo doesn't
+    # save"). Guarded with globals() so headless tests / older APIs degrade safely.
+    if "RPR_MarkProjectDirty" in globals():
+        RPR_MarkProjectDirty(0)  # noqa: F821
+    if "RPR_UpdateArrange" in globals():
+        RPR_UpdateArrange()  # noqa: F821
+    if "RPR_Undo_OnStateChange2" in globals():
+        RPR_Undo_OnStateChange2(0, label)  # noqa: F821
+    elif "RPR_Undo_OnStateChangeEx2" in globals():
+        RPR_Undo_OnStateChangeEx2(0, label, -1, -1)  # noqa: F821
+    if "RPR_Undo_EndBlock2" in globals():
+        RPR_Undo_EndBlock2(0, label, -1)  # noqa: F821
+    else:
+        RPR_Undo_EndBlock(label, -1)  # noqa: F821
+
+
 def _run_in_reaper(config):
     from_dialog = config.get("grid_threshold_ms") is None
     cfg = _read_dialog() if from_dialog else config
@@ -319,7 +345,7 @@ def _run_in_reaper(config):
                 "MIDI Adaptive Quantize V1.0", 0)
         return {"moved_notes": 0, "skipped_notes": 0, "ends_unchanged": True}
 
-    RPR_Undo_BeginBlock()  # noqa: F821
+    _undo_begin()
     moved = skipped = 0
     try:
         if scope["mode"] == "notes":
@@ -331,8 +357,7 @@ def _run_in_reaper(config):
                 moved += m
                 skipped += s
     finally:
-        RPR_UpdateArrange()  # noqa: F821
-        RPR_Undo_EndBlock("MIDI Adaptive Quantize V1.0", -1)  # noqa: F821
+        _undo_end("MIDI Adaptive Quantize V1.0")
 
     report = {"moved_notes": moved, "skipped_notes": skipped, "ends_unchanged": True}
     if from_dialog:
