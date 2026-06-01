@@ -279,6 +279,17 @@ def test_docs_present() -> None:
     assert os.path.exists("docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md")
 
 
+def test_resolve_fine_qn() -> None:
+    module = load_module(SCRIPT_PATH)
+    f = module.resolve_fine_qn
+    assert f("1/8", 1.0) == 0.5
+    assert f("1/16", 1.0) == 0.25
+    assert f("1/32", 1.0) == 0.125
+    assert f("project", 1.0) == 1.0
+    assert f("project", 0.5) == 0.5
+    assert f("bogus", 0.75) == 0.75   # unknown choice -> project grid
+
+
 def test_entrypoint_no_systemexit() -> None:
     """Running the file as __main__ must NOT raise SystemExit.
 
@@ -320,6 +331,7 @@ TESTS = [
     test_group_transients,
     test_select_family_positions,
     test_entrypoint_no_systemexit,
+    test_resolve_fine_qn,
 ]
 
 

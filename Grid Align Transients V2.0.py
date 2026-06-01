@@ -124,6 +124,20 @@ def _frange_qn(q0, q1, step):
     return out
 
 
+def resolve_fine_qn(grid_choice, grid_qn):
+    """Fine straight-grid step (QN) for a Grid dropdown choice.
+
+    'project' (or any unknown value) falls back to the project grid step.
+    """
+    if grid_choice == "1/8":
+        return 0.5
+    if grid_choice == "1/16":
+        return 0.25
+    if grid_choice == "1/32":
+        return 0.125
+    return grid_qn
+
+
 def build_grid_candidates_qn(cfg):
     """Straight + optional 1/16 + optional triplet candidate families (QN)."""
     q0, q1 = cfg["qn_start"], cfg["qn_end"]
