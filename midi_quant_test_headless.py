@@ -101,8 +101,20 @@ def test_plan_note_moves() -> None:
     assert none_moves == []
 
 
+def test_report_schema_headless() -> None:
+    module = load_module(SCRIPT_PATH)
+    rep = module.run_quantize({"headless": True, "grid_threshold_ms": 15.0,
+                               "mode": "snap", "allow_sixteenth": True,
+                               "include_triplets": False})
+    for key in ("moved_notes", "skipped_notes", "ends_unchanged"):
+        assert key in rep, (key, rep)
+    assert rep["ends_unchanged"] is True
+    assert isinstance(rep["moved_notes"], int)
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
-         test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves]
+         test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
+         test_report_schema_headless]
 
 
 def main() -> int:
