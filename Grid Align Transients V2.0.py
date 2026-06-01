@@ -536,8 +536,104 @@ def _fill_gaps(track_id, moved_ids, crossfade_ms=_CROSSFADE_MS):
     return filled
 
 
+_SOURCE_LABELS = ["Auto (detect)", "Existing splits"]
+_MODE_LABELS = ["Snap to grid", "Adaptive (groove)"]
+_GRID_LABELS = ["Project grid", "1/8", "1/16", "1/32"]
+
+_GA = None  # holds {"imgui", "ctx", "ui"} while the dialog is open
+
+
+def _items(labels):
+    """ReaImGui Combo expects null-terminated, null-separated items."""
+    return "\0".join(labels) + "\0"
+
+
 def _open_dialog():
-    return None  # replaced in Task 6
+    """Open the ReaImGui settings window; on Apply, run the core once.
+
+    Returns None immediately (the window runs on a defer loop). Any failure to load
+    ReaImGui returns None without crashing the host.
+    """
+    global _GA
+    try:
+        import os
+        import sys
+        api = os.path.join(RPR_GetResourcePath(),  # noqa: F821
+                           "Scripts", "ReaTeam Extensions", "API")
+        if api not in sys.path:
+            sys.path.insert(0, api)
+        import imgui as _ImGui
+    except Exception:
+        try:
+            RPR_ShowMessageBox(  # noqa: F821
+                "ReaImGui is required for the Grid Align dialog.\n\n"
+                "Install it via ReaPack:\n"
+                "Extensions > ReaPack > Browse packages > search 'ReaImGui'.",
+                "Grid Align Transients V2", 0)
+        except Exception:
+            pass
+        return None
+
+    try:
+        st = _load_defaults()
+        ctx = _ImGui.CreateContext("Grid Align Transients V2")
+        _GA = {
+            "imgui": _ImGui,
+            "ctx": ctx,
+            "ui": {
+                "thr": st["threshold_ms"],
+                "src": _SOURCES.index(st["source"]),
+                "mode": _MODES.index(st["mode"]),
+                "grid": _GRIDS.index(st["grid"]),
+                "trip": st["triplets"],
+            },
+        }
+        RPR_defer("_ga_frame()")  # noqa: F821
+    except Exception:
+        _GA = None
+    return None
+
+
+def _ga_frame():
+    """One ReaImGui frame. Re-defers itself until Apply / Cancel / window close."""
+    global _GA
+    g = _GA
+    if g is None:
+        return
+    ImGui = g["imgui"]
+    ctx = g["ctx"]
+    ui = g["ui"]
+
+    visible, open_ = ImGui.Begin(ctx, "Grid Align Transients V2", True)
+    apply_clicked = False
+    cancel_clicked = False
+    if visible:
+        _, ui["thr"] = ImGui.InputInt(ctx, "Threshold (ms)", ui["thr"])
+        _, ui["src"] = ImGui.Combo(ctx, "Source", ui["src"], _items(_SOURCE_LABELS))
+        _, ui["mode"] = ImGui.Combo(ctx, "Mode", ui["mode"], _items(_MODE_LABELS))
+        _, ui["grid"] = ImGui.Combo(ctx, "Grid", ui["grid"], _items(_GRID_LABELS))
+        _, ui["trip"] = ImGui.Checkbox(ctx, "Include triplet grid", ui["trip"])
+        apply_clicked = ImGui.Button(ctx, "Apply")
+        ImGui.SameLine(ctx)
+        cancel_clicked = ImGui.Button(ctx, "Cancel")
+    ImGui.End(ctx)  # ImGui requires End even when Begin returns not-visible
+
+    if apply_clicked:
+        thr = int(ui["thr"]) if ui["thr"] and ui["thr"] > 0 else 15
+        st = {"threshold_ms": thr, "source": _SOURCES[ui["src"]],
+              "mode": _MODES[ui["mode"]], "grid": _GRIDS[ui["grid"]],
+              "triplets": bool(ui["trip"])}
+        _save_defaults(st)
+        cfg = {"grid_threshold_ms": float(thr),
+               "transient_source": st["source"], "mode": st["mode"],
+               "grid_choice": st["grid"], "include_triplets": st["triplets"]}
+        _GA = None
+        _run_in_reaper(cfg, show_report=True)
+        return
+    if cancel_clicked or open_ == 0:
+        _GA = None
+        return
+    RPR_defer("_ga_frame()")  # noqa: F821
 
 
 def run_grid_align(config=None):
