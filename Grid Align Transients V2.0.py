@@ -139,11 +139,13 @@ def resolve_fine_qn(grid_choice, grid_qn):
 
 
 def build_grid_candidates_qn(cfg):
-    """Straight + optional 1/16 + optional triplet candidate families (QN)."""
+    """Straight + optional triplet candidate families (QN).
+
+    cfg["fine_qn"] is the already-resolved straight-grid step (see
+    resolve_fine_qn). Triplets, when enabled, subdivide that step by 3.
+    """
     q0, q1 = cfg["qn_start"], cfg["qn_end"]
-    step_straight = cfg["grid_qn"]
-    if cfg.get("allow_sixteenth"):
-        step_straight = min(step_straight, 0.25)
+    step_straight = cfg["fine_qn"]
     straight = _frange_qn(q0, q1, step_straight)
     triplet = []
     if cfg.get("include_triplets"):

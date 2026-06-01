@@ -129,20 +129,25 @@ def test_existing_splits_source() -> None:
 def test_grid_candidates() -> None:
     module = load_module(SCRIPT_PATH)
     cfg = {
-        "allow_sixteenth": True,
+        "fine_qn": 0.25,
         "include_triplets": True,
         "qn_start": 100.0,
         "qn_end": 102.0,
-        "grid_qn": 1.0,
     }
     out = module.build_grid_candidates_qn(cfg)
     assert "straight" in out and "triplet" in out
     assert any(abs(x - 100.25) < 1e-9 for x in out["straight"])
     assert any(abs(x - (100.0 + 1.0 / 3.0)) < 1e-9 for x in out["triplet"])
 
-    # triplets off -> empty triplet family
     cfg_no_trip = dict(cfg, include_triplets=False)
     assert module.build_grid_candidates_qn(cfg_no_trip)["triplet"] == []
+
+    # 1/8 choice -> straight spacing 0.5; no 100.25 sixteenth line present
+    eighth = module.build_grid_candidates_qn(
+        {"fine_qn": 0.5, "include_triplets": False,
+         "qn_start": 100.0, "qn_end": 102.0})
+    assert any(abs(x - 100.5) < 1e-9 for x in eighth["straight"])
+    assert not any(abs(x - 100.25) < 1e-9 for x in eighth["straight"])
 
 
 def test_group_family() -> None:
