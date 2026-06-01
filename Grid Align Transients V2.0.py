@@ -266,47 +266,6 @@ _CROSSFADE_MS = 5        # in-item overlap when filling gaps
 _EDGE_EPS = 0.005        # don't split closer than this to an item edge
 
 
-def _read_user_dialog():
-    """GetUserInputs (5 fields). Returns a config dict or None on cancel."""
-    result = RPR_GetUserInputs(  # noqa: F821
-        "Grid Align Transients V1.0",
-        5,
-        ("Grid threshold (ms),Transient source (auto/splits),"
-         "Correction mode (snap/adaptive),Allow 1/16 (0/1),Include triplets (0/1)"),
-        "15,auto,snap,1,0",
-        512,
-    )
-    if not isinstance(result, tuple) or not result[0]:
-        return None
-    csv = None
-    for i in range(len(result) - 1, -1, -1):
-        if isinstance(result[i], str) and "," in result[i]:
-            csv = result[i]
-            break
-    if csv is None:
-        return None
-    parts = [p.strip() for p in csv.split(",")]
-    if len(parts) != 5:
-        return None
-    try:
-        threshold_ms = float(parts[0])
-    except ValueError:
-        RPR_ShowMessageBox("Invalid threshold value.", "Error", 0)  # noqa: F821
-        return None
-    src = parts[1].lower()
-    transient_source = "splits" if src.startswith("s") else "auto"
-    mode = "adaptive" if parts[2].lower().startswith("a") else "snap"
-    allow_sixteenth = parts[3] not in ("0", "", "off", "no")
-    include_triplets = parts[4] not in ("0", "", "off", "no")
-    return {
-        "grid_threshold_ms": threshold_ms,
-        "transient_source": transient_source,
-        "mode": mode,
-        "allow_sixteenth": allow_sixteenth,
-        "include_triplets": include_triplets,
-    }
-
-
 def _get_time_selection():
     """Active time selection as (start, end), or None."""
     result = RPR_GetSet_LoopTimeRange(False, False, 0.0, 0.0, False)  # noqa: F821
@@ -543,6 +502,10 @@ def _fill_gaps(track_id, moved_ids, crossfade_ms=_CROSSFADE_MS):
     return filled
 
 
+def _open_dialog():
+    return None  # replaced in Task 6
+
+
 def run_grid_align(config=None):
     config = config or {}
     if config.get("headless"):
@@ -552,7 +515,9 @@ def run_grid_align(config=None):
             "neighbor_touched": False,
             "crossed_time_selection": False,
         }
-    return _run_in_reaper(config)
+    if config.get("grid_threshold_ms") is not None:
+        return _run_in_reaper(config)   # explicit config (automation / live tests)
+    return _open_dialog()               # interactive: ReaImGui defer loop
 
 
 def _plan_item_segments(m, time_sel, families_for, grid_step_for, gap_for,
@@ -612,32 +577,26 @@ def _plan_item_segments(m, time_sel, families_for, grid_step_for, gap_for,
     return planned, prev_lag
 
 
-def _run_in_reaper(config):
-    from_dialog = config.get("grid_threshold_ms") is None
-    cfg = _read_user_dialog() if from_dialog else config
-    if cfg is None:
-        return None  # user cancelled
-
+def _run_in_reaper(config, show_report=False):
+    cfg = config
     threshold_s = cfg["grid_threshold_ms"] / 1000.0
     mode = cfg["mode"]
     source_mode = cfg["transient_source"]
     grid_qn = _project_grid_qn()
-    fine_qn = grid_qn
-    if cfg["allow_sixteenth"]:
-        fine_qn = min(fine_qn, 0.25)
-    if cfg["include_triplets"]:
-        fine_qn = fine_qn / 3.0
+    straight_qn = resolve_fine_qn(cfg["grid_choice"], grid_qn)  # straight family step
+    # smallest candidate spacing drives the max-move guard step
+    fine_qn = straight_qn / 3.0 if cfg["include_triplets"] else straight_qn
 
     qn_of_time = lambda t: RPR_TimeMap2_timeToQN(0, t)            # noqa: F821,E731
     time_of_qn = lambda q: RPR_TimeMap2_QNToTime(0, q)           # noqa: F821,E731
 
     def families_for(win):
         qn_lo = qn_of_time(win["proj_start"])
-        q0 = math.floor(qn_lo / grid_qn) * grid_qn
-        cfg_w = {"allow_sixteenth": cfg["allow_sixteenth"],
+        q0 = math.floor(qn_lo / straight_qn) * straight_qn  # align to chosen fine grid
+        cfg_w = {"fine_qn": straight_qn,
                  "include_triplets": cfg["include_triplets"],
-                 "grid_qn": grid_qn, "qn_start": q0,
-                 "qn_end": qn_of_time(win["proj_end"]) + grid_qn}
+                 "qn_start": q0,
+                 "qn_end": qn_of_time(win["proj_end"]) + straight_qn}
         return build_grid_candidates_qn(cfg_w), q0
 
     grid_step_for = lambda q0: time_of_qn(q0 + fine_qn) - time_of_qn(q0)  # noqa: E731
@@ -646,7 +605,7 @@ def _run_in_reaper(config):
     time_sel = _get_time_selection()
     scope_items = _collect_scope_items(time_sel)
     if not scope_items:
-        if from_dialog:
+        if show_report:
             RPR_ShowMessageBox(  # noqa: F821
                 "Nothing to process.\n\n"
                 "Select the item(s) to align. With 2+ items selected, also make a "
@@ -728,7 +687,7 @@ def _run_in_reaper(config):
 
     report = {"edited_segments": edited, "skipped": skipped,
               "neighbor_touched": False, "crossed_time_selection": False}
-    if from_dialog:
+    if show_report:
         RPR_ShowMessageBox(  # noqa: F821
             "Grid Align Transients V1.0\n\n"
             "Segments corrected: {}\nItems skipped (playrate/reverse/section): {}\n"

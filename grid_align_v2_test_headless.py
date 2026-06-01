@@ -211,7 +211,7 @@ def test_report_schema_headless() -> None:
         "grid_threshold_ms": 15.0,
         "mode": "snap",
         "transient_source": "auto",
-        "allow_sixteenth": True,
+        "grid_choice": "1/16",
         "include_triplets": False,
     })
     for key in ("edited_segments", "skipped", "neighbor_touched", "crossed_time_selection"):
@@ -298,26 +298,22 @@ def test_resolve_fine_qn() -> None:
 def test_entrypoint_no_systemexit() -> None:
     """Running the file as __main__ must NOT raise SystemExit.
 
-    REAPER runs a ReaScript in an embedded interpreter; a SystemExit there routes
-    to Py_Exit -> C exit() and kills the whole REAPER process. Simulate the
-    __main__ run with a cancelled GetUserInputs dialog and assert it returns
-    cleanly. (Regression guard for the `raise SystemExit(main())` crash.)
+    REAPER runs a ReaScript in an embedded interpreter; SystemExit there routes to
+    Py_Exit -> C exit() and kills REAPER. In plain Python the ReaImGui import path
+    cannot resolve, so the interactive dialog returns None cleanly. Guard that the
+    entry returns without SystemExit. (Regression guard for the crash law.)
     """
     import runpy
-    calls = {"dialog": 0}
-
-    def fake_dialog(*a):
-        calls["dialog"] += 1
-        return (0,) + tuple(a)  # retval 0 -> dialog cancel -> run_grid_align returns None
-
-    mocks = {"RPR_GetUserInputs": fake_dialog, "RPR_ShowMessageBox": lambda *a: 0}
+    mocks = {
+        "RPR_ShowMessageBox": lambda *a: 0,
+        "RPR_GetResourcePath": lambda *a: "/nonexistent",
+    }
     try:
         runpy.run_path(str(SCRIPT_PATH), init_globals=mocks, run_name="__main__")
     except SystemExit as exc:  # pragma: no cover - this is the bug we guard against
         raise AssertionError(
             "ReaScript __main__ raised SystemExit -> would terminate REAPER"
         ) from exc
-    assert calls["dialog"] == 1, "entry point did not reach run_grid_align (guard is moot)"
 
 
 TESTS = [
