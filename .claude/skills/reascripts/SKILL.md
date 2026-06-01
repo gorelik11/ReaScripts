@@ -1,6 +1,6 @@
 ---
 name: reascripts
-description: Use when writing, editing, or debugging a REAPER ReaScript (Python/Lua/EEL) — building an action that edits items/takes/FX/envelopes, running the headless+reapy dev loop, or when REAPER crashes, freezes, or aborts during or after a script runs.
+description: Use when writing, editing, debugging, or TESTING a REAPER ReaScript (Python/Lua/EEL) — building an action that edits items/takes/FX/envelopes, unit-testing the RPR_* glue with the FakeReaper harness, running the headless+reapy dev loop, or when REAPER crashes, freezes, or aborts during or after a script runs.
 ---
 
 # ReaScripts (REAPER scripting)
@@ -33,6 +33,33 @@ the triggered thread's frames + `usedImages` names locate the fault). Main-threa
 law). Audio / `livefx` IOThread segfault inside a plugin (e.g. Kontakt) → the
 plugin's fault, even when it correlates with a script run (anticipative-FX
 re-renders the chain after the project changes).
+
+## FakeReaper — MANDATORY test layer BEFORE any live run
+
+A Python ReaScript's `RPR_*` glue MUST be unit-tested against an **in-memory fake
+REAPER** before you touch live REAPER. This is not optional and it is easy to
+forget — you do NOT have ambient access to a running REAPER, so the fake is how you
+test destructive edits (split/move/delete) safely and repeatably.
+
+- **Proven harness:** `~/projects/midi-composition/tests/_reaper_fakes.py`
+  (`ReaperFakes` builds a `{"RPR_name": callable}` map; covers selected
+  items/tracks, time selection, MIDI note enum/edit/insert/delete, take names,
+  PPQ↔time, undo blocks, `GetUserInputs`).
+- **How to wire it:** build the map, then inject onto the loaded module's globals —
+  `for n, fn in fakes.items(): setattr(module, n, fn)` — because the script calls
+  bare `RPR_*` names that resolve in the module namespace. Inject a fake `imgui`
+  module / `RPR_defer` the same way to test ReaImGui dialog mapping offline.
+- **Coverage caveat:** the proven set is MIDI-centric. Audio-item scripts must
+  extend it with the ops they use (`CreateTakeAudioAccessor` /
+  `GetAudioAccessorSamples`, `SplitMediaItem`, `TimeMap2_timeToQN`/`QNToTime`,
+  `GetSetProjectGrid`, `Get/SetExtState`, …) before faking that path.
+- **Protocol:** (1) pure logic in plain functions → normal unit tests; (2) the
+  `RPR_*` wrapper → FakeReaper tests; (3) live REAPER only as the FINAL smoke,
+  inside an undo block, after the fakes pass.
+- **Lua:** there is NO Lua fake harness yet. The *idea* ports, but today Lua is
+  tested by a small ported fake or live smoke with `/tmp` reports.
+- Full doctrine: `~/Knowledge/_infrastructure/m4/mcp-workflow.md` (§ "Тестовый fake
+  REAPER for Python ReaScript").
 
 ## Headless dev loop (live REAPER, via reapy)
 
