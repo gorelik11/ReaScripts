@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 SCRIPT_PATH = Path(__file__).with_name("MIDI Adaptive Quantize V2.0.py")
 
@@ -269,11 +272,63 @@ def test_ext_state_defaults() -> None:
     assert d["mode"] == "snap" and d["grid"] == "1/16"
 
 
+def test_dialog_apply_mapping() -> None:
+    module = load_module(SCRIPT_PATH)
+    from _reaper_fakes import FakeImGui
+    calls = {"run": [], "defer": 0, "saved": None}
+    module._run_in_reaper = lambda cfg, show_report=False: calls["run"].append((cfg, show_report))
+    module.RPR_defer = lambda s: calls.__setitem__("defer", calls["defer"] + 1)
+    module._save_defaults = lambda st: calls.__setitem__("saved", st)
+
+    fake = FakeImGui(apply=True)
+    module._GA = {"imgui": fake, "ctx": object(),
+                  "ui": {"thr": 22, "mode": 1, "grid": 3, "trip": True}}
+    module._ga_frame()
+
+    assert module._GA is None
+    assert calls["defer"] == 0
+    assert fake.ended == 1
+    assert fake.pushed == fake.popped and fake.pushed > 0   # theme balanced
+    assert len(calls["run"]) == 1
+    cfg, show_report = calls["run"][0]
+    assert show_report is True
+    assert cfg == {
+        "grid_threshold_ms": 22.0,
+        "mode": "adaptive",        # mode index 1
+        "grid_choice": "1/32",     # grid index 3
+        "include_triplets": True,
+    }
+    assert calls["saved"]["mode"] == "adaptive" and calls["saved"]["grid"] == "1/32"
+
+
+def test_dialog_cancel_and_redefer() -> None:
+    module = load_module(SCRIPT_PATH)
+    from _reaper_fakes import FakeImGui
+    calls = {"run": 0, "defer": 0}
+    module._run_in_reaper = lambda cfg, show_report=False: calls.__setitem__("run", calls["run"] + 1)
+    module.RPR_defer = lambda s: calls.__setitem__("defer", calls["defer"] + 1)
+    module._save_defaults = lambda st: None
+    base_ui = {"thr": 15, "mode": 0, "grid": 2, "trip": False}
+
+    module._GA = {"imgui": FakeImGui(cancel=True), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["run"] == 0 and calls["defer"] == 0 and module._GA is None
+
+    module._GA = {"imgui": FakeImGui(open_=1), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["run"] == 0 and calls["defer"] == 1 and module._GA is not None
+
+    module._GA = {"imgui": FakeImGui(open_=0), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["defer"] == 1 and module._GA is None
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
          test_report_schema_headless, test_run_in_reaper_mock,
          test_undo_registers_state_change, test_entrypoint_no_systemexit,
-         test_resolve_fine_qn, test_ext_state_defaults]
+         test_resolve_fine_qn, test_ext_state_defaults,
+         test_dialog_apply_mapping, test_dialog_cancel_and_redefer]
 
 
 def main() -> int:
