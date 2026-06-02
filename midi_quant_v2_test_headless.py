@@ -109,7 +109,7 @@ def test_plan_note_moves() -> None:
 def test_report_schema_headless() -> None:
     module = load_module(SCRIPT_PATH)
     rep = module.run_quantize({"headless": True, "grid_threshold_ms": 15.0,
-                               "mode": "snap", "allow_sixteenth": True,
+                               "mode": "snap", "grid_choice": "1/16",
                                "include_triplets": False})
     for key in ("moved_notes", "skipped_notes", "ends_unchanged"):
         assert key in rep, (key, rep)
@@ -165,7 +165,7 @@ def test_run_in_reaper_mock() -> None:
         setattr(module, k, v)
 
     rep = module._run_in_reaper({"grid_threshold_ms": 15.0, "mode": "snap",
-                                 "allow_sixteenth": True, "include_triplets": False})
+                                 "grid_choice": "1/16", "include_triplets": False})
     moved = {c["i"] for c in set_calls}
     assert 0 not in moved, "on-grid note must not move"
     assert 1 in moved, "off-grid note must move"
@@ -217,30 +217,25 @@ def test_undo_registers_state_change() -> None:
     for k, v in g.items():
         setattr(module, k, v)
     module._run_in_reaper({"grid_threshold_ms": 15.0, "mode": "snap",
-                           "allow_sixteenth": True, "include_triplets": False})
+                           "grid_choice": "1/16", "include_triplets": False})
     assert rec["dirty"] >= 1, "MarkProjectDirty not called -> undo won't register"
     assert rec["statechange"], "Undo_OnStateChange2 not called -> edit missing from undo history"
     assert rec["endblock2"] >= 1, "Undo_EndBlock2 not called"
 
 
 def test_entrypoint_no_systemexit() -> None:
-    """Running the file as __main__ must NOT raise SystemExit (Py_Exit kills REAPER)."""
+    """Running the file as __main__ must NOT raise SystemExit (Py_Exit kills REAPER).
+
+    In plain Python the ReaImGui import path cannot resolve, so the interactive dialog
+    returns None cleanly. Guard that the entry returns without SystemExit.
+    """
     import runpy
-    calls = {"dialog": 0}
-
-    def fake_dialog(*a):
-        calls["dialog"] += 1
-        return (0,) + tuple(a)  # retval 0 -> cancel -> run_quantize returns None
-
-    mocks = {"RPR_GetUserInputs": fake_dialog, "RPR_ShowMessageBox": lambda *a: 0,
-             "RPR_GetSet_LoopTimeRange": lambda *a: (0, 0, 0.0, 0.0, 0),
-             "RPR_MIDIEditor_GetActive": lambda: 0,
-             "RPR_CountSelectedMediaItems": lambda p: 0}
+    mocks = {"RPR_ShowMessageBox": lambda *a: 0,
+             "RPR_GetResourcePath": lambda *a: "/nonexistent"}
     try:
         runpy.run_path(str(SCRIPT_PATH), init_globals=mocks, run_name="__main__")
     except SystemExit as exc:
         raise AssertionError("entry raised SystemExit -> would kill REAPER") from exc
-    assert calls["dialog"] == 1, "entry did not reach run_quantize"
 
 
 def test_resolve_fine_qn() -> None:

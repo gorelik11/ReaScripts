@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MIDI Adaptive Quantize V1.0 — quantize only off-grid MIDI note starts."""
+"""MIDI Adaptive Quantize V2.0 — quantize only off-grid MIDI note starts."""
 
 from __future__ import annotations
 
@@ -177,36 +177,18 @@ def resolve_quant_scope(ctx):
     return {"mode": "none"}
 
 
+def _open_dialog():
+    return None  # replaced in Task 6
+
+
 def run_quantize(config=None):
     config = config or {}
     if config.get("headless"):
         return {"moved_notes": 0, "skipped_notes": 0, "ends_unchanged": True}
-    return _run_in_reaper(config)
+    if config.get("grid_threshold_ms") is not None:
+        return _run_in_reaper(config)   # explicit config (automation / live tests)
+    return _open_dialog()               # interactive: ReaImGui defer loop
 
-
-def _read_dialog():
-    res = RPR_GetUserInputs(  # noqa: F821
-        "MIDI Adaptive Quantize V1.0", 4,
-        "Grid threshold (ms),Correction mode (snap/adaptive),Allow 1/16 (0/1),Include triplets (0/1)",
-        "15,snap,1,0", 256)
-    if not isinstance(res, tuple) or not res[0]:
-        return None
-    csv = next((res[i] for i in range(len(res) - 1, -1, -1)
-                if isinstance(res[i], str) and "," in res[i]), None)
-    if csv is None:
-        return None
-    p = [x.strip() for x in csv.split(",")]
-    if len(p) != 4:
-        return None
-    try:
-        thr = float(p[0])
-    except ValueError:
-        RPR_ShowMessageBox("Invalid threshold.", "Error", 0)  # noqa: F821
-        return None
-    return {"grid_threshold_ms": thr,
-            "mode": "adaptive" if p[1].lower().startswith("a") else "snap",
-            "allow_sixteenth": p[2] not in ("0", "", "off", "no"),
-            "include_triplets": p[3] not in ("0", "", "off", "no")}
 
 
 def _note_count(take):
@@ -258,11 +240,8 @@ def _quantize_take(take, cfg, note_indices, time_sel):
     grid_qn = RPR_MIDI_GetGrid(take, 0.0, 0.0)[0]  # noqa: F821  (QN)
     qn_of_time = lambda t: RPR_TimeMap2_timeToQN(0, t)          # noqa: F821,E731
     time_of_qn = lambda q: RPR_TimeMap2_QNToTime(0, q)         # noqa: F821,E731
-    fine_qn = grid_qn
-    if cfg["allow_sixteenth"]:
-        fine_qn = min(fine_qn, 0.25)
-    if cfg["include_triplets"]:
-        fine_qn = fine_qn / 3.0
+    straight_qn = resolve_fine_qn(cfg["grid_choice"], grid_qn)
+    fine_qn = straight_qn / 3.0 if cfg["include_triplets"] else straight_qn
     grid_step_for = lambda q0: time_of_qn(q0 + fine_qn) - time_of_qn(q0)  # noqa: E731
 
     # gather (index, onset_time, end_ppq), filtered to time selection if any
@@ -281,10 +260,10 @@ def _quantize_take(take, cfg, note_indices, time_sel):
     onsets = [n["t"] for n in notes]
 
     qn_lo = qn_of_time(min(onsets))
-    q0 = math.floor(qn_lo / grid_qn) * grid_qn
+    q0 = math.floor(qn_lo / straight_qn) * straight_qn  # align to chosen fine grid
     families = build_grid_candidates_qn({
-        "fine_qn": fine_qn, "include_triplets": cfg["include_triplets"],
-        "qn_start": q0, "qn_end": qn_of_time(max(onsets)) + grid_qn})
+        "fine_qn": straight_qn, "include_triplets": cfg["include_triplets"],
+        "qn_start": q0, "qn_end": qn_of_time(max(onsets)) + straight_qn})
 
     gap_s = max(0.01, 0.5 * grid_step_for(q0))
     plans = plan_note_moves(onsets, families, qn_of_time, time_of_qn,
@@ -340,11 +319,8 @@ def _undo_end(label):
         RPR_Undo_EndBlock(label, -1)  # noqa: F821
 
 
-def _run_in_reaper(config):
-    from_dialog = config.get("grid_threshold_ms") is None
-    cfg = _read_dialog() if from_dialog else config
-    if cfg is None:
-        return None
+def _run_in_reaper(config, show_report=False):
+    cfg = config
 
     time_sel = _time_selection()
     note_take, sel_notes = _active_editor_selected_notes()
@@ -354,11 +330,11 @@ def _run_in_reaper(config):
         "time_sel": time_sel})
 
     if scope["mode"] == "none":
-        if from_dialog:
+        if show_report:
             RPR_ShowMessageBox(  # noqa: F821
                 "Nothing to quantize.\n\nSelect notes in the MIDI editor, or select "
                 "MIDI item(s). Nothing selected = no-op.",
-                "MIDI Adaptive Quantize V1.0", 0)
+                "MIDI Adaptive Quantize V2.0", 0)
         return {"moved_notes": 0, "skipped_notes": 0, "ends_unchanged": True}
 
     _undo_begin()
@@ -373,14 +349,14 @@ def _run_in_reaper(config):
                 moved += m
                 skipped += s
     finally:
-        _undo_end("MIDI Adaptive Quantize V1.0")
+        _undo_end("MIDI Adaptive Quantize V2.0")
 
     report = {"moved_notes": moved, "skipped_notes": skipped, "ends_unchanged": True}
-    if from_dialog:
+    if show_report:
         RPR_ShowMessageBox(  # noqa: F821
-            "MIDI Adaptive Quantize V1.0\n\nMoved: {}\nSkipped (would cross end): {}\n"
+            "MIDI Adaptive Quantize V2.0\n\nMoved: {}\nSkipped (would cross end): {}\n"
             "Mode: {}".format(moved, skipped, cfg["mode"]),
-            "MIDI Adaptive Quantize V1.0", 0)
+            "MIDI Adaptive Quantize V2.0", 0)
     return report
 
 
