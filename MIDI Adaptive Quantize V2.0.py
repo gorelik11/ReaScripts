@@ -33,11 +33,13 @@ def resolve_fine_qn(grid_choice, grid_qn):
 
 
 def build_grid_candidates_qn(cfg):
-    """Straight + optional 1/16 + optional triplet candidate families (QN)."""
+    """Straight + optional triplet candidate families (QN).
+
+    cfg["fine_qn"] is the already-resolved straight-grid step (see resolve_fine_qn).
+    Triplets, when enabled, subdivide that step by 3.
+    """
     q0, q1 = cfg["qn_start"], cfg["qn_end"]
-    step_straight = cfg["grid_qn"]
-    if cfg.get("allow_sixteenth"):
-        step_straight = min(step_straight, 0.25)
+    step_straight = cfg["fine_qn"]
     straight = _frange_qn(q0, q1, step_straight)
     triplet = []
     if cfg.get("include_triplets"):
@@ -281,8 +283,8 @@ def _quantize_take(take, cfg, note_indices, time_sel):
     qn_lo = qn_of_time(min(onsets))
     q0 = math.floor(qn_lo / grid_qn) * grid_qn
     families = build_grid_candidates_qn({
-        "allow_sixteenth": cfg["allow_sixteenth"], "include_triplets": cfg["include_triplets"],
-        "grid_qn": grid_qn, "qn_start": q0, "qn_end": qn_of_time(max(onsets)) + grid_qn})
+        "fine_qn": fine_qn, "include_triplets": cfg["include_triplets"],
+        "qn_start": q0, "qn_end": qn_of_time(max(onsets)) + grid_qn})
 
     gap_s = max(0.01, 0.5 * grid_step_for(q0))
     plans = plan_note_moves(onsets, families, qn_of_time, time_of_qn,
