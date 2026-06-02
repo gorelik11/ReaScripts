@@ -177,6 +177,37 @@ def resolve_quant_scope(ctx):
     return {"mode": "none"}
 
 
+_EXT_SECT = "MidiAdaptiveQuantize"
+_MODES = ["snap", "adaptive"]
+_GRIDS = ["project", "1/8", "1/16", "1/32"]
+
+
+def _load_defaults():
+    """Read last-used dialog settings from ExtState, with safe fallbacks."""
+    def g(key, default):
+        v = RPR_GetExtState(_EXT_SECT, key)  # noqa: F821
+        return v if v else default
+    try:
+        thr = int(float(g("threshold_ms", "15")))
+    except ValueError:
+        thr = 15
+    mode = g("mode", "snap")
+    grid = g("grid", "1/16")
+    return {
+        "threshold_ms": thr,
+        "mode": mode if mode in _MODES else "snap",
+        "grid": grid if grid in _GRIDS else "1/16",
+        "triplets": g("triplets", "0") not in ("0", "", "off", "no"),
+    }
+
+
+def _save_defaults(st):
+    RPR_SetExtState(_EXT_SECT, "threshold_ms", str(st["threshold_ms"]), True)  # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "mode", st["mode"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "grid", st["grid"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "triplets", "1" if st["triplets"] else "0", True)  # noqa: F821
+
+
 def _open_dialog():
     return None  # replaced in Task 6
 

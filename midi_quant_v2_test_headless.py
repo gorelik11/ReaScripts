@@ -249,11 +249,31 @@ def test_resolve_fine_qn() -> None:
     assert f("bogus", 0.75) == 0.75   # unknown -> project grid
 
 
+def test_ext_state_defaults() -> None:
+    module = load_module(SCRIPT_PATH)
+    store = {}
+    module.RPR_GetExtState = lambda sect, key: store.get((sect, key), "")
+    module.RPR_SetExtState = lambda sect, key, val, persist: store.__setitem__((sect, key), val)
+
+    assert module._load_defaults() == {
+        "threshold_ms": 15, "mode": "snap", "grid": "1/16", "triplets": False}
+
+    module._save_defaults({"threshold_ms": 22, "mode": "adaptive",
+                           "grid": "1/32", "triplets": True})
+    assert module._load_defaults() == {
+        "threshold_ms": 22, "mode": "adaptive", "grid": "1/32", "triplets": True}
+
+    store[("MidiAdaptiveQuantize", "mode")] = "garbage"
+    store[("MidiAdaptiveQuantize", "grid")] = "1/3"
+    d = module._load_defaults()
+    assert d["mode"] == "snap" and d["grid"] == "1/16"
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
          test_report_schema_headless, test_run_in_reaper_mock,
          test_undo_registers_state_change, test_entrypoint_no_systemexit,
-         test_resolve_fine_qn]
+         test_resolve_fine_qn, test_ext_state_defaults]
 
 
 def main() -> int:
