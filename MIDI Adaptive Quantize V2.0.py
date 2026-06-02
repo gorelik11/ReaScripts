@@ -208,8 +208,130 @@ def _save_defaults(st):
     RPR_SetExtState(_EXT_SECT, "triplets", "1" if st["triplets"] else "0", True)  # noqa: F821
 
 
+_MODE_LABELS = ["Snap to grid", "Adaptive (groove)"]
+_GRID_LABELS = ["Project grid", "1/8", "1/16", "1/32"]
+
+# forest-green accent palette (ReaImGui packs colors as 0xRRGGBBAA)
+def _rgba(r, g, b, a=1.0):
+    return ((int(r * 255) << 24) | (int(g * 255) << 16)
+            | (int(b * 255) << 8) | int(a * 255))
+
+_GREEN_DIM = _rgba(0.26, 0.55, 0.27)
+_GREEN_HOT = _rgba(0.36, 0.72, 0.38)
+_GREEN_DARK = _rgba(0.16, 0.30, 0.17)
+
+_GA = None  # holds {"imgui", "ctx", "ui"} while the dialog is open
+
+
+def _items(labels):
+    """ReaImGui Combo expects null-terminated, null-separated items."""
+    return "\0".join(labels) + "\0"
+
+
+def _theme_pairs(ImGui):
+    """(color-slot, color) pairs for the green accent; pushed before Begin."""
+    return [
+        (ImGui.Col_Button(), _GREEN_DIM),
+        (ImGui.Col_ButtonHovered(), _GREEN_HOT),
+        (ImGui.Col_ButtonActive(), _GREEN_HOT),
+        (ImGui.Col_FrameBg(), _GREEN_DARK),
+        (ImGui.Col_FrameBgHovered(), _GREEN_DIM),
+        (ImGui.Col_FrameBgActive(), _GREEN_DIM),
+        (ImGui.Col_Header(), _GREEN_DIM),
+        (ImGui.Col_HeaderHovered(), _GREEN_HOT),
+        (ImGui.Col_HeaderActive(), _GREEN_HOT),
+        (ImGui.Col_CheckMark(), _GREEN_HOT),
+        (ImGui.Col_TitleBgActive(), _GREEN_DIM),
+    ]
+
+
 def _open_dialog():
-    return None  # replaced in Task 6
+    """Open the ReaImGui settings window; on Apply, run the core once.
+
+    Returns None immediately (the window runs on a defer loop). Any failure to load
+    ReaImGui returns None without crashing the host.
+    """
+    global _GA
+    try:
+        import os
+        import sys
+        api = os.path.join(RPR_GetResourcePath(),  # noqa: F821
+                           "Scripts", "ReaTeam Extensions", "API")
+        if api not in sys.path:
+            sys.path.insert(0, api)
+        import imgui as _ImGui
+    except Exception:
+        try:
+            RPR_ShowMessageBox(  # noqa: F821
+                "ReaImGui is required for the MIDI Adaptive Quantize dialog.\n\n"
+                "Install it via ReaPack:\n"
+                "Extensions > ReaPack > Browse packages > search 'ReaImGui'.",
+                "MIDI Adaptive Quantize V2.0", 0)
+        except Exception:
+            pass
+        return None
+
+    try:
+        st = _load_defaults()
+        ctx = _ImGui.CreateContext("MIDI Adaptive Quantize V2")
+        _GA = {
+            "imgui": _ImGui,
+            "ctx": ctx,
+            "ui": {
+                "thr": st["threshold_ms"],
+                "mode": _MODES.index(st["mode"]),
+                "grid": _GRIDS.index(st["grid"]),
+                "trip": st["triplets"],
+            },
+        }
+        RPR_defer("_ga_frame()")  # noqa: F821
+    except Exception:
+        _GA = None
+    return None
+
+
+def _ga_frame():
+    """One ReaImGui frame (green theme). Re-defers until Apply / Cancel / close."""
+    global _GA
+    g = _GA
+    if g is None:
+        return
+    ImGui = g["imgui"]
+    ctx = g["ctx"]
+    ui = g["ui"]
+
+    pairs = _theme_pairs(ImGui)
+    for slot, col in pairs:
+        ImGui.PushStyleColor(ctx, slot, col)
+
+    visible, open_ = ImGui.Begin(ctx, "MIDI Adaptive Quantize V2", True)
+    apply_clicked = False
+    cancel_clicked = False
+    if visible:
+        _, ui["thr"] = ImGui.InputInt(ctx, "Threshold (ms)", ui["thr"])
+        _, ui["mode"] = ImGui.Combo(ctx, "Mode", ui["mode"], _items(_MODE_LABELS))
+        _, ui["grid"] = ImGui.Combo(ctx, "Grid", ui["grid"], _items(_GRID_LABELS))
+        _, ui["trip"] = ImGui.Checkbox(ctx, "Include triplet grid", ui["trip"])
+        apply_clicked = ImGui.Button(ctx, "Apply")
+        ImGui.SameLine(ctx)
+        cancel_clicked = ImGui.Button(ctx, "Cancel")
+    ImGui.End(ctx)  # ImGui requires End even when Begin returns not-visible
+    ImGui.PopStyleColor(ctx, len(pairs))
+
+    if apply_clicked:
+        thr = int(ui["thr"]) if ui["thr"] and ui["thr"] > 0 else 15
+        st = {"threshold_ms": thr, "mode": _MODES[ui["mode"]],
+              "grid": _GRIDS[ui["grid"]], "triplets": bool(ui["trip"])}
+        _save_defaults(st)
+        cfg = {"grid_threshold_ms": float(thr), "mode": st["mode"],
+               "grid_choice": st["grid"], "include_triplets": st["triplets"]}
+        _GA = None
+        _run_in_reaper(cfg, show_report=True)
+        return
+    if cancel_clicked or open_ == 0:
+        _GA = None
+        return
+    RPR_defer("_ga_frame()")  # noqa: F821
 
 
 def run_quantize(config=None):
