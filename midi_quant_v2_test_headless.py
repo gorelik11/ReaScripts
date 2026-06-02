@@ -238,10 +238,22 @@ def test_entrypoint_no_systemexit() -> None:
     assert calls["dialog"] == 1, "entry did not reach run_quantize"
 
 
+def test_resolve_fine_qn() -> None:
+    module = load_module(SCRIPT_PATH)
+    f = module.resolve_fine_qn
+    assert f("1/8", 1.0) == 0.5
+    assert f("1/16", 1.0) == 0.25
+    assert f("1/32", 1.0) == 0.125
+    assert f("project", 1.0) == 1.0
+    assert f("project", 0.5) == 0.5
+    assert f("bogus", 0.75) == 0.75   # unknown -> project grid
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
          test_report_schema_headless, test_run_in_reaper_mock,
-         test_undo_registers_state_change, test_entrypoint_no_systemexit]
+         test_undo_registers_state_change, test_entrypoint_no_systemexit,
+         test_resolve_fine_qn]
 
 
 def main() -> int:
