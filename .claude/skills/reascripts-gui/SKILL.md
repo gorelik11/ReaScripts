@@ -39,7 +39,7 @@ A persistent window runs on REAPER's `defer` loop; the script returns immediatel
    vis, open_ = ImGui.Begin(ctx, "My Tool", True)
    if vis:
        _, ui["amt"]  = ImGui.InputInt(ctx, "Amount", ui["amt"])
-       _, ui["mode"] = ImGui.Combo(ctx, "Mode", ui["mode"], "Snap\0Adaptive\0")  # NULL-separated + trailing NUL
+       ui["mode"]    = _combo(ImGui, ctx, "Mode", ui["mode"], ["Snap", "Adaptive"])  # portable dropdown
        _, ui["trip"] = ImGui.Checkbox(ctx, "Triplets", ui["trip"])
        apply_  = ImGui.Button(ctx, "Apply"); ImGui.SameLine(ctx)
        cancel_ = ImGui.Button(ctx, "Cancel")
@@ -48,12 +48,23 @@ A persistent window runs on REAPER's `defer` loop; the script returns immediatel
    if cancel_ or open_ == 0: return
    RPR_defer("_my_frame()")
    ```
-   `Combo`/`InputInt`/`Checkbox` return `(changed, value)`; map the dropdown INDEX to the config string (`_MODES[idx]`).
+   `_combo` returns the chosen index; `InputInt`/`Checkbox` return `(changed, value)`. Map the dropdown INDEX to the config string (`_MODES[idx]`). Build the dropdown portably (NOT the version-gated `ImGui_Combo` helper — see gotchas):
+   ```python
+   def _combo(ImGui, ctx, label, idx, labels):
+       if ImGui.BeginCombo(ctx, label, labels[idx]):
+           for i, lab in enumerate(labels):
+               clicked, _ = ImGui.Selectable(ctx, lab, i == idx)
+               if clicked: idx = i
+           ImGui.EndCombo(ctx)
+       return idx
+   ```
+   For an option that only applies in some modes, wrap its `_combo` in `ImGui.BeginDisabled(ctx)`/`ImGui.EndDisabled(ctx)` to grey it out.
 4. **ExtState** — `RPR_GetExtState`/`RPR_SetExtState(sect,key,val,True)` to remember last choices; validate against the canonical lists, fall back to defaults.
 5. **Green/custom theme** — before `Begin`, `ImGui.PushStyleColor(ctx, ImGui.Col_Button(), 0xRRGGBBAA)` for each slot (Button/Header/FrameBg/CheckMark/TitleBgActive + hover/active); after `End`, `ImGui.PopStyleColor(ctx, <same count>)`. Pack `0xRRGGBBAA`.
 
 ## Non-obvious glue gotchas (where agents get it wrong)
 
+- **`ImGui_Combo` is version-gated — use `BeginCombo`/`Selectable`/`EndCombo` instead.** The one-call `Combo`/null-separated-items helper throws `ImGui_Combo: requires REAPER v6.44 or newer (use BeginCombo or BeginListBox for wider compatibility)` on some machines (seen LIVE on Big Sur / REAPER v7.73, while it rendered fine on Sequoia) — a portability trap, since the dialog runs across the user's machines. Build dropdowns with the `_combo` helper above. (Live-confirmed fix in Drift Sync Correct V2.)
 - **Every REAPER API call is `RPR_`-prefixed in Python** (`RPR_MIDI_GetNote`, `RPR_MIDIEditor_GetActive`, `RPR_Undo_BeginBlock2`). Bare `MIDI_GetNote(...)` → `NameError`. (ReaImGui shim funcs are the exception — they're `ImGui.X` after `import imgui`.)
 - **Wrapper return shapes echo output params.** `RPR_MIDI_CountEvts(take,0,0,0)` → `(retval, take, notecnt, ccs, sysex)` (note count is `[2]`). `RPR_MIDI_GetNote(...)` → 10-tuple. Read the shape; don't assume scalars.
 - **`RPR_defer` takes a STRING** evaluated in module globals — the frame fn must be module-level, not a closure/lambda.
@@ -62,7 +73,7 @@ A persistent window runs on REAPER's `defer` loop; the script returns immediatel
 
 ## Testing — FakeReaper FIRST (mandatory)
 
-Per the `reascripts` skill: (1) pure logic → plain unit tests; (2) the `_*_frame` mapping → a **FakeReaper** test with a fake `imgui` (echo widgets, scripted Apply/Cancel, no-op `PushStyleColor`/`PopStyleColor`, `__getattr__`→no-op for `Col_*`) + spies on `_run_in_reaper`/`RPR_defer` — assert dropdown index→config mapping and Apply-calls-core-once BEFORE live; (3) live smoke last. Copy `_reaper_fakes.py`'s `FakeImGui`.
+Per the `reascripts` skill: (1) pure logic → plain unit tests; (2) the `_*_frame` mapping → a **FakeReaper** test with a fake `imgui` (echo widgets, scripted Apply/Cancel, no-op `PushStyleColor`/`PopStyleColor`, `__getattr__`→no-op/0 for `Col_*`/`BeginCombo`/`Selectable`/`BeginDisabled`) + spies on `_run_in_reaper`/`RPR_defer` — preset the `ui` indices, then assert dropdown index→config mapping and Apply-calls-core-once BEFORE live (`BeginCombo`→0 skips the combo body, so the test drives the frame via the preset indices); (3) live smoke last. Copy `_reaper_fakes.py`'s `FakeImGui`.
 
 ## Lua paths (briefly)
 
