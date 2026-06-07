@@ -19,10 +19,41 @@ instead of loading whole files.
   normally. The `def main() -> int: … return 0` + `raise SystemExit(main())` CLI
   idiom is FATAL here. An ordinary unhandled exception is safe (REAPER shows it in
   the console); only interpreter-exit calls kill the host.
-- **One `Undo_BeginBlock()` … `Undo_EndBlock(name, -1)`** around all edits.
+- **Wrap edits in one undo block.** For MIDI-API edits (`MIDI_SetNote`/`…Delete`)
+  prefer EXPLICIT registration over a bare block: `Undo_BeginBlock2(0)` … then
+  `MarkProjectDirty(0)` + `Undo_OnStateChange2(0,label)` + `Undo_EndBlock2(0,label,-1)`
+  (see scripts-reference "Editing & undo gotchas"). A bare `Undo_BeginBlock/EndBlock`
+  has registered MIDI undo in practice but isn't guaranteed.
 - **Batch edits: process items in REVERSE position order** (positions shift as you edit).
 - **Audio accessor: read from accessor position 0, NOT `D_STARTOFFS`** (offset is baked in).
 - **Never set track automation mode to READ** in scripts (Dima's standing rule).
+- **REAPER runs the file the ACTION points to** (per `reaper-kb.ini`), re-read each
+  run — NOT whatever copy you just edited elsewhere. "Fixed it but REAPER still does
+  the old thing" → the action points at a stale copy; keep the registered file in sync.
+
+## MIDI edit traps (silent data corruption — FakeReaper won't catch these)
+
+These don't crash; they quietly edit the WRONG notes live while offline tests stay
+green. Both cost real debugging on the repeated-note-merge tool (2026-06).
+
+- **`MIDI_CountEvts`/`MIDI_GetNote` return ALL notes in the TAKE, not just the
+  visible item.** A trimmed item is a window onto its take; a Jam-Origin MIDI-Guitar
+  take can run hundreds of notes and tens of seconds past the item edges (seen: 768
+  notes, −35 s … +108 s, for a ~6 s item). Editing "the whole item" then
+  merges/deletes notes the user can't even see — and if the take is POOLED (ghost
+  copies), the change hits every copy on other tracks. ALWAYS clip read notes to the
+  item's project-time bounds `[D_POSITION, D_POSITION+D_LENGTH)` (intersect with the
+  time selection if present). A time selection ALONE does not bound it if it's wider
+  than the item or the item has no TS.
+- **In-place `MIDI_SetNote` invalidates note indices; a later `DeleteNote(idx)` then
+  deletes the WRONG note.** REAPER re-sorts events on edit, so indices captured from
+  `GetNote` go stale after any `SetNote` (especially timing changes) — even with the
+  `noSort` arg set. Symptom: deletes unrelated different-pitch notes and fails to
+  extend the intended one. FakeReaper does NOT model the re-sort, so index-based
+  in-place edits pass offline and corrupt live. SAFE pattern (the project's proven
+  one): compute the final note set, DELETE every in-scope note by index high-to-low,
+  then RE-INSERT the result, with a single `MIDI_Sort` at the end. Never interleave
+  `SetNote` with index-based `DeleteNote`.
 
 ## When REAPER crashes or freezes
 
