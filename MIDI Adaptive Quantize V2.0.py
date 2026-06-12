@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MIDI Adaptive Quantize V2.0 — quantize only off-grid MIDI note starts."""
+"""MIDI Adaptive Quantize V2.0 -- quantize only off-grid MIDI note starts."""
 
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ def compute_move(curr_delta, threshold, mode, prev_lag, grid_step):
         target_off = 0.0                # snap to grid
     move = target_off - curr_delta
     if grid_step is not None and abs(move) > grid_step:
-        return None  # would cross into a neighbor slot — skip
+        return None  # would cross into a neighbor slot -- skip
     return move
 
 
@@ -223,26 +223,46 @@ _GREEN_DARK = _rgba(0.16, 0.30, 0.17)
 _GA = None  # holds {"imgui", "ctx", "ui"} while the dialog is open
 
 
-def _items(labels):
-    """ReaImGui Combo expects null-terminated, null-separated items."""
-    return "\0".join(labels) + "\0"
+def _combo(ImGui, ctx, label, idx, labels):
+    """Portable dropdown (avoids the version-gated ImGui.Combo). Returns index."""
+    if ImGui.BeginCombo(ctx, label, labels[idx]):
+        for i, lab in enumerate(labels):
+            clicked, _ = ImGui.Selectable(ctx, lab, i == idx)
+            if clicked:
+                idx = i
+        ImGui.EndCombo(ctx)
+    return idx
 
 
-def _theme_pairs(ImGui):
-    """(color-slot, color) pairs for the green accent; pushed before Begin."""
-    return [
-        (ImGui.Col_Button(), _GREEN_DIM),
-        (ImGui.Col_ButtonHovered(), _GREEN_HOT),
-        (ImGui.Col_ButtonActive(), _GREEN_HOT),
-        (ImGui.Col_FrameBg(), _GREEN_DARK),
-        (ImGui.Col_FrameBgHovered(), _GREEN_DIM),
-        (ImGui.Col_FrameBgActive(), _GREEN_DIM),
-        (ImGui.Col_Header(), _GREEN_DIM),
-        (ImGui.Col_HeaderHovered(), _GREEN_HOT),
-        (ImGui.Col_HeaderActive(), _GREEN_HOT),
-        (ImGui.Col_CheckMark(), _GREEN_HOT),
-        (ImGui.Col_TitleBgActive(), _GREEN_DIM),
-    ]
+_THEME = [  # (Col getter name, color) -- forest-green accent
+    ("Col_Button", _GREEN_DIM),
+    ("Col_ButtonHovered", _GREEN_HOT),
+    ("Col_ButtonActive", _GREEN_HOT),
+    ("Col_FrameBg", _GREEN_DARK),
+    ("Col_FrameBgHovered", _GREEN_DIM),
+    ("Col_FrameBgActive", _GREEN_DIM),
+    ("Col_Header", _GREEN_DIM),
+    ("Col_HeaderHovered", _GREEN_HOT),
+    ("Col_HeaderActive", _GREEN_HOT),
+    ("Col_CheckMark", _GREEN_HOT),
+    ("Col_TitleBgActive", _GREEN_DIM),
+]
+
+
+def _push_theme(ImGui, ctx):
+    """Push the accent colors; return how many were actually pushed.
+
+    Defensive: a Col_* name missing on some ReaImGui version must never break
+    the (functional) dialog. We push what we can and pop exactly that many.
+    """
+    pushed = 0
+    for name, color in _THEME:
+        try:
+            ImGui.PushStyleColor(ctx, getattr(ImGui, name)(), color)
+            pushed += 1
+        except Exception:
+            break
+    return pushed
 
 
 def _open_dialog():
@@ -300,23 +320,21 @@ def _ga_frame():
     ctx = g["ctx"]
     ui = g["ui"]
 
-    pairs = _theme_pairs(ImGui)
-    for slot, col in pairs:
-        ImGui.PushStyleColor(ctx, slot, col)
-
+    pushed = _push_theme(ImGui, ctx)
     visible, open_ = ImGui.Begin(ctx, "MIDI Adaptive Quantize V2", True)
     apply_clicked = False
     cancel_clicked = False
     if visible:
         _, ui["thr"] = ImGui.InputInt(ctx, "Threshold (ms)", ui["thr"])
-        _, ui["mode"] = ImGui.Combo(ctx, "Mode", ui["mode"], _items(_MODE_LABELS))
-        _, ui["grid"] = ImGui.Combo(ctx, "Grid", ui["grid"], _items(_GRID_LABELS))
+        ui["mode"] = _combo(ImGui, ctx, "Mode", ui["mode"], _MODE_LABELS)
+        ui["grid"] = _combo(ImGui, ctx, "Grid", ui["grid"], _GRID_LABELS)
         _, ui["trip"] = ImGui.Checkbox(ctx, "Include triplet grid", ui["trip"])
         apply_clicked = ImGui.Button(ctx, "Apply")
         ImGui.SameLine(ctx)
         cancel_clicked = ImGui.Button(ctx, "Cancel")
     ImGui.End(ctx)  # ImGui requires End even when Begin returns not-visible
-    ImGui.PopStyleColor(ctx, len(pairs))
+    if pushed:
+        ImGui.PopStyleColor(ctx, pushed)
 
     if apply_clicked:
         thr = int(ui["thr"]) if ui["thr"] and ui["thr"] > 0 else 15
@@ -372,13 +390,20 @@ def _active_editor_selected_notes():
     return (take, sel) if sel else (None, [])
 
 
-def _selected_midi_takes():
-    """List of takes for selected MIDI items."""
+def _selected_midi_units():
+    """[(take, (lo, hi))] for selected MIDI items, lo/hi = visible item bounds.
+
+    The take can be far longer than the item (MIDI Guitar records a long take,
+    the item is a trimmed window): never touch notes outside the bounds.
+    """
     out = []
     for i in range(RPR_CountSelectedMediaItems(0)):  # noqa: F821
-        take = RPR_GetActiveTake(RPR_GetSelectedMediaItem(0, i))  # noqa: F821
+        item = RPR_GetSelectedMediaItem(0, i)  # noqa: F821
+        take = RPR_GetActiveTake(item)  # noqa: F821
         if take and RPR_TakeIsMIDI(take):  # noqa: F821
-            out.append(take)
+            pos = RPR_GetMediaItemInfo_Value(item, "D_POSITION")  # noqa: F821
+            length = RPR_GetMediaItemInfo_Value(item, "D_LENGTH")  # noqa: F821
+            out.append((take, (pos, pos + length)))
     return out
 
 
@@ -388,8 +413,9 @@ def _time_selection():
     return (fs[0], fs[1]) if len(fs) >= 2 and fs[1] > fs[0] + 1e-4 else None
 
 
-def _quantize_take(take, cfg, note_indices, time_sel):
-    """Decide+apply moves for one take. Returns (moved, skipped)."""
+def _quantize_take(take, cfg, note_indices, window):
+    """Decide+apply moves for one take, limited to the half-open time window
+    [lo, hi) when one is given. Returns (moved, skipped)."""
     grid_qn = RPR_MIDI_GetGrid(take, 0.0, 0.0)[0]  # noqa: F821  (QN)
     qn_of_time = lambda t: RPR_TimeMap2_timeToQN(0, t)          # noqa: F821,E731
     time_of_qn = lambda q: RPR_TimeMap2_QNToTime(0, q)         # noqa: F821,E731
@@ -397,14 +423,14 @@ def _quantize_take(take, cfg, note_indices, time_sel):
     fine_qn = straight_qn / 3.0 if cfg["include_triplets"] else straight_qn
     grid_step_for = lambda q0: time_of_qn(q0 + fine_qn) - time_of_qn(q0)  # noqa: E731
 
-    # gather (index, onset_time, end_ppq), filtered to time selection if any
+    # gather (index, onset_time, end_ppq), filtered to the window if any
     notes = []
     for i in note_indices:
         nt = _get_note(take, i)
         if nt is None:
             continue
         t = RPR_MIDI_GetProjTimeFromPPQPos(take, nt["start"])  # noqa: F821
-        if time_sel and not (time_sel[0] <= t <= time_sel[1]):
+        if window and not (window[0] <= t < window[1]):
             continue
         notes.append({"i": i, "t": t, "end": nt["end"], "note": nt})
     if not notes:
@@ -479,7 +505,7 @@ def _run_in_reaper(config, show_report=False):
     note_take, sel_notes = _active_editor_selected_notes()
     scope = resolve_quant_scope({
         "selected_notes": sel_notes,
-        "selected_items": [] if sel_notes else _selected_midi_takes(),
+        "selected_items": [] if sel_notes else _selected_midi_units(),
         "time_sel": time_sel})
 
     if scope["mode"] == "none":
@@ -496,9 +522,11 @@ def _run_in_reaper(config, show_report=False):
         if scope["mode"] == "notes":
             moved, skipped = _quantize_take(note_take, cfg, scope["notes"], None)
         else:
-            for take in scope["items"]:
+            for take, (lo, hi) in scope["items"]:
+                if scope["clip"]:  # intersect item bounds with the time selection
+                    lo, hi = max(lo, scope["clip"][0]), min(hi, scope["clip"][1])
                 all_idx = list(range(_note_count(take)))
-                m, s = _quantize_take(take, cfg, all_idx, scope["clip"])
+                m, s = _quantize_take(take, cfg, all_idx, (lo, hi))
                 moved += m
                 skipped += s
     finally:
@@ -515,7 +543,7 @@ def _run_in_reaper(config, show_report=False):
 
 def main():
     # A REAPER ReaScript runs in an embedded interpreter; NEVER raise SystemExit
-    # / sys.exit() / exit() — it routes to Py_Exit and kills the whole REAPER
+    # / sys.exit() / exit() -- it routes to Py_Exit and kills the whole REAPER
     # process. Just call run_quantize and return normally.
     run_quantize()
 

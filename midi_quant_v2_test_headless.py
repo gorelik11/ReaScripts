@@ -143,6 +143,8 @@ def test_run_in_reaper_mock() -> None:
     g["RPR_GetSelectedMediaItem"] = lambda p, i: 100
     g["RPR_GetActiveTake"] = lambda item: 1
     g["RPR_TakeIsMIDI"] = lambda take: True
+    g["RPR_GetMediaItemInfo_Value"] = \
+        lambda item, key: {"D_POSITION": 0.0, "D_LENGTH": 100.0}[key]
     g["RPR_MIDI_CountEvts"] = lambda take, a, b, c: (3, take, 3, 0, 0)  # (retval, take, notecnt, cc, text)
     def get_note(take, i, *a):  # wrapper echoes all params: (retval, take, idx, sel, muted, start, end, chan, pitch, vel)
         n = notes[i]
@@ -195,6 +197,8 @@ def test_undo_registers_state_change() -> None:
         "RPR_GetSelectedMediaItem": lambda p, i: 100,
         "RPR_GetActiveTake": lambda item: 1,
         "RPR_TakeIsMIDI": lambda take: True,
+        "RPR_GetMediaItemInfo_Value":
+            lambda item, key: {"D_POSITION": 0.0, "D_LENGTH": 100.0}[key],
         "RPR_MIDI_CountEvts": lambda take, a, b, c: (1, take, 1, 0, 0),
         "RPR_MIDI_GetNote": lambda take, i, *a: (
             True, take, i, notes[i]["sel"], notes[i]["muted"], notes[i]["start"],
@@ -323,12 +327,92 @@ def test_dialog_cancel_and_redefer() -> None:
     assert calls["defer"] == 1 and module._GA is None
 
 
+def test_script_is_ascii_only() -> None:
+    """REAPER's embedded Python loads ReaScripts with the ASCII codec; any
+    em-dash/smart-quote byte raises UnicodeDecodeError before main() runs."""
+    SCRIPT_PATH.read_bytes().decode("ascii")
+
+
+def test_items_scope_clips_to_item_bounds() -> None:
+    """The take can be far longer than its item (MIDI Guitar records a long
+    take; the item is a trimmed window). Without a time selection, only notes
+    inside the item's visible bounds may move."""
+    module = load_module(SCRIPT_PATH)
+    # item: pos 10s, len 2s. take notes (960 PPQ/QN, 1 QN == 1 sec), each 40ms
+    # late: before the item (0.04s), inside (11.04s), after it (50.04s).
+    notes = [
+        {"start": 38, "end": 438, "sel": True, "muted": False, "chan": 0, "pitch": 60},
+        {"start": 10598, "end": 10998, "sel": True, "muted": False, "chan": 0, "pitch": 62},
+        {"start": 48038, "end": 48438, "sel": True, "muted": False, "chan": 0, "pitch": 64},
+    ]
+    set_calls = []
+    g = {
+        "RPR_GetSet_LoopTimeRange": lambda *a: (0, 0, 0.0, 0.0, 0),  # no time sel
+        "RPR_MIDIEditor_GetActive": lambda: 0,
+        "RPR_CountSelectedMediaItems": lambda p: 1,
+        "RPR_GetSelectedMediaItem": lambda p, i: 100,
+        "RPR_GetActiveTake": lambda item: 1,
+        "RPR_TakeIsMIDI": lambda take: True,
+        "RPR_GetMediaItemInfo_Value":
+            lambda item, key: {"D_POSITION": 10.0, "D_LENGTH": 2.0}[key],
+        "RPR_MIDI_CountEvts": lambda take, a, b, c: (3, take, 3, 0, 0),
+        "RPR_MIDI_GetNote": lambda take, i, *a: (
+            True, take, i, notes[i]["sel"], notes[i]["muted"], notes[i]["start"],
+            notes[i]["end"], notes[i]["chan"], notes[i]["pitch"], 96),
+        "RPR_MIDI_SetNote": lambda take, i, sel, muted, sppq, eppq, ch, p, v, ns:
+            set_calls.append(i) or True,
+        "RPR_MIDI_DisableSort": lambda take: None,
+        "RPR_MIDI_Sort": lambda take: None,
+        "RPR_MIDI_GetGrid": lambda take, a, b: (1.0, take, 0.0),
+        "RPR_MIDI_GetProjTimeFromPPQPos": lambda take, ppq: ppq / 960.0,
+        "RPR_MIDI_GetPPQPosFromProjTime": lambda take, t: round(t * 960.0),
+        "RPR_TimeMap2_timeToQN": lambda proj, t: t,
+        "RPR_TimeMap2_QNToTime": lambda proj, q: q,
+        "RPR_Undo_BeginBlock": lambda *a: None,
+        "RPR_Undo_EndBlock": lambda *a: None,
+        "RPR_UpdateArrange": lambda: None,
+        "RPR_ShowMessageBox": lambda *a: 0,
+    }
+    for k, v in g.items():
+        setattr(module, k, v)
+    module._run_in_reaper({"grid_threshold_ms": 15.0, "mode": "snap",
+                           "grid_choice": "1/16", "include_triplets": False})
+    assert set(set_calls) == {1}, \
+        f"only the in-item note may move, moved={sorted(set(set_calls))}"
+
+
+def test_dialog_survives_missing_imgui_symbols() -> None:
+    """Version-gated ReaImGui symbols (Combo, some Col_*) must not crash the
+    frame: portable BeginCombo path + defensive theme push/pop balance."""
+    module = load_module(SCRIPT_PATH)
+    from _reaper_fakes import FakeImGui
+
+    class VersionedImGui(FakeImGui):
+        Combo = property()  # accessing .Combo raises AttributeError
+
+        def __getattr__(self, name):
+            if name.startswith("Col_") and name != "Col_Button":
+                raise AttributeError(name)  # this ReaImGui lacks the slot
+            return super().__getattr__(name)
+
+    calls = {"defer": 0}
+    module.RPR_defer = lambda s: calls.__setitem__("defer", calls["defer"] + 1)
+    fake = VersionedImGui(open_=1)
+    module._GA = {"imgui": fake, "ctx": object(),
+                  "ui": {"thr": 15, "mode": 0, "grid": 2, "trip": False}}
+    module._ga_frame()                       # must not raise
+    assert fake.pushed == fake.popped        # theme stays balanced
+    assert calls["defer"] == 1 and module._GA is not None
+
+
 TESTS = [test_entrypoint_presence, test_grid_candidates, test_group_transients, test_compute_move,
          test_resolve_scope, test_quantized_start_ppq, test_plan_note_moves,
          test_report_schema_headless, test_run_in_reaper_mock,
          test_undo_registers_state_change, test_entrypoint_no_systemexit,
          test_resolve_fine_qn, test_ext_state_defaults,
-         test_dialog_apply_mapping, test_dialog_cancel_and_redefer]
+         test_dialog_apply_mapping, test_dialog_cancel_and_redefer,
+         test_script_is_ascii_only, test_items_scope_clips_to_item_bounds,
+         test_dialog_survives_missing_imgui_symbols]
 
 
 def main() -> int:
