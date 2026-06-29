@@ -18,7 +18,11 @@ not compressors**.
 - All gain in bits: 1 bit = 6.0206 dB; gain via exact powers of two (`pow(2, bits)`),
   inheriting the RCBit anti-zipper smoothing (PurestGain) from `RCBitRangeGain` and
   Dima's `RCBitLimiter`/`RCBitBrickwall`.
-- Static band gain is set in **bits** (with micro-step inside one bit).
+- Static band gain uses the **full RCBitRangeGain model, per band**: Macro Shift
+  (integer bit jumps — exact powers of two, "musical"), Micro Shift (% of a bit —
+  precise fine-tuning), and **Bit Ratio per band** (the dB representation of one bit,
+  e.g. 0.25/0.2/0.3). Workflow: set a clear macro, then fine-tune with micro.
+  Effective band gain = `pow(2, (Macro + Micro/100) * BitRatio)`.
 - Dynamic ceiling is set in **bits below 0 dBFS** (as in RCBitBrickwall/RCBitLimiter).
 - **No final/global limiter.** This is a pure dynamic EQ.
 - Dynamics is conceived as a **per-band limiter**: a frequency must simply not exceed
@@ -71,9 +75,12 @@ bit-logic, dynamics, bell-character math, and node interaction are written fresh
 - Each band holds **separate filter state for M and for S**.
 
 ### 3.2 Bands (up to 8 nodes)
-Each band has: type, frequency, Q, gain (bits), M/S target, bell character, and a
-dynamics section (§4). Node count is dynamic (0–8), created/removed by double-click
-on the analyzer.
+Each band has: type, frequency, Q, gain (Macro Shift + Micro Shift + Bit Ratio,
+per §1), M/S target, bell character, and a dynamics section (§4). Node count is
+dynamic (0–8), created/removed by double-click on the analyzer.
+
+Dragging a node vertically on the analyzer adjusts the **Macro** bit grid (snaps to
+clear bit jumps); Micro Shift is the fine readout/handle for sub-bit tuning.
 
 **Filter types:** Bell, Low-Shelf, High-Shelf, High-Pass, Low-Pass.
 
@@ -145,8 +152,8 @@ Dynamics = a **limiter, not a compressor**, Nova-style, implemented as a
 - **Nodes** dragged by mouse over frequency/gain; **double-click** on the curve adds a
   node, on a node removes it (up to 8). Interaction approach inspired by `ReEQ.jsfx`
   (MIT), not copied verbatim.
-- **Selected-node panel** (bottom/side): type, bell character, Q, M/S, Dyn on/off,
-  Ceiling, Soft/Brick, Attack/Release.
+- **Selected-node panel** (bottom/side): type, bell character, Q, M/S, gain
+  (Macro / Micro / Bit Ratio), Dyn on/off, Ceiling, Soft/Brick, Attack/Release.
 - **Visualisation:** static EQ curve + live dynamic curve (how much each node is
   currently cutting) overlaid on the spectrum — the per-band limiters are visible at
   work.
