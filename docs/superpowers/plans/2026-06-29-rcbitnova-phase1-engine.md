@@ -607,9 +607,10 @@ Replace the existing `@sample` block with:
 
 ```eel2
 @sample
-slider1 == 1 ? (
-  // Bypass: pass through untouched
-) : (
+// When bypassed (slider1==1) spl0/spl1 are left untouched = clean pass-through.
+// (Do NOT use an empty `slider1==1 ? ( /*comment*/ ) : (...)` true-branch —
+//  EEL2 rejects empty parens with "syntax error : ) : (".)
+slider1 != 1 ? (
   m = (spl0 + spl1) * 0.5;
   s = (spl0 - spl1) * 0.5;
 

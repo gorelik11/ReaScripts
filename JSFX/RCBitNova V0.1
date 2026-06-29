@@ -102,9 +102,8 @@ loop(N_BANDS, setup_band(b); b += 1;);
 
 @sample
 
-slider1 == 1 ? (
-  // Bypass: pass through untouched
-) : (
+// When bypassed (slider1==1) spl0/spl1 are left untouched = clean pass-through.
+slider1 != 1 ? (
   m = (spl0 + spl1) * 0.5;
   s = (spl0 - spl1) * 0.5;
 
