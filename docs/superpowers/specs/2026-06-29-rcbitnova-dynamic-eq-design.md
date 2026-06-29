@@ -147,10 +147,14 @@ Two distinct problems, two distinct fixes — they are often conflated.
 transform compresses the frequency axis), so high bells/shelves lose shape at the top
 octave — this is exactly what bit-step the friend's hand-built bit EQ to ring/cramp.
 Fixes, in order of preference:
-- **Matched-biquad coefficients (always-on, default, no latency):** compute the static
-  bell/shelf coefficients with a magnitude-matched design (Vicanek "matched second-order
-  IIR" / matched-Z) so the realised magnitude tracks the target through the top octave.
-  This fixes cramping cheaply at any sample rate and is the primary fix.
+- **Low-cramping filter topology (always-on, default, no latency):** all filter types
+  use the **TPT state-variable filter (Andy Simper / Cytomic)** — the same family as
+  the vendored `svf_filter.jsfx-inc`. It gives **exact gain at center/cutoff** (kills
+  the most audible cramping symptom), stays stable under fast modulation (so one
+  topology serves both static filters and Mode-A dynamics), and has well-known exact
+  coefficients. This is the primary, free fix at any sample rate.
+  - *Future refinement (out of scope v1):* full Vicanek "matched second-order IIR"
+    magnitude-matching for the top octave, if listening warrants it.
 - **Native high sample rate:** Dima usually runs **96 kHz**, where Nyquist = 48 kHz and
   cramping is already mild — the common case is well covered.
 - **Oversampling (HQ):** as a further backstop for 44.1/48k sessions.
@@ -290,7 +294,7 @@ and undo. Model:
 |---|---|---|
 | Bit-gain core | bits↔linear, PurestGain smoothing | — |
 | M/S codec | encode/decode, per-band domain routing | bit-gain |
-| Static filter bank | biquad/SVF coeffs per type + bell character | bit-gain |
+| Static filter bank | TPT-SVF (Simper) coeffs per type + bell character | bit-gain |
 | Linear-phase engine | FIR kernel build + OLA convolution; PDC | static filter bank |
 | Detector | per-band normalised bandpass + envelope; M/S linking | static filter bank |
 | Dynamics Mode A | bell/shelf-cut modulation (smooth float) | detector, SVF |
