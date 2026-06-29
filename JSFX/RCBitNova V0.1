@@ -1,0 +1,143 @@
+desc: RCBitNova V0.1 - Bit-Accurate M/S EQ (Phase 1: static engine)
+
+// License: GPL - http://www.gnu.org/licenses/gpl.html
+// Author: Dima Gorelik (design with Claude)
+// Bit logic: 1 bit = 6.0206 dB; gain_lin = 2^((macro + micro/100) * bitratio).
+// Filters: TPT state-variable (Andy Simper / Cytomic). All state instance-local
+// (NOT gmem) - fixes the cross-instance bug of the gmem-based bit EQ.
+// Phase 1: static engine, zero-latency, 4 slider bands, no dynamics/GUI.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:0<0,1,1{Off,On}>-Bypass
+slider2:0<-16,16,1>-Output Macro (bits)
+slider3:0<-100,100,0.1>-Output Micro (% bit)
+
+slider11:1<0,1,1{Off,On}>B1 Enable
+slider12:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B1 Type
+slider13:100<20,20000,1>B1 Freq
+slider14:0.707<0.1,10,0.001>B1 Q
+slider15:0<-16,16,1>B1 Macro (bits)
+slider16:0<-100,100,0.1>B1 Micro (% bit)
+slider17:1<0,3,0.05>B1 Bit Ratio
+slider18:0<0,2,1{Stereo,Mid,Side}>B1 M/S
+
+slider21:0<0,1,1{Off,On}>B2 Enable
+slider22:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B2 Type
+slider23:1000<20,20000,1>B2 Freq
+slider24:0.707<0.1,10,0.001>B2 Q
+slider25:0<-16,16,1>B2 Macro (bits)
+slider26:0<-100,100,0.1>B2 Micro (% bit)
+slider27:1<0,3,0.05>B2 Bit Ratio
+slider28:0<0,2,1{Stereo,Mid,Side}>B2 M/S
+
+slider31:0<0,1,1{Off,On}>B3 Enable
+slider32:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B3 Type
+slider33:3000<20,20000,1>B3 Freq
+slider34:0.707<0.1,10,0.001>B3 Q
+slider35:0<-16,16,1>B3 Macro (bits)
+slider36:0<-100,100,0.1>B3 Micro (% bit)
+slider37:1<0,3,0.05>B3 Bit Ratio
+slider38:0<0,2,1{Stereo,Mid,Side}>B3 M/S
+
+slider41:0<0,1,1{Off,On}>B4 Enable
+slider42:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B4 Type
+slider43:10000<20,20000,1>B4 Freq
+slider44:0.707<0.1,10,0.001>B4 Q
+slider45:0<-16,16,1>B4 Macro (bits)
+slider46:0<-100,100,0.1>B4 Micro (% bit)
+slider47:1<0,3,0.05>B4 Bit Ratio
+slider48:0<0,2,1{Stereo,Mid,Side}>B4 M/S
+
+@init
+
+N_BANDS = 4;
+cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
+st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
+memset(st, 0, N_BANDS * 4);
+
+// TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
+// Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
+function svf_set(base, ftype, fc, q, glin)
+  local(A, g, k, m0, m1, m2, a1, a2, a3)
+(
+  A = sqrt(glin);
+  ftype == 0 ? (                 // Bell
+    g = tan($pi * fc / srate); k = 1 / (q * A);
+    m0 = 1; m1 = k * (A * A - 1); m2 = 0;
+  ) : ftype == 1 ? (             // Low Shelf
+    g = tan($pi * fc / srate) / sqrt(A); k = 1 / q;
+    m0 = 1; m1 = k * (A - 1); m2 = A * A - 1;
+  ) : ftype == 2 ? (             // High Shelf
+    g = tan($pi * fc / srate) * sqrt(A); k = 1 / q;
+    m0 = A * A; m1 = k * (1 - A) * A; m2 = 1 - A * A;
+  ) : ftype == 3 ? (             // High Pass
+    g = tan($pi * fc / srate); k = 1 / q;
+    m0 = 1; m1 = -k; m2 = -1;
+  ) : (                          // Low Pass
+    g = tan($pi * fc / srate); k = 1 / q;
+    m0 = 0; m1 = 0; m2 = 1;
+  );
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  cf[base]   = a1; cf[base+1] = a2; cf[base+2] = a3; cf[base+3] = k;
+  cf[base+4] = m0; cf[base+5] = m1; cf[base+6] = m2;
+);
+
+function setup_band(b)
+  local(s, glin)
+(
+  s = 10 * (b + 1);                                  // slider base: 10,20,30,40
+  glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
+  svf_set(b * 8, slider(s+2), slider(s+3), slider(s+4), glin);
+);
+
+@slider
+
+out_gain = pow(2, slider2 + slider3 * 0.01);
+b = 0;
+loop(N_BANDS, setup_band(b); b += 1;);
+
+@sample
+
+slider1 == 1 ? (
+  // Bypass: pass through untouched
+) : (
+  m = (spl0 + spl1) * 0.5;
+  s = (spl0 - spl1) * 0.5;
+
+  b = 0;
+  loop(N_BANDS,
+    slider(10 * (b + 1) + 1) == 1 ? (       // enable
+      base = b * 8; sb = b * 4;
+      a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
+      m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
+      tgt = slider(10 * (b + 1) + 8);        // 0 Stereo, 1 Mid, 2 Side
+
+      tgt != 2 ? (                            // process M (Stereo or Mid)
+        ic1 = st[sb]; ic2 = st[sb+1];
+        v3 = m - ic2;
+        v1 = a1 * ic1 + a2 * v3;
+        v2 = ic2 + a2 * ic1 + a3 * v3;
+        st[sb]   = 2 * v1 - ic1;
+        st[sb+1] = 2 * v2 - ic2;
+        m = m0 * m + m1 * v1 + m2 * v2;
+      );
+      tgt != 1 ? (                            // process S (Stereo or Side)
+        ic1 = st[sb+2]; ic2 = st[sb+3];
+        v3 = s - ic2;
+        v1 = a1 * ic1 + a2 * v3;
+        v2 = ic2 + a2 * ic1 + a3 * v3;
+        st[sb+2] = 2 * v1 - ic1;
+        st[sb+3] = 2 * v2 - ic2;
+        s = m0 * s + m1 * v1 + m2 * v2;
+      );
+    );
+    b += 1;
+  );
+
+  spl0 = (m + s) * out_gain;
+  spl1 = (m - s) * out_gain;
+);
