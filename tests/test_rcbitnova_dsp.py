@@ -199,3 +199,52 @@ def test_modea_linked_applies_equal_gain_no_width_shift():
     mono = [0.8 * math.sin(w * i) for i in range(1 << 14)]
     Lo, Ro = dsp.modea_stereo(mono, list(mono), 700.0, 2.0, SR, 0.2, 1.0, 80.0, "linked")
     assert Lo == pytest.approx(Ro, abs=1e-12)
+
+
+# ---- Phase 3a: Mode B Brick (band-split, bit-exact) ----
+
+def _band_contrib_peak(out, fc, q, sr, tail=2000):
+    bp = dsp.svf_process(dsp.svf_make("bandpass", fc, q, 1.0, sr), out)
+    return max(abs(v) for v in bp[-tail:])
+
+
+def test_modeb_brick_holds_band_at_exact_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 15)]
+    for ceiling in (0.25, 0.2, 0.1):
+        out = dsp.modeb_brick(sig, 1000.0, 2.0, SR, ceiling, 2.0, 80.0)
+        pk = _band_contrib_peak(out, 1000.0, 2.0, SR)
+        assert pk <= ceiling * 1.001
+        assert pk == pytest.approx(ceiling, rel=0.01)
+
+
+def test_modeb_brick_transparent_below_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.1 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modeb_brick(sig, 1000.0, 2.0, SR, 0.5, 2.0, 80.0)
+    assert _band_contrib_peak(out, 1000.0, 2.0, SR) == pytest.approx(0.1, abs=0.01)
+
+
+def test_modeb_brick_dual_lr_equals_independent():
+    L, R = _stereo_sigs(1 << 14)
+    Lo, Ro = dsp.modeb_brick_stereo(L, R, 700.0, 2.0, SR, 0.2, 2.0, 80.0, "dual_lr")
+    assert Lo == dsp.modeb_brick(L, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    assert Ro == dsp.modeb_brick(R, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+
+
+def test_modeb_brick_dual_ms_equals_independent_ms():
+    L, R = _stereo_sigs(1 << 14)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.modeb_brick(M, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    So = dsp.modeb_brick(S, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    Lo, Ro = dsp.modeb_brick_stereo(L, R, 700.0, 2.0, SR, 0.2, 2.0, 80.0, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+def test_modeb_brick_linked_equal_gain():
+    w = 2 * math.pi * 700.0 / SR
+    mono = [0.8 * math.sin(w * i) for i in range(1 << 14)]
+    Lo, Ro = dsp.modeb_brick_stereo(mono, list(mono), 700.0, 2.0, SR, 0.2, 2.0, 80.0, "linked")
+    assert Lo == pytest.approx(Ro, abs=1e-12)
