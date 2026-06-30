@@ -363,3 +363,34 @@ This spec is approved for **Phase 1**; later phases get their own implementation
 - Dynamics on HP/LP types (Bell + Shelf only in v1).
 - Spectrum-grab / match-EQ, presets browser, automation-noise tricks.
 - Exact analog emulation claims for bell characters.
+
+---
+
+## 10. Future: VST port (intent, not committed work)
+
+If RCBitNova is later ported to a native plugin (VST3/AU), this is the blueprint so
+the intent isn't lost. Porting is a transcription job, not a redesign.
+
+**Canonical DSP reference = `tools/rcbitnova_dsp.py` + `tests/test_rcbitnova_dsp.py`.**
+The math is already language-neutral and unit-verified (TPT-SVF, bit gain, M/S). Port
+JSFX→C++ the same way we ported Python→JSFX: transcribe against the Python mirror and
+keep the tests as the cross-language oracle. Target framework: **JUCE** or **iPlug2**.
+
+**Portable vs JSFX-specific:**
+- *Portable (carries straight over):* bit-logic gain (`2^bits`), TPT-SVF coefficients
+  and recurrence, M/S codec, detector/limiter envelope math, FIR linear-phase kernel
+  build, the whole Phase 2–5 DSP.
+- *JSFX-specific (re-implement in the host framework):* the `gfx`/ReaImGui GUI, the
+  slider-backed parameter model + `@serialize` (→ the framework's parameter/state API),
+  PDC reporting (→ host latency API), instance memory layout (→ member fields).
+
+**Licensing — decide before porting:**
+- The JSFX vendors LGPL/GPL includes (`spectrum.jsfx-inc`, `svf_filter.jsfx-inc`) and
+  is GPL. A **GPL/open** VST is unconstrained.
+- A **closed/commercial** VST must re-implement those: the SVF is already written from
+  scratch in the Python mirror (clean), and the FFT analyzer would need an independent
+  implementation. Plan this re-implementation cost in if commercial.
+
+**Where this lives:** code stays in git on the `rcbitnova` branch (and eventually
+`main`); this intent stays here in the spec. No VST work is scheduled — this section
+exists only so a future decision starts from a clear map.
