@@ -78,3 +78,25 @@ def svf_magnitude(coeffs: dict, freq: float, sr: float, n: int = 1 << 15) -> flo
     acc_o = sum(out[i] * out[i] for i in range(half, n))
     acc_i = sum(samples[i] * samples[i] for i in range(half, n))
     return math.sqrt(acc_o / acc_i)
+
+
+def process_band_stereo(ftype, placement, fc, q, gain_lin, sr, Lin, Rin):
+    """Apply one band to a stereo L/R pair per placement. Running domain is L/R;
+    mid/side placements transform locally and recombine."""
+    c = svf_make(ftype, fc, q, gain_lin, sr)
+    if placement == "both":
+        return svf_process(c, Lin), svf_process(c, Rin)
+    if placement == "left":
+        return svf_process(c, Lin), list(Rin)
+    if placement == "right":
+        return list(Lin), svf_process(c, Rin)
+    # mid / side
+    M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+    S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+    if placement == "mid":
+        M = svf_process(c, M)
+    elif placement == "side":
+        S = svf_process(c, S)
+    else:
+        raise ValueError(f"unknown placement {placement!r}")
+    return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])

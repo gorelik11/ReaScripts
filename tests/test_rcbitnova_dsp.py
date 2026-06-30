@@ -76,3 +76,53 @@ def test_highshelf_boosts_highs_unity_dc():
     c = dsp.svf_make("highshelf", 4000.0, 0.707, dsp.bit_gain(1, 0, 1), SR)
     assert dsp.svf_magnitude(c, 20000.0, SR) == pytest.approx(2.0, rel=0.02)
     assert dsp.svf_magnitude(c, 20.0, SR) == pytest.approx(1.0, abs=0.02)
+
+
+def _stereo_sigs(n=4096):
+    wl = 2 * math.pi * 700.0 / SR
+    wr = 2 * math.pi * 1500.0 / SR
+    L = [0.5 * math.sin(wl * i) for i in range(n)]
+    R = [0.4 * math.sin(wr * i) for i in range(n)]
+    return L, R
+
+
+def test_placement_left_leaves_right_untouched():
+    L, R = _stereo_sigs()
+    Lout, Rout = dsp.process_band_stereo("bell", "left", 700.0, 2.0,
+                                         dsp.bit_gain(1, 0, 1), SR, L, R)
+    assert Rout == R
+    assert Lout == dsp.svf_process(dsp.svf_make("bell", 700.0, 2.0,
+                                   dsp.bit_gain(1, 0, 1), SR), L)
+
+
+def test_placement_right_leaves_left_untouched():
+    L, R = _stereo_sigs()
+    Lout, Rout = dsp.process_band_stereo("bell", "right", 1500.0, 2.0,
+                                         dsp.bit_gain(1, 0, 1), SR, L, R)
+    assert Lout == L
+
+
+def test_placement_mid_leaves_side_untouched():
+    L, R = _stereo_sigs()
+    Lout, Rout = dsp.process_band_stereo("bell", "mid", 700.0, 2.0,
+                                         dsp.bit_gain(2, 0, 1), SR, L, R)
+    side_in = [(l - r) * 0.5 for l, r in zip(L, R)]
+    side_out = [(l - r) * 0.5 for l, r in zip(Lout, Rout)]
+    assert side_out == pytest.approx(side_in, abs=1e-12)
+
+
+def test_placement_side_leaves_mid_untouched():
+    L, R = _stereo_sigs()
+    Lout, Rout = dsp.process_band_stereo("bell", "side", 700.0, 2.0,
+                                         dsp.bit_gain(2, 0, 1), SR, L, R)
+    mid_in = [(l + r) * 0.5 for l, r in zip(L, R)]
+    mid_out = [(l + r) * 0.5 for l, r in zip(Lout, Rout)]
+    assert mid_out == pytest.approx(mid_in, abs=1e-12)
+
+
+def test_placement_both_filters_each_channel():
+    L, R = _stereo_sigs()
+    g = dsp.bit_gain(1, 0, 1)
+    Lout, Rout = dsp.process_band_stereo("bell", "both", 700.0, 2.0, g, SR, L, R)
+    assert Lout == dsp.svf_process(dsp.svf_make("bell", 700.0, 2.0, g, SR), L)
+    assert Rout == dsp.svf_process(dsp.svf_make("bell", 700.0, 2.0, g, SR), R)
