@@ -294,17 +294,20 @@ slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
 In `@init`, after the Phase-2b memory block, add:
 
 ```eel2
-MAX_LOOK = 512;
-// Mode-B rings: per (band, channel) -> band, peak, dry rings of MAX_LOOK each.
+MAX_LOOK = 2048;   // covers the 10 ms slider max up to 192 kHz (1920 samples)
+// Mode-B rings: per (band, channel) -> band + peak rings of MAX_LOOK each.
 // channel-slot index cs = b*2 + c  (c: 0=A,1=B). 8 slots for 4 bands.
+// (No per-band dry ring: the shared stereo bus_dry below reconstructs the dry path.)
 mb_band = 1024;
 mb_peak = mb_band + N_BANDS * 2 * MAX_LOOK;
-mb_dry  = mb_peak + N_BANDS * 2 * MAX_LOOK;
-mb_end  = mb_dry  + N_BANDS * 2 * MAX_LOOK;
+mb_end  = mb_peak + N_BANDS * 2 * MAX_LOOK;
 memset(mb_band, 0, mb_end - mb_band);
 mbenv  = mb_end;        // env per (band,channel): 2/band
 mbmode = mbenv + N_BANDS * 2;   // Dyn Mode per band
 mbwpos = mbmode + N_BANDS;      // write pos per band
+bus_dry = mbwpos + N_BANDS;     // shared stereo dry delay (L at [0..], R at [MAX_LOOK..])
+bus_wp = 0;
+memset(bus_dry, 0, MAX_LOOK * 2);
 i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
 memset(mbwpos, 0, N_BANDS);
 ```
@@ -323,9 +326,13 @@ loop(N_BANDS,
   (slider(50 + 10 * b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) == 0) ? any_b = 1;
   b += 1;
 );
-pdc_delay = any_b ? Lk : 0;
+pdc_delay = (slider1 != 1 && any_b) ? Lk : 0;   // 0 when bypassed (passthrough is zero-latency)
 pdc_bot_ch = 0; pdc_top_ch = 2;
 ```
+
+**P1 (review):** the bypass gate on `pdc_delay` is required — `@sample` passes through
+with zero delay when `slider1==1`, so reporting `Lk` while bypassed would shift the
+bypassed signal early against PDC-compensated tracks.
 
 (Release for Mode-B reuses the per-band Release slider `dp[b*4+2]` already computed in `setup_band_dyn`.)
 
@@ -398,7 +405,7 @@ to
         v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
         dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
         bA = dk * v1;
-        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA); mb_dry[baseA + wp] = xa;
+        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
         worstA = 0; i = 0;
         loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
 
@@ -407,7 +414,7 @@ to
           v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
           dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
           bB = dk * v1;
-          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB); mb_dry[baseB + wp] = xb;
+          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
           worstB = 0; i = 0;
           loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
         );
@@ -430,11 +437,11 @@ to
         // read delayed, clamp, accumulate correction (lim - band_delayed) in the band's domain
         rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
         bdA = mb_band[baseA + rpos];
-        limA = bdA * mbenv[csA]; abs(limA) > ceil ? limA = limA > 0 ? ceil : -ceil;
+        limA = bdA * mbenv[csA]; abs(limA) > ceil ? (limA = limA > 0 ? ceil : -ceil);
         dcA = limA - bdA;                 // correction for channel A
         two ? (
           bdB = mb_band[baseB + rpos];
-          limB = bdB * mbenv[csB]; abs(limB) > ceil ? limB = limB > 0 ? ceil : -ceil;
+          limB = bdB * mbenv[csB]; abs(limB) > ceil ? (limB = limB > 0 ? ceil : -ceil);
           dcB = limB - bdB;
         );
 
@@ -467,15 +474,10 @@ for parity with the single-channel reference but are not read in the L/R recombi
 `bus_dry` delay is what reconstructs the dry path. All Mode-B bands share `bus_dry` and
 the same global `Lk`, so their contributions stay time-aligned.
 
-- [ ] **Step 2: Add `bus_dry` to `@init` and `bus_wp`**
+- [ ] **Step 2: (bus_dry already added in Task 3 Step 2)**
 
-In `@init`, after `mbwpos = ...` line:
-
-```eel2
-bus_dry = mbwpos + N_BANDS;
-memset(bus_dry, 0, MAX_LOOK * 2);
-bus_wp = 0;
-```
+`bus_dry` / `bus_wp` were declared and zeroed in Task 3 Step 2's `@init` block. No
+additional `@init` change is needed here — proceed to Step 3.
 
 - [ ] **Step 3: Deploy**
 
@@ -485,7 +487,7 @@ cp "JSFX/RCBitNova V0.1" "$HOME/Library/Application Support/REAPER/Effects/RCBit
 
 - [ ] **Step 4: Live verification in REAPER**
 
-1. **Bit-exact ceiling:** loud 1 kHz. B1 Bell 1kHz Q2 Macro 0, Placement Both, Dyn On, **Dyn Mode = B Band-Split**, Ceiling Macro 2, Lookahead 2 ms. On a meter/analyzer the 1 kHz band contribution is pinned at the ceiling and cannot exceed it (vs Mode A which slightly exceeds). Lower Ceiling → lower hard ceiling.
+1. **Bit-exact ceiling:** loud 1 kHz. B1 Bell 1kHz Q2 Macro 0, Placement Both, Dyn On, **Dyn Mode = B Band-Split**, Ceiling Macro 2, Lookahead 2 ms, **Output trim 0 (out_gain=1)**. On a meter/analyzer the 1 kHz band contribution is pinned at the ceiling and cannot exceed it (vs Mode A which slightly exceeds). Lower Ceiling → lower hard ceiling. (With Output trim ≠ 0 the band sits at `ceiling × 2^trim` — still a power of two, since out_gain is applied after the Mode-B pass.)
 2. **PDC:** REAPER reports latency = Lookahead samples when a Mode-B band is on; 0 when all bands are Mode A / off. Confirm time-alignment (null a parallel dry routing with PDC compensation).
 3. **A vs B audible difference:** toggle B1 Dyn Mode A↔B on a transient-rich band — B should sound harder/"alive" (bit-exact clamp) vs A's smooth ride.
 4. **Linking:** Both + Linked (no width pump), Dual L/R (independent channels), Dual M/S (limits side only). Single targets (Side/Left) act on one channel.
@@ -523,6 +525,19 @@ recombine identical across `modeb_brick`, `_modeb_brick_two`, and JSFX. `mbmode/
 mbwpos/bus_dry` offsets consistent between Tasks 3 and 4. Dyn Stereo ints reused from 2b.
 
 ---
+
+## Known limitations / accepted (from adversarial plan review)
+- **Warm-up transient:** enabling a Mode-B band mid-playback reads `Lk` samples of stale
+  ring data (the per-band ring froze while disabled). Accepted as a brief warm-up; the
+  envelope/PDC settle within `Lk` samples. (Future: zero the band ring on enable-edge.)
+- **Static + Mode-B interaction is offline-untested:** the Python oracle covers Macro 0
+  (unity static bell). A Mode-B Bell with Macro≠0 limits the post-static band — a valid
+  design, verified live (step 4.? boost + B), not by pytest. Optional future Python test.
+- **Worst-peak is O(Lk) per sample × band × channel** (mirrors the oracle). Correct and
+  fine for a few opt-in Mode-B bands; a monotonic-deque running max would be bit-identical
+  and O(1) if CPU becomes an issue (future perf).
+- **Guarantee scope:** per-band *contribution* ≤ ceiling (× out_gain), NOT the summed
+  master (other bands + decode add on top). This is by design (no master brickwall).
 
 ## Next
 - Phase 3b: Mode-B Soft (RCBitLimiter band-split: PurestGain-smoothed, no clamp).
