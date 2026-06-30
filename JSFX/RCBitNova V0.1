@@ -52,12 +52,53 @@ slider46:0<-100,100,0.1>B4 Micro (% bit)
 slider47:1<0,3,0.05>B4 Bit Ratio
 slider48:0<0,4,1{Both,Mid,Side,Left,Right}>B4 Placement
 
+slider51:0<0,1,1{Off,On}>B1 Dyn
+slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>B1 Dyn Stereo (Both only)
+slider53:1<0,16,1>B1 Ceiling Macro (bits below 0)
+slider54:0<-100,100,0.1>B1 Ceiling Micro (% bit)
+slider55:1<0.05,50,0.01>B1 Attack (ms)
+slider56:80<1,500,1>B1 Release (ms)
+
+slider61:0<0,1,1{Off,On}>B2 Dyn
+slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
+slider63:1<0,16,1>B2 Ceiling Macro (bits below 0)
+slider64:0<-100,100,0.1>B2 Ceiling Micro (% bit)
+slider65:1<0.05,50,0.01>B2 Attack (ms)
+slider66:80<1,500,1>B2 Release (ms)
+
+slider71:0<0,1,1{Off,On}>B3 Dyn
+slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
+slider73:1<0,16,1>B3 Ceiling Macro (bits below 0)
+slider74:0<-100,100,0.1>B3 Ceiling Micro (% bit)
+slider75:1<0.05,50,0.01>B3 Attack (ms)
+slider76:80<1,500,1>B3 Release (ms)
+
+slider81:0<0,1,1{Off,On}>B4 Dyn
+slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
+slider83:1<0,16,1>B4 Ceiling Macro (bits below 0)
+slider84:0<-100,100,0.1>B4 Ceiling Micro (% bit)
+slider85:1<0.05,50,0.01>B4 Attack (ms)
+slider86:80<1,500,1>B4 Release (ms)
+
 @init
 
 N_BANDS = 4;
 cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
 st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
 memset(st, 0, N_BANDS * 4);
+
+// Dynamics (Phase 2b) instance-local memory
+det = 96;   // detector bandpass coeffs: 4/band (a1,a2,a3,k)
+dst = 128;  // detector state: 4/band (chA ic1,ic2 ; chB ic1,ic2)
+cst = 160;  // cut SVF state:  4/band (chA ic1,ic2 ; chB ic1,ic2)
+dp  = 192;  // dyn params: 4/band (ceil_lin, atk, rel, dynOn)
+dm  = 208;  // dyn stereo mode: 1/band (0 Linked,1 Dual L/R,2 Dual M/S)
+bp  = 216;  // band params: 3/band (fc, q, cg)
+eg  = 256;  // env_gain: 2/band (chA, chB)
+memset(dst, 0, N_BANDS * 4);
+memset(cst, 0, N_BANDS * 4);
+i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
+anti = 1e-30;  // anti-denormal toggle
 
 // TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
 // Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
@@ -94,17 +135,34 @@ function setup_band(b)
   svf_set(b * 8, slider(s+2), slider(s+3), slider(s+4), glin);
 );
 
+function setup_band_dyn(b)
+  local(s, ds, fc, q, g, k, a1, a2, a3)
+(
+  s = 10 * (b + 1); ds = 50 + 10 * b;
+  fc = slider(s + 3); q = slider(s + 4);
+  g = tan($pi * fc / srate); k = 1 / q;              // detector bandpass, unity at fc
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  det[b*4] = a1; det[b*4+1] = a2; det[b*4+2] = a3; det[b*4+3] = k;
+  dp[b*4]   = pow(2, -(slider(ds+3) + slider(ds+4) * 0.01));   // ceil_lin
+  dp[b*4+1] = exp(-1 / (slider(ds+5) * 0.001 * srate));        // atk
+  dp[b*4+2] = exp(-1 / (slider(ds+6) * 0.001 * srate));        // rel
+  dp[b*4+3] = slider(ds+1);                                    // dynOn
+  dm[b]     = slider(ds+2);                                    // 0 Linked,1 DualLR,2 DualMS
+  bp[b*3] = fc; bp[b*3+1] = q; bp[b*3+2] = tan($pi * fc / srate);
+);
+
 @slider
 
 out_gain = pow(2, slider2 + slider3 * 0.01);
 b = 0;
-loop(N_BANDS, setup_band(b); b += 1;);
+loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
 
 @sample
 
 // Running signal stays L/R. Each band derives its working domain by placement.
 // Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
 slider1 != 1 ? (
+  anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
   b = 0;
   loop(N_BANDS,
     slider(10 * (b + 1) + 1) == 1 ? (         // enable
@@ -112,9 +170,16 @@ slider1 != 1 ? (
       a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
       m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
       pl = slider(10 * (b + 1) + 8);          // 0 Both,1 Mid,2 Side,3 Left,4 Right
+      both_ms = 0;
 
-      pl == 0 ? (                             // Both -> L,R
-        chA = spl0; chB = spl1; do_b = 1;
+      pl == 0 ? (                             // Both: domain by dyn mode
+        (dp[b*4+3] == 1 && dm[b] == 2) ? (    // dyn on + Dual M/S -> work in M/S
+          mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+          chA = mid; chB = sid; both_ms = 1;
+        ) : (
+          chA = spl0; chB = spl1;
+        );
+        do_b = 1;
       ) : pl == 3 ? (                         // Left -> L only
         chA = spl0; do_b = 0;
       ) : pl == 4 ? (                         // Right -> R only
@@ -139,8 +204,60 @@ slider1 != 1 ? (
         chB = m0*chB + m1*v1 + m2*v2;
       );
 
+      // ----- Dynamics (Mode A Soft): Bell type only, gated by Dyn -----
+      (dp[b*4+3] == 1 && slider(10*(b+1)+2) == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        ceil = dp[b*4]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = abs(dk * v1);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = abs(dk * v1);
+        );
+
+        linked ? (
+          lev = max(levA, levB);
+          gr = lev > ceil ? ceil / lev : 1;
+          ea = eg[b*2]; coef = gr < ea ? atk : rel; ea = gr + (ea - gr) * coef;
+          eg[b*2] = ea; eg[b*2+1] = ea;
+        ) : (
+          gr = levA > ceil ? ceil / levA : 1;
+          ea = eg[b*2]; coef = gr < ea ? atk : rel; ea = gr + (ea - gr) * coef; eg[b*2] = ea;
+          do_b ? (
+            gr = levB > ceil ? ceil / levB : 1;
+            eb = eg[b*2+1]; coef = gr < eb ? atk : rel; eb = gr + (eb - gr) * coef; eg[b*2+1] = eb;
+          );
+        );
+
+        // cut chA
+        A = sqrt(eg[b*2]); ck = 1 / (qb * A);
+        ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = chA + cm1 * v1;
+
+        do_b ? (
+          A = sqrt(eg[b*2+1]); ck = 1 / (qb * A);
+          ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = chB + cm1 * v1;
+        );
+      );
+
       // Write working channels back to L/R
-      pl == 0 ? ( spl0 = chA; spl1 = chB; ) :
+      pl == 0 ? ( both_ms ? ( spl0 = chA + chB; spl1 = chA - chB; ) : ( spl0 = chA; spl1 = chB; ) ) :
       pl == 3 ? ( spl0 = chA; ) :
       pl == 4 ? ( spl1 = chA; ) :
       pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
