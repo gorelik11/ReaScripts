@@ -90,19 +90,34 @@ re-implemented from scratch, not copied, since their licenses are unconfirmed.
 
 ## 3. Signal architecture
 
-### 3.1 M/S engine
-- At input, encode once: `M = (L+R)/2`, `S = (L−R)/2`. All bands process in the M/S
-  domain; decode back to L/R at output.
-- Per-band M/S target:
-  - **Stereo** = identical filter applied to both M and S (= equal L/R EQ).
-  - **Mid** = M only. **Side** = S only.
-  - (L/R target is a possible future extension; it breaks the pure M/S domain.)
-- Each band holds **separate filter state for M and for S**.
+### 3.1 Stereo placement engine (running L/R, per-band domain)
+The running signal stays **L/R**; each band locally derives the domain it needs
+(`M=(L+R)/2`, `S=(L−R)/2`; recombine `L=M+S`, `R=M−S`). This is more general than a
+global M/S encode and delivers the full FabFilter-like placement set.
+
+- **Per-band Placement** (governs static *and* dynamic routing):
+  `Both | Mid | Side | Left | Right`.
+  - For a *static* (linear) filter, `Both` applied identically to L&R = identically to
+    M&S, so the linked/dual distinction does **not** exist statically — it only matters
+    for the dynamic envelope (§4.1). `Mid/Side` work in M/S, `Left/Right` in L/R.
+- **Per-band Dyn Stereo Mode** (only meaningful when Placement=`Both` and dynamics on):
+  `Linked | Dual L/R | Dual M/S`.
+  - `Linked` — one envelope from `max(chA, chB)` applied to both channels; preserves
+    image (default).
+  - `Dual L/R` — L and R limited by independent envelopes (classic dual-mono).
+  - `Dual M/S` — M and S limited independently (a band spiking in Side is limited in
+    Side only — de-toxifies phase — without touching Mid).
+- Each band's working domain per sample:
+  - `Mid`/`Side` → M/S (single channel). `Left`/`Right` → L/R (single channel).
+  - `Both` + (`Linked`|`Dual L/R`) → L/R (both). `Both` + `Dual M/S` → M/S (both).
+- Each band holds filter/detector/cut state for **two working channels** (slot A/B),
+  reinterpreted per the band's domain; single-target placements use slot A only.
 
 ### 3.2 Bands (up to 8 nodes)
 Each band has: type, frequency, Q, gain (Macro Shift + Micro Shift + Bit Ratio,
-per §1), M/S target, bell character, and a dynamics section (§4). Node count is
-dynamic (0–8), created/removed by double-click on the analyzer.
+per §1), placement (§3.1: Both/Mid/Side/Left/Right + Dyn Stereo Mode), bell character,
+and a dynamics section (§4). Node count is dynamic (0–8), created/removed by
+double-click on the analyzer.
 
 Dragging a node vertically on the analyzer adjusts the **Macro** bit grid (snaps to
 clear bit jumps); Micro Shift is the fine readout/handle for sub-bit tuning.
@@ -192,11 +207,13 @@ The threshold must be operational, so the detector is defined exactly:
   so the comparison is "band energy vs ceiling", independent of `Q` and filter shape.
 - **Comparison:** the envelope is compared to `ceiling_lin = 2^(-(CeilMacro +
   CeilMicro/100))`. Excess (in bits) = `log2(env / ceiling_lin)` when `env > ceiling`.
-- **M/S domain & stereo linking:**
-  - *Mid-only* / *Side-only* band → detector and gain act in that one component.
-  - *Stereo* band → **linked**: detector = `max(M_env, S_env)` (or summed energy),
-    one gain applied equally to M and S, so **stereo width does not pump**. Per-band
-    independent M/S envelopes are NOT used for a Stereo-target band.
+- **Placement & stereo linking (per §3.1):**
+  - *Mid/Side/Left/Right* placement → detector and gain act in that single channel.
+  - *Both* placement uses the Dyn Stereo Mode:
+    - `Linked` → detector = `max(chA, chB)`, one gain to both → **width does not pump**.
+    - `Dual L/R` → independent envelopes on L and R (classic dual-mono).
+    - `Dual M/S` → independent envelopes on M and S (limit a Side-spiking band in Side
+      only, leaving Mid untouched).
 
 ### 4.2 Mode A — Dynamic EQ (bell/shelf-cut, Nova-style)
 Phase-clean, smooth, **no absolute ceiling guarantee**.
@@ -261,7 +278,8 @@ dynamic filters. The correct model:
 - **Nodes** dragged by mouse over frequency/gain; **double-click** on the curve adds a
   node, on a node removes it (up to 8). Interaction approach inspired by `ReEQ.jsfx`
   (MIT), not copied verbatim.
-- **Selected-node panel** (bottom/side): type, bell character, Q, M/S, gain
+- **Selected-node panel** (bottom/side): type, bell character, Q, placement
+  (Both/Mid/Side/Left/Right) + Dyn Stereo Mode (Linked/Dual L/R/Dual M/S), gain
   (Macro / Micro / Bit Ratio), Dyn on/off, **Dyn Mode (A: Dynamic EQ / B: Band-Split)**,
   Soft/Hard·Brick, Ceiling (Macro/Micro), Attack/Release.
 - **Visualisation:** static EQ curve + live dynamic curve (how much each node is
@@ -339,8 +357,11 @@ JSFX cannot use the Python FakeReaper harness. Plan:
 1. **Engine, no GUI (slider-backed):** M/S codec, static bands (Bell + Shelf + HP/LP),
    bit-gain (Macro/Micro/BitRatio), matched-biquad cramping correction (§3.4),
    instance-local memory (gmem fix). Zero-latency only. Slider-backed param bank.
-2. **Dynamics Mode A:** per-band normalised detector + Soft/Hard bell·shelf-cut,
-   Stereo-linked envelopes, shared audio delay + per-band detector state.
+2a. **Placement engine:** refactor the static engine from global-M/S to running-L/R
+   with per-band placement (Both/Mid/Side/Left/Right), local domain transforms (§3.1).
+2b. **Dynamics Mode A (Soft):** per-band normalised detector + Soft bell-cut, with
+   Dyn Stereo Mode (Linked / Dual L/R / Dual M/S); zero-latency. (Hard cascade,
+   shared lookahead, shelf dynamics → Phase 2c.)
 3. **Dynamics Mode B:** band-split + RCBit Soft/Brick + bit-exact clamp, per-band
    lookahead histories.
 4. **Bell characters:** GML / Butterworth / house models.
@@ -358,7 +379,6 @@ This spec is approved for **Phase 1**; later phases get their own implementation
 - Final/global limiter (explicitly unwanted) — and therefore no absolute ceiling
   guarantee on the summed master output (Mode B guarantees only the split band's
   own contribution, §4.3).
-- L/R per-band target (M/S domain only for v1).
 - RMS detector (v1 detector = peak, §4.1).
 - Dynamics on HP/LP types (Bell + Shelf only in v1).
 - Spectrum-grab / match-EQ, presets browser, automation-noise tricks.
