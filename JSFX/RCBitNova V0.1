@@ -1,4 +1,4 @@
-desc: RCBitNova V0.1 - Bit-Accurate M/S EQ (Phase 1: static engine)
+desc: RCBitNova V0.1 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Brick)
 
 // License: GPL - http://www.gnu.org/licenses/gpl.html
 // Author: Dima Gorelik (design with Claude)
@@ -15,6 +15,7 @@ out_pin:Right
 slider1:0<0,1,1{Off,On}>-Bypass
 slider2:0<-16,16,1>-Output Macro (bits)
 slider3:0<-100,100,0.1>-Output Micro (% bit)
+slider4:2<0.1,10,0.1>-Lookahead (ms, Mode B)
 
 slider11:1<0,1,1{Off,On}>B1 Enable
 slider12:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B1 Type
@@ -58,6 +59,7 @@ slider53:1<0,16,1>B1 Ceiling Macro (bits below 0)
 slider54:0<-100,100,0.1>B1 Ceiling Micro (% bit)
 slider55:1<0.05,50,0.01>B1 Attack (ms)
 slider56:80<1,500,1>B1 Release (ms)
+slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>B1 Dyn Mode
 
 slider61:0<0,1,1{Off,On}>B2 Dyn
 slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
@@ -65,6 +67,7 @@ slider63:1<0,16,1>B2 Ceiling Macro (bits below 0)
 slider64:0<-100,100,0.1>B2 Ceiling Micro (% bit)
 slider65:1<0.05,50,0.01>B2 Attack (ms)
 slider66:80<1,500,1>B2 Release (ms)
+slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>B2 Dyn Mode
 
 slider71:0<0,1,1{Off,On}>B3 Dyn
 slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
@@ -72,6 +75,7 @@ slider73:1<0,16,1>B3 Ceiling Macro (bits below 0)
 slider74:0<-100,100,0.1>B3 Ceiling Micro (% bit)
 slider75:1<0.05,50,0.01>B3 Attack (ms)
 slider76:80<1,500,1>B3 Release (ms)
+slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>B3 Dyn Mode
 
 slider81:0<0,1,1{Off,On}>B4 Dyn
 slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
@@ -79,6 +83,7 @@ slider83:1<0,16,1>B4 Ceiling Macro (bits below 0)
 slider84:0<-100,100,0.1>B4 Ceiling Micro (% bit)
 slider85:1<0.05,50,0.01>B4 Attack (ms)
 slider86:80<1,500,1>B4 Release (ms)
+slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
 
 @init
 
@@ -99,6 +104,21 @@ memset(dst, 0, N_BANDS * 4);
 memset(cst, 0, N_BANDS * 4);
 i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
 anti = pow(2, -100);  // anti-denormal toggle (~8e-31; EEL2 rejects 1e-30 literal)
+
+// Mode B (Phase 3a) instance-local memory
+MAX_LOOK = 2048;   // covers the 10 ms slider max up to 192 kHz (1920 samples)
+mb_band = 1024;    // band ring: per (band,channel) MAX_LOOK each (cs = b*2+c)
+mb_peak = mb_band + N_BANDS * 2 * MAX_LOOK;
+mb_end  = mb_peak + N_BANDS * 2 * MAX_LOOK;
+memset(mb_band, 0, mb_end - mb_band);
+mbenv  = mb_end;               // Mode-B env per (band,channel): 2/band
+mbmode = mbenv + N_BANDS * 2;  // Dyn Mode per band (0 A, 1 B)
+mbwpos = mbmode + N_BANDS;     // Mode-B write pos per band
+bus_dry = mbwpos + N_BANDS;    // shared stereo dry delay (L at [0..], R at [MAX_LOOK..])
+bus_wp = 0;
+memset(bus_dry, 0, MAX_LOOK * 2);
+i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
+memset(mbwpos, 0, N_BANDS);
 
 // TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
 // Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
@@ -157,6 +177,19 @@ out_gain = pow(2, slider2 + slider3 * 0.01);
 b = 0;
 loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
 
+// Mode-B global lookahead + PDC
+Lk = floor(slider4 * 0.001 * srate + 0.5);
+Lk = min(max(Lk, 1), MAX_LOOK - 1);
+any_b = 0;
+b = 0;
+loop(N_BANDS,
+  mbmode[b] = slider(50 + 10 * b + 7);                                       // 0 A, 1 B
+  (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) == 0) ? any_b = 1;
+  b += 1;
+);
+pdc_delay = (slider1 != 1 && any_b) ? Lk : 0;   // 0 when bypassed (passthrough is zero-latency)
+pdc_bot_ch = 0; pdc_top_ch = 2;
+
 @sample
 
 // Running signal stays L/R. Each band derives its working domain by placement.
@@ -204,8 +237,8 @@ slider1 != 1 ? (
         chB = m0*chB + m1*v1 + m2*v2;
       );
 
-      // ----- Dynamics (Mode A Soft): Bell type only, gated by Dyn -----
-      (dp[b*4+3] == 1 && slider(10*(b+1)+2) == 0) ? (
+      // ----- Dynamics (Mode A Soft): Bell type only, Dyn on, Dyn Mode A -----
+      (dp[b*4+3] == 1 && slider(10*(b+1)+2) == 0 && mbmode[b] == 0) ? (
         qb = bp[b*3+1]; cg = bp[b*3+2];
         da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
         ceil = dp[b*4]; atk = dp[b*4+1]; rel = dp[b*4+2];
@@ -264,6 +297,94 @@ slider1 != 1 ? (
                 ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
     );
     b += 1;
+  );
+
+  // ===== Mode B (Brick, band-split, bit-exact) on the globally-delayed bus =====
+  any_b ? (
+    L_in = spl0; R_in = spl1;          // intermediate (post static + Mode-A)
+    corrL = 0; corrR = 0;
+    b = 0;
+    loop(N_BANDS,
+      (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) == 0) ? (
+        pl = slider(10*(b+1)+8);
+        qb = bp[b*3+1];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        ceil = dp[b*4]; rel = dp[b*4+2];
+        linked = (pl == 0) && (dm[b] == 0);
+
+        ms_dom = 0; two = 0;
+        pl == 0 ? (
+          (dm[b] == 2) ? ( xa = (L_in + R_in)*0.5; xb = (L_in - R_in)*0.5; ms_dom = 1; ) :
+                         ( xa = L_in; xb = R_in; );
+          two = 1;
+        ) : pl == 1 ? ( xa = (L_in + R_in)*0.5; ms_dom = 1; ) :
+            pl == 2 ? ( xa = (L_in - R_in)*0.5; ms_dom = 1; ) :
+            pl == 3 ? ( xa = L_in; ) : ( xa = R_in; );
+
+        wp = mbwpos[b];
+        csA = b*2; csB = b*2 + 1;
+        baseA = csA*MAX_LOOK; baseB = csB*MAX_LOOK;
+
+        // channel A: extract band (detector state slot A), ring write, worst-peak
+        ic1 = dst[b*4]; ic2 = dst[b*4+1];
+        v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
+        bA = dk * v1;
+        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
+        worstA = 0; i = 0;
+        loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
+
+        two ? (
+          ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
+          v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
+          bB = dk * v1;
+          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
+          worstB = 0; i = 0;
+          loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
+        );
+
+        linked ? (
+          worst = max(worstA, worstB);
+          tgt = worst > ceil ? ceil / worst : 1;
+          ea = mbenv[csA]; tgt < ea ? ea = tgt : ( ea = tgt + (ea - tgt)*rel; ea = min(ea,1); );
+          mbenv[csA] = ea; mbenv[csB] = ea;
+        ) : (
+          tgt = worstA > ceil ? ceil / worstA : 1;
+          ea = mbenv[csA]; tgt < ea ? ea = tgt : ( ea = tgt + (ea - tgt)*rel; ea = min(ea,1); ); mbenv[csA] = ea;
+          two ? (
+            tgt = worstB > ceil ? ceil / worstB : 1;
+            eb = mbenv[csB]; tgt < eb ? eb = tgt : ( eb = tgt + (eb - tgt)*rel; eb = min(eb,1); ); mbenv[csB] = eb;
+          );
+        );
+
+        rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
+        bdA = mb_band[baseA + rpos];
+        limA = bdA * mbenv[csA]; abs(limA) > ceil ? (limA = limA > 0 ? ceil : -ceil);
+        dcA = limA - bdA;
+        two ? (
+          bdB = mb_band[baseB + rpos];
+          limB = bdB * mbenv[csB]; abs(limB) > ceil ? (limB = limB > 0 ? ceil : -ceil);
+          dcB = limB - bdB;
+        );
+
+        pl == 0 ? (
+          ms_dom ? ( corrL += dcA + dcB; corrR += dcA - dcB; ) : ( corrL += dcA; corrR += dcB; );
+        ) : pl == 1 ? ( corrL += dcA; corrR += dcA; ) :
+            pl == 2 ? ( corrL += dcA; corrR -= dcA; ) :
+            pl == 3 ? ( corrL += dcA; ) : ( corrR += dcA; );
+
+        mbwpos[b] = (wp + 1) % MAX_LOOK;
+      );
+      b += 1;
+    );
+
+    // delayed dry L/R bus + accumulated band corrections
+    bus_dry[bus_wp] = L_in; bus_dry[bus_wp + MAX_LOOK] = R_in;
+    rp = (bus_wp - Lk + MAX_LOOK) % MAX_LOOK;
+    spl0 = bus_dry[rp] + corrL;
+    spl1 = bus_dry[rp + MAX_LOOK] + corrR;
+    bus_wp = (bus_wp + 1) % MAX_LOOK;
   );
 
   spl0 *= out_gain;
