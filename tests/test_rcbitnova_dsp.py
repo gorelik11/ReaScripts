@@ -126,3 +126,76 @@ def test_placement_both_filters_each_channel():
     Lout, Rout = dsp.process_band_stereo("bell", "both", 700.0, 2.0, g, SR, L, R)
     assert Lout == dsp.svf_process(dsp.svf_make("bell", 700.0, 2.0, g, SR), L)
     assert Rout == dsp.svf_process(dsp.svf_make("bell", 700.0, 2.0, g, SR), R)
+
+
+# ---- Phase 2b: Soft dynamics (Mode A) + stereo linking ----
+
+def test_ceiling_lin_bits_below_zero():
+    assert dsp.ceiling_lin(0, 0) == 1.0
+    assert dsp.ceiling_lin(1, 0) == 0.5
+    assert dsp.ceiling_lin(2, 0) == 0.25
+    assert dsp.ceiling_lin(1, 50) == pytest.approx(2 ** -1.5)
+
+
+def test_bandpass_detector_unity_at_center_low_off_band():
+    c = dsp.svf_make("bandpass", 1000.0, 2.0, 1.0, SR)
+    assert dsp.svf_magnitude(c, 1000.0, SR) == pytest.approx(1.0, abs=0.02)
+    assert dsp.svf_magnitude(c, 250.0, SR) < 0.3
+    assert dsp.svf_magnitude(c, 4000.0, SR) < 0.3
+
+
+def test_env_coeffs_ordering():
+    atk, rel = dsp.env_coeffs(1.0, 80.0, SR)
+    assert 0.0 < atk < rel < 1.0
+
+
+def test_gain_env_converges_and_instant():
+    atk, rel = dsp.env_coeffs(1.0, 80.0, SR)
+    env = 1.0
+    for _ in range(20000):
+        env = dsp.gain_env_step(env, 0.5, atk, rel)
+    assert env == pytest.approx(0.5, abs=1e-3)
+    assert dsp.gain_env_step(1.0, 0.3, 0.0, 0.9) == pytest.approx(0.3)
+
+
+def _band_peak(samples, tail=2000):
+    return max(abs(v) for v in samples[-tail:])
+
+
+def test_modea_pulls_band_to_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modea_process(sig, 1000.0, 2.0, SR, 0.2, 1.0, 80.0)
+    assert 0.18 <= _band_peak(out) <= 0.24
+
+
+def test_modea_transparent_below_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modea_process(sig, 1000.0, 2.0, SR, 2.0, 1.0, 80.0)
+    assert _band_peak(out) == pytest.approx(0.8, abs=0.02)
+
+
+def test_modea_dual_lr_equals_independent_channels():
+    L, R = _stereo_sigs(1 << 14)
+    Lo, Ro = dsp.modea_stereo(L, R, 700.0, 2.0, SR, 0.2, 1.0, 80.0, "dual_lr")
+    assert Lo == dsp.modea_process(L, 700.0, 2.0, SR, 0.2, 1.0, 80.0)
+    assert Ro == dsp.modea_process(R, 700.0, 2.0, SR, 0.2, 1.0, 80.0)
+
+
+def test_modea_dual_ms_equals_independent_ms():
+    L, R = _stereo_sigs(1 << 14)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.modea_process(M, 700.0, 2.0, SR, 0.2, 1.0, 80.0)
+    So = dsp.modea_process(S, 700.0, 2.0, SR, 0.2, 1.0, 80.0)
+    Lo, Ro = dsp.modea_stereo(L, R, 700.0, 2.0, SR, 0.2, 1.0, 80.0, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+def test_modea_linked_applies_equal_gain_no_width_shift():
+    w = 2 * math.pi * 700.0 / SR
+    mono = [0.8 * math.sin(w * i) for i in range(1 << 14)]
+    Lo, Ro = dsp.modea_stereo(mono, list(mono), 700.0, 2.0, SR, 0.2, 1.0, 80.0, "linked")
+    assert Lo == pytest.approx(Ro, abs=1e-12)

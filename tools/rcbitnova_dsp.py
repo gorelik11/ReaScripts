@@ -46,6 +46,9 @@ def svf_make(ftype: str, fc: float, q: float, gain_lin: float, sr: float) -> dic
     elif ftype == "highshelf":
         g = math.tan(math.pi * fc / sr) * math.sqrt(A); k = 1.0 / q
         m0, m1, m2 = A * A, k * (1.0 - A) * A, (1.0 - A * A)
+    elif ftype == "bandpass":
+        g = math.tan(math.pi * fc / sr); k = 1.0 / q
+        m0, m1, m2 = 0.0, k, 0.0
     else:
         raise ValueError(f"unknown ftype {ftype!r}")
     a1 = 1.0 / (1.0 + g * (g + k))
@@ -100,3 +103,105 @@ def process_band_stereo(ftype, placement, fc, q, gain_lin, sr, Lin, Rin):
     else:
         raise ValueError(f"unknown placement {placement!r}")
     return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])
+
+
+# ---- Phase 2b: Soft dynamics (Mode A) ----
+
+def ceiling_lin(ceil_macro, ceil_micro):
+    """Ceiling as a power of two, bits below 0 dBFS."""
+    return 2.0 ** (-(ceil_macro + ceil_micro / 100.0))
+
+
+def env_coeffs(atk_ms, rel_ms, sr):
+    return (math.exp(-1.0 / (atk_ms * 0.001 * sr)),
+            math.exp(-1.0 / (rel_ms * 0.001 * sr)))
+
+
+def gain_env_step(env_gain, gr, atk, rel):
+    coef = atk if gr < env_gain else rel
+    return gr + (env_gain - gr) * coef
+
+
+def modea_process(signal, fc, q, sr, ceiling, atk_ms, rel_ms):
+    """Single-channel Mode-A Soft: detector -> envelope -> modulated bell-cut."""
+    det = svf_make("bandpass", fc, q, 1.0, sr)
+    da1, da2, da3, dk = det["a1"], det["a2"], det["a3"], det["k"]
+    atk, rel = env_coeffs(atk_ms, rel_ms, sr)
+    cg = math.tan(math.pi * fc / sr)
+    dic1 = dic2 = cic1 = cic2 = 0.0
+    env = 1.0
+    out = []
+    for x in signal:
+        v3 = x - dic2
+        v1 = da1 * dic1 + da2 * v3
+        v2 = dic2 + da2 * dic1 + da3 * v3
+        dic1 = 2.0 * v1 - dic1
+        dic2 = 2.0 * v2 - dic2
+        level = abs(dk * v1)
+        gr = ceiling / level if level > ceiling else 1.0
+        env = gain_env_step(env, gr, atk, rel)
+        A = math.sqrt(env)
+        ck = 1.0 / (q * A)
+        ca1 = 1.0 / (1.0 + cg * (cg + ck))
+        ca2 = cg * ca1
+        ca3 = cg * ca2
+        cm1 = ck * (A * A - 1.0)
+        cv3 = x - cic2
+        cv1 = ca1 * cic1 + ca2 * cv3
+        cv2 = cic2 + ca2 * cic1 + ca3 * cv3
+        cic1 = 2.0 * cv1 - cic1
+        cic2 = 2.0 * cv2 - cic2
+        out.append(x + cm1 * cv1)
+    return out
+
+
+def _modea_two_channels(chA, chB, fc, q, sr, ceiling, atk_ms, rel_ms, linked):
+    """Two channels with independent cut SVFs. If linked, one shared envelope
+    from max(levelA, levelB); else independent envelopes."""
+    det = svf_make("bandpass", fc, q, 1.0, sr)
+    da1, da2, da3, dk = det["a1"], det["a2"], det["a3"], det["k"]
+    atk, rel = env_coeffs(atk_ms, rel_ms, sr)
+    cg = math.tan(math.pi * fc / sr)
+    dA1 = dA2 = dB1 = dB2 = 0.0
+    cA1 = cA2 = cB1 = cB2 = 0.0
+    envA = envB = 1.0
+    outA, outB = [], []
+    for xa, xb in zip(chA, chB):
+        v3 = xa - dA2; v1a = da1 * dA1 + da2 * v3; v2 = dA2 + da2 * dA1 + da3 * v3
+        dA1 = 2.0 * v1a - dA1; dA2 = 2.0 * v2 - dA2
+        v3 = xb - dB2; v1b = da1 * dB1 + da2 * v3; v2 = dB2 + da2 * dB1 + da3 * v3
+        dB1 = 2.0 * v1b - dB1; dB2 = 2.0 * v2 - dB2
+        levelA = abs(dk * v1a); levelB = abs(dk * v1b)
+        if linked:
+            lev = levelA if levelA > levelB else levelB
+            gr = ceiling / lev if lev > ceiling else 1.0
+            envA = gain_env_step(envA, gr, atk, rel); envB = envA
+        else:
+            grA = ceiling / levelA if levelA > ceiling else 1.0
+            grB = ceiling / levelB if levelB > ceiling else 1.0
+            envA = gain_env_step(envA, grA, atk, rel)
+            envB = gain_env_step(envB, grB, atk, rel)
+        A = math.sqrt(envA); ck = 1.0 / (q * A)
+        ca1 = 1.0 / (1.0 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2
+        cm1 = ck * (A * A - 1.0)
+        cv3 = xa - cA2; cv1 = ca1 * cA1 + ca2 * cv3; cv2 = cA2 + ca2 * cA1 + ca3 * cv3
+        cA1 = 2.0 * cv1 - cA1; cA2 = 2.0 * cv2 - cA2
+        outA.append(xa + cm1 * cv1)
+        A = math.sqrt(envB); ck = 1.0 / (q * A)
+        ca1 = 1.0 / (1.0 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2
+        cm1 = ck * (A * A - 1.0)
+        cv3 = xb - cB2; cv1 = ca1 * cB1 + ca2 * cv3; cv2 = cB2 + ca2 * cB1 + ca3 * cv3
+        cB1 = 2.0 * cv1 - cB1; cB2 = 2.0 * cv2 - cB2
+        outB.append(xb + cm1 * cv1)
+    return outA, outB
+
+
+def modea_stereo(Lin, Rin, fc, q, sr, ceiling, atk_ms, rel_ms, dyn_mode):
+    """Both-placement Mode-A with stereo linking (linked / dual_lr / dual_ms)."""
+    if dyn_mode == "dual_ms":
+        M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+        S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+        Mo, So = _modea_two_channels(M, S, fc, q, sr, ceiling, atk_ms, rel_ms, False)
+        return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
+    linked = dyn_mode == "linked"
+    return _modea_two_channels(Lin, Rin, fc, q, sr, ceiling, atk_ms, rel_ms, linked)
