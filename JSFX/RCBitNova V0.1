@@ -98,7 +98,7 @@ eg  = 256;  // env_gain: 2/band (chA, chB)
 memset(dst, 0, N_BANDS * 4);
 memset(cst, 0, N_BANDS * 4);
 i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
-anti = 1e-30;  // anti-denormal toggle
+anti = pow(2, -100);  // anti-denormal toggle (~8e-31; EEL2 rejects 1e-30 literal)
 
 // TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
 // Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].

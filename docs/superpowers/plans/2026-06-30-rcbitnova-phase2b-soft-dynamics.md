@@ -344,7 +344,7 @@ det = 96; dst = 128; cst = 160; dp = 192; dm = 208; bp = 216; eg = 256;
 memset(dst, 0, N_BANDS * 4);
 memset(cst, 0, N_BANDS * 4);
 i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
-anti = 1e-30;
+anti = pow(2, -100);   // ~8e-31 anti-denormal; EEL2 rejects the 1e-30 literal
 ```
 
 After the existing `setup_band` function, add:
