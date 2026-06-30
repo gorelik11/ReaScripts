@@ -23,7 +23,7 @@ slider14:0.707<0.1,10,0.001>B1 Q
 slider15:0<-16,16,1>B1 Macro (bits)
 slider16:0<-100,100,0.1>B1 Micro (% bit)
 slider17:1<0,3,0.05>B1 Bit Ratio
-slider18:0<0,2,1{Stereo,Mid,Side}>B1 M/S
+slider18:0<0,4,1{Both,Mid,Side,Left,Right}>B1 Placement
 
 slider21:0<0,1,1{Off,On}>B2 Enable
 slider22:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B2 Type
@@ -32,7 +32,7 @@ slider24:0.707<0.1,10,0.001>B2 Q
 slider25:0<-16,16,1>B2 Macro (bits)
 slider26:0<-100,100,0.1>B2 Micro (% bit)
 slider27:1<0,3,0.05>B2 Bit Ratio
-slider28:0<0,2,1{Stereo,Mid,Side}>B2 M/S
+slider28:0<0,4,1{Both,Mid,Side,Left,Right}>B2 Placement
 
 slider31:0<0,1,1{Off,On}>B3 Enable
 slider32:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B3 Type
@@ -41,7 +41,7 @@ slider34:0.707<0.1,10,0.001>B3 Q
 slider35:0<-16,16,1>B3 Macro (bits)
 slider36:0<-100,100,0.1>B3 Micro (% bit)
 slider37:1<0,3,0.05>B3 Bit Ratio
-slider38:0<0,2,1{Stereo,Mid,Side}>B3 M/S
+slider38:0<0,4,1{Both,Mid,Side,Left,Right}>B3 Placement
 
 slider41:0<0,1,1{Off,On}>B4 Enable
 slider42:0<0,4,1{Bell,Low Shelf,High Shelf,High Pass,Low Pass}>B4 Type
@@ -50,7 +50,7 @@ slider44:0.707<0.1,10,0.001>B4 Q
 slider45:0<-16,16,1>B4 Macro (bits)
 slider46:0<-100,100,0.1>B4 Micro (% bit)
 slider47:1<0,3,0.05>B4 Bit Ratio
-slider48:0<0,2,1{Stereo,Mid,Side}>B4 M/S
+slider48:0<0,4,1{Both,Mid,Side,Left,Right}>B4 Placement
 
 @init
 
@@ -102,41 +102,53 @@ loop(N_BANDS, setup_band(b); b += 1;);
 
 @sample
 
-// When bypassed (slider1==1) spl0/spl1 are left untouched = clean pass-through.
+// Running signal stays L/R. Each band derives its working domain by placement.
+// Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
 slider1 != 1 ? (
-  m = (spl0 + spl1) * 0.5;
-  s = (spl0 - spl1) * 0.5;
-
   b = 0;
   loop(N_BANDS,
-    slider(10 * (b + 1) + 1) == 1 ? (       // enable
+    slider(10 * (b + 1) + 1) == 1 ? (         // enable
       base = b * 8; sb = b * 4;
       a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
       m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
-      tgt = slider(10 * (b + 1) + 8);        // 0 Stereo, 1 Mid, 2 Side
+      pl = slider(10 * (b + 1) + 8);          // 0 Both,1 Mid,2 Side,3 Left,4 Right
 
-      tgt != 2 ? (                            // process M (Stereo or Mid)
-        ic1 = st[sb]; ic2 = st[sb+1];
-        v3 = m - ic2;
-        v1 = a1 * ic1 + a2 * v3;
-        v2 = ic2 + a2 * ic1 + a3 * v3;
-        st[sb]   = 2 * v1 - ic1;
-        st[sb+1] = 2 * v2 - ic2;
-        m = m0 * m + m1 * v1 + m2 * v2;
+      pl == 0 ? (                             // Both -> L,R
+        chA = spl0; chB = spl1; do_b = 1;
+      ) : pl == 3 ? (                         // Left -> L only
+        chA = spl0; do_b = 0;
+      ) : pl == 4 ? (                         // Right -> R only
+        chA = spl1; do_b = 0;
+      ) : (                                   // Mid/Side -> M/S
+        mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+        pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+        do_b = 0;
       );
-      tgt != 1 ? (                            // process S (Stereo or Side)
+
+      // Filter channel A (slot A state)
+      ic1 = st[sb]; ic2 = st[sb+1];
+      v3 = chA - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      st[sb] = 2*v1 - ic1; st[sb+1] = 2*v2 - ic2;
+      chA = m0*chA + m1*v1 + m2*v2;
+
+      // Filter channel B if needed (Both; slot B state)
+      do_b ? (
         ic1 = st[sb+2]; ic2 = st[sb+3];
-        v3 = s - ic2;
-        v1 = a1 * ic1 + a2 * v3;
-        v2 = ic2 + a2 * ic1 + a3 * v3;
-        st[sb+2] = 2 * v1 - ic1;
-        st[sb+3] = 2 * v2 - ic2;
-        s = m0 * s + m1 * v1 + m2 * v2;
+        v3 = chB - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        st[sb+2] = 2*v1 - ic1; st[sb+3] = 2*v2 - ic2;
+        chB = m0*chB + m1*v1 + m2*v2;
       );
+
+      // Write working channels back to L/R
+      pl == 0 ? ( spl0 = chA; spl1 = chB; ) :
+      pl == 3 ? ( spl0 = chA; ) :
+      pl == 4 ? ( spl1 = chA; ) :
+      pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
+                ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
     );
     b += 1;
   );
 
-  spl0 = (m + s) * out_gain;
-  spl1 = (m - s) * out_gain;
+  spl0 *= out_gain;
+  spl1 *= out_gain;
 );
