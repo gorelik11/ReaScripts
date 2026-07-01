@@ -319,3 +319,32 @@ def test_cascade_stereo_dual_ms_equals_independent():
     Lo, Ro = dsp.modeb_cascade_stereo(L, R, 700.0, 2.0, SR, 0.2, 0.4, 2.0, 120.0, 1, 1, "dual_ms")
     assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
     assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+# ---- Phase 2c: Mode A Soft+Hard cascade (bell-cut) ----
+
+def test_modea_cascade_soft_only_equals_modea_process():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 14)]
+    a = dsp.modea_cascade(sig, 1000.0, 2.0, SR, 0.2, 0.4, 5.0, 80.0, 1, 0)
+    b = dsp.modea_process(sig, 1000.0, 2.0, SR, 0.2, 5.0, 80.0)
+    assert a == pytest.approx(b, abs=1e-12)
+
+
+def test_modea_cascade_both_sustained_near_soft_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modea_cascade(sig, 1000.0, 2.0, SR, 0.2, 0.4, 1.0, 80.0, 1, 1)
+    pk = max(abs(v) for v in out[-2000:])
+    assert 0.18 <= pk <= 0.26
+
+
+def test_modea_cascade_stereo_dual_ms_equals_independent():
+    L, R = _stereo_sigs(1 << 14)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.modea_cascade(M, 700.0, 2.0, SR, 0.2, 0.4, 5.0, 80.0, 1, 1)
+    So = dsp.modea_cascade(S, 700.0, 2.0, SR, 0.2, 0.4, 5.0, 80.0, 1, 1)
+    Lo, Ro = dsp.modea_cascade_stereo(L, R, 700.0, 2.0, SR, 0.2, 0.4, 5.0, 80.0, 1, 1, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)

@@ -536,3 +536,87 @@ def modeb_cascade_stereo(Lin, Rin, fc, q, sr, ceil_soft, ceil_hard, look_ms, rel
     A, B = _modeb_cascade_ch(Lin, Rin, True, fc, q, sr, ceil_soft, ceil_hard,
                              look_ms, rel_ms, soft_on, hard_on, linked, gsmooth)
     return A, B
+
+
+# ---- Phase 2c: Mode A Soft+Hard cascade (bell-cut) ----
+
+def _modea_cascade_ch(chA, chB, two, fc, q, sr, cS, cH, atk_ms, rel_ms,
+                      soft_on, hard_on, linked):
+    det = svf_make("bandpass", fc, q, 1.0, sr)
+    da1, da2, da3, dk = det["a1"], det["a2"], det["a3"], det["k"]
+    atk, rel = env_coeffs(atk_ms, rel_ms, sr)
+    cg = math.tan(math.pi * fc / sr)
+    dA1 = dA2 = dB1 = dB2 = 0.0
+    cA1 = cA2 = cB1 = cB2 = 0.0
+    esA = ehA = esB = ehB = 1.0
+    outA = []
+    outB = [] if two else None
+
+    def _gain(level, es, eh):
+        if soft_on:
+            tS = cS / level if level > cS else 1.0
+            es = gain_env_step(es, tS, atk, rel)
+            gS = es
+        else:
+            gS = 1.0
+        if hard_on:
+            ps = level * gS
+            tH = cH / ps if ps > cH else 1.0
+            eh = gain_env_step(eh, tH, 0.0, rel)   # instant attack
+            gH = eh
+        else:
+            gH = 1.0
+        return gS * gH, es, eh
+
+    def _cut(x, g, c1, c2):
+        A = math.sqrt(g); ck = 1.0 / (q * A)
+        ca1 = 1.0 / (1.0 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2
+        cm1 = ck * (A * A - 1.0)
+        cv3 = x - c2; cv1 = ca1 * c1 + ca2 * cv3; cv2 = c2 + ca2 * c1 + ca3 * cv3
+        return x + cm1 * cv1, 2.0 * cv1 - c1, 2.0 * cv2 - c2
+
+    xbs = chB if two else chA
+    for xa, xb in zip(chA, xbs):
+        v3 = xa - dA2; v1a = da1 * dA1 + da2 * v3; v2 = dA2 + da2 * dA1 + da3 * v3
+        dA1 = 2.0 * v1a - dA1; dA2 = 2.0 * v2 - dA2
+        lvA = abs(dk * v1a)
+        lvB = 0.0
+        if two:
+            v3 = xb - dB2; v1b = da1 * dB1 + da2 * v3; v2 = dB2 + da2 * dB1 + da3 * v3
+            dB1 = 2.0 * v1b - dB1; dB2 = 2.0 * v2 - dB2
+            lvB = abs(dk * v1b)
+        if linked:
+            lev = lvA if lvA > lvB else lvB
+            gA, esA, ehA = _gain(lev, esA, ehA)
+            gB = gA
+        else:
+            gA, esA, ehA = _gain(lvA, esA, ehA)
+            gB = 1.0
+            if two:
+                gB, esB, ehB = _gain(lvB, esB, ehB)
+        oa, cA1, cA2 = _cut(xa, gA, cA1, cA2)
+        outA.append(oa)
+        if two:
+            ob, cB1, cB2 = _cut(xb, gB, cB1, cB2)
+            outB.append(ob)
+    return outA, outB
+
+
+def modea_cascade(signal, fc, q, sr, ceil_soft, ceil_hard, atk_ms, rel_ms, soft_on, hard_on):
+    out, _ = _modea_cascade_ch(signal, signal, False, fc, q, sr, ceil_soft, ceil_hard,
+                               atk_ms, rel_ms, soft_on, hard_on, False)
+    return out
+
+
+def modea_cascade_stereo(Lin, Rin, fc, q, sr, ceil_soft, ceil_hard, atk_ms, rel_ms,
+                         soft_on, hard_on, dyn_mode):
+    if dyn_mode == "dual_ms":
+        M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+        S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+        Mo, So = _modea_cascade_ch(M, S, True, fc, q, sr, ceil_soft, ceil_hard,
+                                   atk_ms, rel_ms, soft_on, hard_on, False)
+        return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
+    linked = dyn_mode == "linked"
+    A, B = _modea_cascade_ch(Lin, Rin, True, fc, q, sr, ceil_soft, ceil_hard,
+                             atk_ms, rel_ms, soft_on, hard_on, linked)
+    return A, B
