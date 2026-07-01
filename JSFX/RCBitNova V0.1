@@ -60,6 +60,7 @@ slider54:0<-100,100,0.1>B1 Ceiling Micro (% bit)
 slider55:1<0.05,50,0.01>B1 Attack (ms)
 slider56:80<1,500,1>B1 Release (ms)
 slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>B1 Dyn Mode
+slider58:0<0,1,1{Soft,Hard}>B1 Dyn Char
 
 slider61:0<0,1,1{Off,On}>B2 Dyn
 slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
@@ -68,6 +69,7 @@ slider64:0<-100,100,0.1>B2 Ceiling Micro (% bit)
 slider65:1<0.05,50,0.01>B2 Attack (ms)
 slider66:80<1,500,1>B2 Release (ms)
 slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>B2 Dyn Mode
+slider68:0<0,1,1{Soft,Hard}>B2 Dyn Char
 
 slider71:0<0,1,1{Off,On}>B3 Dyn
 slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
@@ -76,6 +78,7 @@ slider74:0<-100,100,0.1>B3 Ceiling Micro (% bit)
 slider75:1<0.05,50,0.01>B3 Attack (ms)
 slider76:80<1,500,1>B3 Release (ms)
 slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>B3 Dyn Mode
+slider78:0<0,1,1{Soft,Hard}>B3 Dyn Char
 
 slider81:0<0,1,1{Off,On}>B4 Dyn
 slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
@@ -84,6 +87,7 @@ slider84:0<-100,100,0.1>B4 Ceiling Micro (% bit)
 slider85:1<0.05,50,0.01>B4 Attack (ms)
 slider86:80<1,500,1>B4 Release (ms)
 slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
+slider88:0<0,1,1{Soft,Hard}>B4 Dyn Char
 
 @init
 
@@ -119,6 +123,9 @@ bus_wp = 0;
 memset(bus_dry, 0, MAX_LOOK * 2);
 i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
 memset(mbwpos, 0, N_BANDS);
+GSMOOTH = 400; inv_gsmooth = 1 / (GSMOOTH + 1);   // PurestGain (Mode-B Soft)
+mbgc = bus_dry + MAX_LOOK * 2;                     // PurestGain gain state: 2/band
+i = 0; loop(N_BANDS * 2, mbgc[i] = 1; i += 1;);
 
 // TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
 // Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
@@ -359,12 +366,23 @@ slider1 != 1 ? (
         );
 
         rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
+        hard = slider(50 + 10*b + 8);          // 0 Soft, 1 Hard
         bdA = mb_band[baseA + rpos];
-        limA = bdA * mbenv[csA]; abs(limA) > ceil ? (limA = limA > 0 ? ceil : -ceil);
+        hard ? (
+          limA = bdA * mbenv[csA]; abs(limA) > ceil ? (limA = limA > 0 ? ceil : -ceil);
+        ) : (
+          mbgc[csA] = (mbgc[csA] * GSMOOTH + mbenv[csA]) * inv_gsmooth;
+          limA = bdA * mbgc[csA];
+        );
         dcA = limA - bdA;
         two ? (
           bdB = mb_band[baseB + rpos];
-          limB = bdB * mbenv[csB]; abs(limB) > ceil ? (limB = limB > 0 ? ceil : -ceil);
+          hard ? (
+            limB = bdB * mbenv[csB]; abs(limB) > ceil ? (limB = limB > 0 ? ceil : -ceil);
+          ) : (
+            mbgc[csB] = (mbgc[csB] * GSMOOTH + mbenv[csB]) * inv_gsmooth;
+            limB = bdB * mbgc[csB];
+          );
           dcB = limB - bdB;
         );
 
