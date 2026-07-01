@@ -248,3 +248,38 @@ def test_modeb_brick_linked_equal_gain():
     mono = [0.8 * math.sin(w * i) for i in range(1 << 14)]
     Lo, Ro = dsp.modeb_brick_stereo(mono, list(mono), 700.0, 2.0, SR, 0.2, 2.0, 80.0, "linked")
     assert Lo == pytest.approx(Ro, abs=1e-12)
+
+
+# ---- Phase 3b: Mode B Soft (band-split RCBitLimiter) ----
+
+def test_modeb_soft_limits_toward_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.8 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modeb_soft(sig, 1000.0, 2.0, SR, 0.2, 2.0, 80.0)
+    pk = _band_contrib_peak(out, 1000.0, 2.0, SR)
+    assert 0.18 <= pk <= 0.24
+
+
+def test_modeb_soft_transparent_below_ceiling():
+    w = 2 * math.pi * 1000.0 / SR
+    sig = [0.1 * math.sin(w * i) for i in range(1 << 15)]
+    out = dsp.modeb_soft(sig, 1000.0, 2.0, SR, 0.5, 2.0, 80.0)
+    assert _band_contrib_peak(out, 1000.0, 2.0, SR) == pytest.approx(0.1, abs=0.01)
+
+
+def test_modeb_soft_dual_lr_equals_independent():
+    L, R = _stereo_sigs(1 << 14)
+    Lo, Ro = dsp.modeb_soft_stereo(L, R, 700.0, 2.0, SR, 0.2, 2.0, 80.0, "dual_lr")
+    assert Lo == dsp.modeb_soft(L, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    assert Ro == dsp.modeb_soft(R, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+
+
+def test_modeb_soft_dual_ms_equals_independent_ms():
+    L, R = _stereo_sigs(1 << 14)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.modeb_soft(M, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    So = dsp.modeb_soft(S, 700.0, 2.0, SR, 0.2, 2.0, 80.0)
+    Lo, Ro = dsp.modeb_soft_stereo(L, R, 700.0, 2.0, SR, 0.2, 2.0, 80.0, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)

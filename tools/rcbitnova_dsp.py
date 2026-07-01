@@ -325,3 +325,114 @@ def modeb_brick_stereo(Lin, Rin, fc, q, sr, ceiling, look_ms, rel_ms, dyn_mode):
         return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
     linked = dyn_mode == "linked"
     return _modeb_brick_two(Lin, Rin, fc, q, sr, ceiling, look_ms, rel_ms, linked)
+
+
+# ---- Phase 3b: Mode B Soft (band-split RCBitLimiter) ----
+
+def modeb_soft(signal, fc, q, sr, ceiling, look_ms, rel_ms, gsmooth=400.0):
+    """Single-channel Mode-B Soft: band-split + lookahead worst-peak + PurestGain
+    gain smoothing (no clamp). May slightly exceed the ceiling on transients."""
+    det = svf_make("bandpass", fc, q, 1.0, sr)
+    a1, a2, a3, k = det["a1"], det["a2"], det["a3"], det["k"]
+    L = max(1, int(look_ms * 0.001 * sr + 0.5))
+    rel = math.exp(-1.0 / (rel_ms * 0.001 * sr))
+    inv_g = 1.0 / (gsmooth + 1.0)
+    size = L + 1
+    br = [0.0] * size; pr = [0.0] * size; dr = [0.0] * size
+    wpos = 0; ic1 = ic2 = 0.0; env = 1.0; gcur = 1.0
+    out = []
+    for x in signal:
+        v3 = x - ic2
+        v1 = a1 * ic1 + a2 * v3
+        v2 = ic2 + a2 * ic1 + a3 * v3
+        ic1 = 2.0 * v1 - ic1
+        ic2 = 2.0 * v2 - ic2
+        b = k * v1
+        br[wpos] = b; pr[wpos] = abs(b); dr[wpos] = x
+        worst = 0.0
+        for i in range(size):
+            p = pr[(wpos - i) % size]
+            if p > worst:
+                worst = p
+        tgt = ceiling / worst if worst > ceiling else 1.0
+        if tgt < env:
+            env = tgt
+        else:
+            env = tgt + (env - tgt) * rel
+            if env > 1.0:
+                env = 1.0
+        gcur = (gcur * gsmooth + env) * inv_g
+        rpos = (wpos - L) % size
+        bd = br[rpos]
+        out.append(dr[rpos] - bd + bd * gcur)
+        wpos = (wpos + 1) % size
+    return out
+
+
+def _modeb_soft_two(chA, chB, fc, q, sr, ceiling, look_ms, rel_ms, linked, gsmooth):
+    det = svf_make("bandpass", fc, q, 1.0, sr)
+    a1, a2, a3, k = det["a1"], det["a2"], det["a3"], det["k"]
+    L = max(1, int(look_ms * 0.001 * sr + 0.5))
+    rel = math.exp(-1.0 / (rel_ms * 0.001 * sr))
+    inv_g = 1.0 / (gsmooth + 1.0)
+    size = L + 1
+    bA = [0.0]*size; pA = [0.0]*size; dA = [0.0]*size
+    bB = [0.0]*size; pB = [0.0]*size; dB = [0.0]*size
+    wpos = 0
+    iA1 = iA2 = iB1 = iB2 = 0.0
+    envA = envB = gcA = gcB = 1.0
+    outA, outB = [], []
+
+    def _worst(ring):
+        w = 0.0
+        for i in range(size):
+            p = ring[(wpos - i) % size]
+            if p > w:
+                w = p
+        return w
+
+    for xa, xb in zip(chA, chB):
+        v3 = xa - iA2; v1a = a1*iA1 + a2*v3; v2 = iA2 + a2*iA1 + a3*v3
+        iA1 = 2.0*v1a - iA1; iA2 = 2.0*v2 - iA2
+        v3 = xb - iB2; v1b = a1*iB1 + a2*v3; v2 = iB2 + a2*iB1 + a3*v3
+        iB1 = 2.0*v1b - iB1; iB2 = 2.0*v2 - iB2
+        ba = k*v1a; bb = k*v1b
+        bA[wpos] = ba; pA[wpos] = abs(ba); dA[wpos] = xa
+        bB[wpos] = bb; pB[wpos] = abs(bb); dB[wpos] = xb
+        wa = _worst(pA); wb = _worst(pB)
+        if linked:
+            w = wa if wa > wb else wb
+            tgt = ceiling / w if w > ceiling else 1.0
+            if tgt < envA: envA = tgt
+            else:
+                envA = tgt + (envA - tgt) * rel
+                if envA > 1.0: envA = 1.0
+            envB = envA
+        else:
+            tgt = ceiling / wa if wa > ceiling else 1.0
+            if tgt < envA: envA = tgt
+            else:
+                envA = tgt + (envA - tgt) * rel
+                if envA > 1.0: envA = 1.0
+            tgt = ceiling / wb if wb > ceiling else 1.0
+            if tgt < envB: envB = tgt
+            else:
+                envB = tgt + (envB - tgt) * rel
+                if envB > 1.0: envB = 1.0
+        gcA = (gcA * gsmooth + envA) * inv_g
+        gcB = (gcB * gsmooth + envB) * inv_g
+        rpos = (wpos - L) % size
+        bda = bA[rpos]; outA.append(dA[rpos] - bda + bda * gcA)
+        bdb = bB[rpos]; outB.append(dB[rpos] - bdb + bdb * gcB)
+        wpos = (wpos + 1) % size
+    return outA, outB
+
+
+def modeb_soft_stereo(Lin, Rin, fc, q, sr, ceiling, look_ms, rel_ms, dyn_mode, gsmooth=400.0):
+    if dyn_mode == "dual_ms":
+        M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+        S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+        Mo, So = _modeb_soft_two(M, S, fc, q, sr, ceiling, look_ms, rel_ms, False, gsmooth)
+        return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
+    linked = dyn_mode == "linked"
+    return _modeb_soft_two(Lin, Rin, fc, q, sr, ceiling, look_ms, rel_ms, linked, gsmooth)
