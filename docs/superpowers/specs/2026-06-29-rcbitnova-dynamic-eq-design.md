@@ -248,9 +248,26 @@ True per-band limiting in **bit logic**, for the "alive" RCBit sound.
   bands and is **opt-in per band**. A few Mode-B bands among mostly Mode-A/static
   bands is fine; all 8 in Mode-B + HQ is the heavy extreme.
 
-### 4.4 Per-band controls (minimum set)
-Dyn on/off, **Mode (A: Dynamic EQ / B: Band-Split)**, Soft on/off, Hard·Brick on/off,
-Ceiling (Macro bits + Micro), Attack, Release.
+### 4.4 Per-band controls
+Dyn on/off, **Mode (A: Dynamic EQ / B: Band-Split)**, **Soft on/off**, **Hard on/off**
+(independent — both can be on = cascade), **Soft Ceiling** (Macro+Micro), **Hard Ceiling**
+(Macro+Micro), Attack, Release, Dyn Stereo Mode (§4.1), global Lookahead (§4.5).
+
+### 4.6b Soft + Hard cascade ("last policeman")
+Soft and Hard are **independent stages with their own ceilings** (Hard Ceiling is
+typically *higher* — louder, fewer bits below 0 — so Hard only catches what Soft let
+through). Behaviour per mode:
+- **Mode B (band-split):** `limited = clamp( band_delayed · gSoft , ceiling_hard )`,
+  where `gSoft` is the PurestGain-smoothed envelope toward `ceiling_soft` (=1 if Soft off),
+  and the clamp is applied only if Hard on. So: Soft-only = smoothed ride to soft ceiling
+  (may exceed); Hard-only = bit-exact brick at hard ceiling; both = Soft rides musically,
+  Hard bit-exact clamps the remainder at the higher ceiling.
+- **Mode A (bell-cut):** bell gain = `gSoft(→ceiling_soft, smooth) · gHard(→ceiling_hard,
+  instant attack)`. No clamp (gain modulation); Hard is a fast instant-attack cut at the
+  higher ceiling stacked on Soft's smooth cut.
+Implementation note: the current build ships an *exclusive* Dyn Char {Soft|Hard} switch
+as a stepping stone; the cascade phase replaces it with the two independent toggles +
+two ceilings above.
 
 ### 4.5 Lookahead data model (corrected)
 A single shared delay does NOT by itself solve control timing for 8 independent
