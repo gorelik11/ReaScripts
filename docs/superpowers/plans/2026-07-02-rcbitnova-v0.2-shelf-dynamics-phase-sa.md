@@ -16,7 +16,7 @@
 - `JSFX/RCBitNova V0.2` must stay **pure ASCII** (non-ASCII crashed REAPER's ascii codec before). No em-dashes in JSFX comments.
 - Instance-local memory only (never `gmem`). Phase S-A adds **NO new memory blocks**: shelf dynamics reuses `dst` (detector state), `cst` (cut state), `eg`/`egh` (env gains) — band type is mutually exclusive, so slots never conflict (spec §5).
 - EEL2 gotchas (handoff §6): no empty ternary branch; no `1e-30`-style scientific literals; parenthesize nested-assignment clamps `a ? (x = ...);`; per-band sliders via `slider(base + offset)`.
-- Mode B gates (`@slider` line ~213 `any_b`/PDC and `@sample` line ~346 Mode B pass) stay **Bell-only in S-A**. A shelf band set to Dyn Mode B is intentionally static until Phase S-B — this is documented, expected, and part of the live checklist.
+- Mode B gates (`@slider` line ~213 `any_b`/PDC and `@sample` line ~346 Mode B pass) stay **Bell-only in S-A**. A shelf band set to Dyn Mode B is intentionally static until Phase S-B — this is documented, expected, and part of the live checklist. **HARD requirement carried to S-B (adversarial review):** S-B must flip BOTH gates (~213 and ~346) in the SAME commit — flipping only one creates PDC-without-processing or processing-without-PDC, exactly the mismatch the spec's three-gate checklist warns about.
 - Every commit ends with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
 - Bit conventions: `ceiling_lin = 2^(-(Macro + Micro/100))`; detector semantics per spec §2 (unity in passband, 0.7071 at cutoff).
 
@@ -84,7 +84,7 @@ def test_shelf_detector_shape_low():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k shelf`
-Expected: 4 FAIL — `AttributeError: module 'tools.rcbitnova_dsp' has no attribute 'shelf_cut_coeffs'` (and `DET_Q`).
+Expected: **4 failed, 2 passed** — the 4 new tests fail with `AttributeError: module 'tools.rcbitnova_dsp' has no attribute 'shelf_cut_coeffs'` (and `DET_Q`); the 2 passes are pre-existing static-shelf tests that `-k shelf` also matches.
 
 - [ ] **Step 3: Implement** — append to `tools/rcbitnova_dsp.py` after line 622:
 
@@ -194,7 +194,10 @@ def test_highshelf_deesser_burst():
     r0, r1 = int(0.9 * SR), int(0.99 * SR)      # post-burst (released)
     rel_db = 20.0 * math.log10(_tone_amp(y, 1000.0, r0, r1) /
                                _tone_amp(x, 1000.0, r0, r1))
-    assert red_db < -6.0          # prototype measured -6.27 dB
+    # Measured -6.272 dB: only ~0.27 dB of margin. Deterministic pure-Python
+    # math, so it passes reliably - but do NOT tighten this bound, and expect
+    # it to move if DET_Q, env coeffs, or window boundaries ever change.
+    assert red_db < -6.0
     assert abs(tone_db) < 0.1
     assert abs(rel_db) < 0.1
 
@@ -534,10 +537,19 @@ function setup_band_dyn(b)
       );
 ```
 
-- [ ] **Step 4: Bump the desc line** — replace line 1 with:
+- [ ] **Step 4: Bump the desc line and document the detector semantics** — replace line 1 with:
 
 ```
 desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A)
+```
+
+and add to the header comment block (after the `// Filters: ...` lines, keeping pure ASCII) the spec's §2 control-text sentence — JSFX sliders cannot carry help text, so the header is the manual:
+
+```
+// Shelf dynamics: Shelf ceiling = peak of the shelf-region detector
+// (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
+// -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
+// at DC by design (rumble/boom tamer) - it reacts to DC offset.
 ```
 
 - [ ] **Step 5: Transcription self-review (line-by-line, against Task 2's Python)** — verify each of these before committing; every item is a past live-crash class:
