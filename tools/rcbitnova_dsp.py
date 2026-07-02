@@ -620,3 +620,30 @@ def modea_cascade_stereo(Lin, Rin, fc, q, sr, ceil_soft, ceil_hard, atk_ms, rel_
     A, B = _modea_cascade_ch(Lin, Rin, True, fc, q, sr, ceil_soft, ceil_hard,
                              atk_ms, rel_ms, soft_on, hard_on, linked)
     return A, B
+
+
+# ---- Phase S-A: Mode A shelf dynamics (V0.2) ----
+
+DET_Q = 0.7071  # fixed shelf-region detector Q (Butterworth: monotonic, no bump)
+
+
+def shelf_cut_coeffs(shelf_type, g0, q, gdyn):
+    """Per-sample shelf-cut coefficients without tan(). g0 = tan(pi*fc/sr),
+    precomputed once. Matches svf_make(shelf_type, fc, q, gdyn, sr) exactly:
+    the only fc-dependent term is g = g0 * gdyn**0.25 (highshelf) or
+    g0 / gdyn**0.25 (lowshelf). shelf_type: 'lowshelf' | 'highshelf'."""
+    A = math.sqrt(gdyn)
+    rA = math.sqrt(A)
+    k = 1.0 / q
+    if shelf_type == "highshelf":
+        g = g0 * rA
+        m0, m1, m2 = A * A, k * (1.0 - A) * A, (1.0 - A * A)
+    elif shelf_type == "lowshelf":
+        g = g0 / rA
+        m0, m1, m2 = 1.0, k * (A - 1.0), (A * A - 1.0)
+    else:
+        raise ValueError(f"unknown shelf_type {shelf_type!r}")
+    a1 = 1.0 / (1.0 + g * (g + k))
+    a2 = g * a1
+    a3 = g * a2
+    return a1, a2, a3, k, m0, m1, m2

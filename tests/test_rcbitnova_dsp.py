@@ -348,3 +348,49 @@ def test_modea_cascade_stereo_dual_ms_equals_independent():
     Lo, Ro = dsp.modea_cascade_stereo(L, R, 700.0, 2.0, SR, 0.2, 0.4, 5.0, 80.0, 1, 1, "dual_ms")
     assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
     assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+# ---- Phase S-A: Mode A shelf dynamics ----
+
+
+def test_shelf_cut_coeffs_match_svf_make():
+    # Fast per-sample update (no tan) must equal the full recompute to machine zero.
+    for st in ("lowshelf", "highshelf"):
+        for fc, q in ((6000.0, 0.7071), (200.0, 1.5)):
+            g0 = math.tan(math.pi * fc / SR)
+            for gdyn in (1.0, 0.7, 0.5, 0.25, 0.1, 2.0 ** -5):
+                fast = dsp.shelf_cut_coeffs(st, g0, q, gdyn)
+                full = dsp.svf_make(st, fc, q, gdyn, SR)
+                ref = (full["a1"], full["a2"], full["a3"], full["k"],
+                       full["m0"], full["m1"], full["m2"])
+                for a, b in zip(fast, ref):
+                    assert abs(a - b) < 1e-15
+
+
+def test_shelf_cut_coeffs_identity_at_unity_gain():
+    # gdyn == 1 must be a bit-exact pass-through filter (m0=1, m1=0, m2=0).
+    for st in ("lowshelf", "highshelf"):
+        a1, a2, a3, k, m0, m1, m2 = dsp.shelf_cut_coeffs(
+            st, math.tan(math.pi * 3000.0 / SR), 0.7071, 1.0)
+        assert m0 == 1.0 and m1 == 0.0 and m2 == 0.0
+
+
+def test_shelf_detector_shape_high():
+    # Spec item 1: HP detector at fixed DET_Q — unity passband, 0.7071 at fc,
+    # rejects lows, monotonic (no resonant bump).
+    det = dsp.svf_make("hp", 6000.0, dsp.DET_Q, 1.0, SR)
+    assert dsp.svf_magnitude(det, 1000.0, SR) < 0.05
+    assert abs(dsp.svf_magnitude(det, 6000.0, SR) - 0.7071) < 0.01
+    assert dsp.svf_magnitude(det, 16000.0, SR) == pytest.approx(1.0, abs=0.02)
+    freqs = (500, 1000, 2000, 4000, 6000, 8000, 12000, 16000, 20000)
+    vals = [dsp.svf_magnitude(det, f, SR) for f in freqs]
+    assert max(vals) < 1.02
+    assert all(b >= a - 1e-3 for a, b in zip(vals, vals[1:]))
+
+
+def test_shelf_detector_shape_low():
+    # LP mirror: unity toward DC, 0.7071 at fc, rejects highs.
+    det = dsp.svf_make("lp", 200.0, dsp.DET_Q, 1.0, SR)
+    assert dsp.svf_magnitude(det, 20.0, SR) == pytest.approx(1.0, abs=0.02)
+    assert abs(dsp.svf_magnitude(det, 200.0, SR) - 0.7071) < 0.01
+    assert dsp.svf_magnitude(det, 5000.0, SR) < 0.01
