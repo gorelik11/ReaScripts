@@ -647,3 +647,92 @@ def shelf_cut_coeffs(shelf_type, g0, q, gdyn):
     a2 = g * a1
     a3 = g * a2
     return a1, a2, a3, k, m0, m1, m2
+
+
+def _shelf_cascade_ch(chA, chB, two, shelf_type, fc, q, sr, cS, cH,
+                      atk_ms, rel_ms, soft_on, hard_on, linked):
+    """Mode-A shelf dynamics, one or two channels (mirror of _modea_cascade_ch).
+    Detector: HP tap (highshelf) / LP tap (lowshelf) of an SVF at fc with fixed
+    DET_Q. Cut: full shelf filter of the band's fc/q, gain = gSoft * gHard from
+    the existing Soft+Hard cascade. q is the band's shelf Q (audio path only)."""
+    high = shelf_type == "highshelf"
+    det = svf_make("hp" if high else "lp", fc, DET_Q, 1.0, sr)
+    da1, da2, da3, dk = det["a1"], det["a2"], det["a3"], det["k"]
+    atk, rel = env_coeffs(atk_ms, rel_ms, sr)
+    g0 = math.tan(math.pi * fc / sr)
+    dA1 = dA2 = dB1 = dB2 = 0.0
+    cA1 = cA2 = cB1 = cB2 = 0.0
+    esA = ehA = esB = ehB = 1.0
+    outA = []
+    outB = [] if two else None
+
+    def _gain(level, es, eh):
+        if soft_on:
+            tS = cS / level if level > cS else 1.0
+            es = gain_env_step(es, tS, atk, rel)
+            gS = es
+        else:
+            gS = 1.0
+        if hard_on:
+            ps = level * gS
+            tH = cH / ps if ps > cH else 1.0
+            eh = gain_env_step(eh, tH, 0.0, rel)   # instant attack
+            gH = eh
+        else:
+            gH = 1.0
+        return gS * gH, es, eh
+
+    def _cut(x, gdyn, c1, c2):
+        a1, a2, a3, k, m0, m1, m2 = shelf_cut_coeffs(shelf_type, g0, q, gdyn)
+        v3 = x - c2
+        v1 = a1 * c1 + a2 * v3
+        v2 = c2 + a2 * c1 + a3 * v3
+        return m0 * x + m1 * v1 + m2 * v2, 2.0 * v1 - c1, 2.0 * v2 - c2
+
+    xbs = chB if two else chA
+    for xa, xb in zip(chA, xbs):
+        v3 = xa - dA2; v1 = da1 * dA1 + da2 * v3; v2 = dA2 + da2 * dA1 + da3 * v3
+        dA1 = 2.0 * v1 - dA1; dA2 = 2.0 * v2 - dA2
+        lvA = abs(xa - dk * v1 - v2) if high else abs(v2)
+        lvB = 0.0
+        if two:
+            v3 = xb - dB2; v1 = da1 * dB1 + da2 * v3; v2 = dB2 + da2 * dB1 + da3 * v3
+            dB1 = 2.0 * v1 - dB1; dB2 = 2.0 * v2 - dB2
+            lvB = abs(xb - dk * v1 - v2) if high else abs(v2)
+        if linked:
+            lev = lvA if lvA > lvB else lvB
+            gA, esA, ehA = _gain(lev, esA, ehA)
+            gB = gA
+        else:
+            gA, esA, ehA = _gain(lvA, esA, ehA)
+            gB = 1.0
+            if two:
+                gB, esB, ehB = _gain(lvB, esB, ehB)
+        oa, cA1, cA2 = _cut(xa, gA, cA1, cA2)
+        outA.append(oa)
+        if two:
+            ob, cB1, cB2 = _cut(xb, gB, cB1, cB2)
+            outB.append(ob)
+    return outA, outB
+
+
+def shelf_cascade(signal, shelf_type, fc, q, sr, ceil_soft, ceil_hard,
+                  atk_ms, rel_ms, soft_on, hard_on):
+    out, _ = _shelf_cascade_ch(signal, signal, False, shelf_type, fc, q, sr,
+                               ceil_soft, ceil_hard, atk_ms, rel_ms,
+                               soft_on, hard_on, False)
+    return out
+
+
+def shelf_cascade_stereo(Lin, Rin, shelf_type, fc, q, sr, ceil_soft, ceil_hard,
+                         atk_ms, rel_ms, soft_on, hard_on, dyn_mode):
+    if dyn_mode == "dual_ms":
+        M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+        S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+        Mo, So = _shelf_cascade_ch(M, S, True, shelf_type, fc, q, sr, ceil_soft,
+                                   ceil_hard, atk_ms, rel_ms, soft_on, hard_on,
+                                   False)
+        return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
+    linked = dyn_mode == "linked"
+    return _shelf_cascade_ch(Lin, Rin, True, shelf_type, fc, q, sr, ceil_soft,
+                             ceil_hard, atk_ms, rel_ms, soft_on, hard_on, linked)

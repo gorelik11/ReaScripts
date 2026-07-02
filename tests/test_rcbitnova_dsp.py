@@ -394,3 +394,69 @@ def test_shelf_detector_shape_low():
     assert dsp.svf_magnitude(det, 20.0, SR) == pytest.approx(1.0, abs=0.02)
     assert abs(dsp.svf_magnitude(det, 200.0, SR) - 0.7071) < 0.01
     assert dsp.svf_magnitude(det, 5000.0, SR) < 0.01
+
+
+def _tone_amp(sig, freq, i0, i1):
+    """Amplitude of the `freq` component over window [i0, i1) by correlation."""
+    c = s = 0.0
+    for i in range(i0, i1):
+        w = 2.0 * math.pi * freq * i / SR
+        c += sig[i] * math.cos(w)
+        s += sig[i] * math.sin(w)
+    return 2.0 * math.hypot(c, s) / (i1 - i0)
+
+
+def test_shelf_cascade_both_stages_off_is_identity():
+    # Spec item 3 (equivalence): dynamics fully off -> the cut stage is exact
+    # identity, so band output == static shelf output (the cascade models only
+    # the post-static cut stage, like modea_cascade).
+    sig = [math.sin(0.31 * i) + 0.5 * math.sin(2.7 * i + 1.0) for i in range(2000)]
+    for st in ("lowshelf", "highshelf"):
+        out = dsp.shelf_cascade(sig, st, 3000.0, 0.7071, SR, 0.25, 0.5,
+                                1.0, 80.0, False, False)
+        for a, b in zip(out, sig):
+            assert abs(a - b) < 1e-12
+
+
+def test_highshelf_deesser_burst():
+    # Spec item 7: 8 kHz burst on a 1 kHz tone; high-shelf band at 6 kHz,
+    # Soft only, ceiling 0.25 (2 bits down). Burst ducks toward ceiling;
+    # tone unaffected during AND after (full release).
+    n = SR
+    b0, b1 = int(0.3 * SR), int(0.7 * SR)
+    x = []
+    for i in range(n):
+        v = 0.2 * math.sin(2.0 * math.pi * 1000.0 * i / SR)
+        if b0 <= i < b1:
+            v += 0.8 * math.sin(2.0 * math.pi * 8000.0 * i / SR)
+        x.append(v)
+    y = dsp.shelf_cascade(x, "highshelf", 6000.0, 0.7071, SR, 0.25, 0.5,
+                          0.5, 60.0, True, False)
+    w0, w1 = int(0.5 * SR), int(0.65 * SR)      # steady mid-burst
+    red_db = 20.0 * math.log10(_tone_amp(y, 8000.0, w0, w1) /
+                               _tone_amp(x, 8000.0, w0, w1))
+    q0, q1 = int(0.05 * SR), int(0.25 * SR)     # pre-burst
+    tone_db = 20.0 * math.log10(_tone_amp(y, 1000.0, q0, q1) /
+                                _tone_amp(x, 1000.0, q0, q1))
+    r0, r1 = int(0.9 * SR), int(0.99 * SR)      # post-burst (released)
+    rel_db = 20.0 * math.log10(_tone_amp(y, 1000.0, r0, r1) /
+                               _tone_amp(x, 1000.0, r0, r1))
+    # Measured -6.272 dB at these exact parameters. Two-sided band: catches
+    # both "not de-essing" (> -4.5) and "over-killing" (< -9.0) without
+    # locking one exact release trajectory forever.
+    assert -9.0 < red_db < -4.5
+    assert abs(tone_db) < 0.1
+    assert abs(rel_db) < 0.1
+
+
+def test_shelf_cascade_stereo_linked_identical_channels():
+    # Linked Both-placement on identical channels must give identical output
+    # and equal the single-channel result.
+    sig = [0.6 * math.sin(2.0 * math.pi * 9000.0 * i / SR) for i in range(4800)]
+    L, R = dsp.shelf_cascade_stereo(sig, sig, "highshelf", 6000.0, 0.7071, SR,
+                                    0.25, 0.5, 0.5, 60.0, True, False, "linked")
+    mono = dsp.shelf_cascade(sig, "highshelf", 6000.0, 0.7071, SR,
+                             0.25, 0.5, 0.5, 60.0, True, False)
+    for a, b, m in zip(L, R, mono):
+        assert a == b
+        assert abs(a - m) < 1e-12
