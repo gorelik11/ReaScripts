@@ -19,6 +19,9 @@
 - Mode B gates (`@slider` line ~213 `any_b`/PDC and `@sample` line ~346 Mode B pass) stay **Bell-only in S-A**. A shelf band set to Dyn Mode B is intentionally static until Phase S-B — this is documented, expected, and part of the live checklist. **HARD requirement carried to S-B (adversarial review):** S-B must flip BOTH gates (~213 and ~346) in the SAME commit — flipping only one creates PDC-without-processing or processing-without-PDC, exactly the mismatch the spec's three-gate checklist warns about.
 - Every commit ends with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
 - Bit conventions: `ceiling_lin = 2^(-(Macro + Micro/100))`; detector semantics per spec §2 (unity in passband, 0.7071 at cutoff).
+- State transitions (spec §5 policy, restated): switching band type/freq/Q live leaves stale `dst`/`cst`/`eg`/`egh` state — **accepted warm-up**, converges in ms; NO per-sample reset. If live testing hears a click, the documented fallback is a one-shot `@slider` zeroing on type change. Live checklist item 9 exercises this.
+- Test totals (46/49/51/52) are the counts **at this plan's baseline** (42 green at start). If totals differ, another change landed on the branch — verify all Phase S-A tests listed here are present and passing rather than trusting the arithmetic.
+- After ANY edit to `JSFX/RCBitNova V0.2` — including last-minute hotfixes after live testing — re-run `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "ascii or gates"` before redeploying.
 
 ---
 
@@ -194,10 +197,10 @@ def test_highshelf_deesser_burst():
     r0, r1 = int(0.9 * SR), int(0.99 * SR)      # post-burst (released)
     rel_db = 20.0 * math.log10(_tone_amp(y, 1000.0, r0, r1) /
                                _tone_amp(x, 1000.0, r0, r1))
-    # Measured -6.272 dB: only ~0.27 dB of margin. Deterministic pure-Python
-    # math, so it passes reliably - but do NOT tighten this bound, and expect
-    # it to move if DET_Q, env coeffs, or window boundaries ever change.
-    assert red_db < -6.0
+    # Measured -6.272 dB at these exact parameters. Two-sided band: catches
+    # both "not de-essing" (> -4.5) and "over-killing" (< -9.0) without
+    # locking one exact release trajectory forever.
+    assert -9.0 < red_db < -4.5
     assert abs(tone_db) < 0.1
     assert abs(rel_db) < 0.1
 
@@ -406,20 +409,36 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: the verified Python `_shelf_cascade_ch` (Task 2) as the transcription source; existing JSFX memory blocks `det`, `dst`, `cst`, `dp`, `dm`, `bp`, `eg`, `egh`, `hc` — NO new blocks.
 - Produces: `JSFX/RCBitNova V0.2` with working Mode A shelf dynamics. Slider surface unchanged (spec §5: no new sliders).
 
-- [ ] **Step 1: Add the ASCII guard test** — append to `tests/test_rcbitnova_dsp.py`:
+- [ ] **Step 1: Add the source guards (ASCII + Mode-B-gate scope)** — append to `tests/test_rcbitnova_dsp.py`:
 
 ```python
+def _jsfx_v02_text():
+    import pathlib
+    p = pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.2"
+    return p.read_bytes()
+
+
 def test_jsfx_v02_is_pure_ascii():
     # REAPER's ascii codec crashed on an em-dash before (see reels_tempo_map);
     # keep the V0.2 source byte-pure.
-    import pathlib
-    p = pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.2"
-    data = p.read_bytes()
+    data = _jsfx_v02_text()
     bad = [i for i, b in enumerate(data) if b >= 128]
     assert not bad, f"non-ASCII bytes at offsets {bad[:5]} in RCBitNova V0.2"
+
+
+def test_jsfx_v02_modeb_gates_stay_bell_only_in_sa():
+    # S-A scope guard: BOTH Mode B gates (@slider any_b/PDC and the @sample
+    # Mode B pass) must remain Bell-only until Phase S-B flips them together
+    # in one commit (with this test updated in that same commit).
+    text = _jsfx_v02_text().decode("ascii")
+    gate = "mbmode[b] == 1 && slider(10*(b+1)+2) == 0"
+    assert text.count(gate) == 2, (
+        "Mode B Bell-only gate expected exactly twice (any_b + sample pass); "
+        "if you changed this deliberately you are in Phase S-B - update this test "
+        "in the SAME commit as both gate flips")
 ```
 
-Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k ascii` — Expected: PASS already (V0.2 is a copy of ASCII-clean V0.1). It exists to catch what Steps 2-4 introduce.
+Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "ascii or gates"` — Expected: 2 PASS already (V0.2 is a copy of ASCII-clean V0.1 with both gates intact). They exist to catch what Steps 2-4 — or any later hotfix — introduce.
 
 - [ ] **Step 2: Detector Q by type in `setup_band_dyn`** — in `JSFX/RCBitNova V0.2` replace the function's opening (current lines 183-190):
 
@@ -566,7 +585,20 @@ and add to the header comment block (after the `// Filters: ...` lines, keeping 
 - [ ] **Step 6: Run the full oracle**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 52 passed (51 + ASCII guard). Python is the correctness proof; the JSFX has no automated harness — Step 5's review plus Task 5's live check cover the transcription.
+Expected: 53 passed at plan baseline (51 + ASCII guard + gate guard). Python is the correctness proof; the JSFX has no automated harness — Step 5's review plus Task 5's live check cover the transcription.
+
+- [ ] **Step 6b: Focused diff review before committing** — run:
+
+```bash
+git diff -- "JSFX/RCBitNova V0.2" tests/test_rcbitnova_dsp.py tools/rcbitnova_dsp.py
+```
+
+and confirm by eye, hunk by hunk (this keeps the "additive sibling block" promise honest):
+1. The Bell dynamics block (lines ~267-328) shows ZERO changed lines.
+2. The shelf block is inserted strictly between the Bell block's closing `);` and the `// Write working channels back to L/R` comment.
+3. Both Mode B gates are untouched (the gate guard test proves it mechanically; the diff proves nothing else moved around them).
+4. Desc/header additions are ASCII-only, no slider lines or memory-map (`@init`) lines changed except the documented `setup_band_dyn` hunk.
+5. No unrelated churn anywhere in the diff.
 
 - [ ] **Step 7: Commit**
 
@@ -590,6 +622,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 cp "JSFX/RCBitNova V0.2" "$HOME/Library/Application Support/REAPER/Effects/RCBitNova V0.2"
 ```
 
+(Both this deploy target and the Step 5 memory file live OUTSIDE the repo. In a sandboxed run — e.g. Codex — these writes may need approval/escalation: do not bypass; request approval or ask Dima to deploy manually. If the JSFX gets ANY hotfix during live testing, re-run `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "ascii or gates"` before redeploying.)
+
 - [ ] **Step 2: Live checklist (Dima drives, via FX window or TCP)** — all on real program material (vocal for HS, boomy mix for LS):
 
 1. Load `RCBitNova V0.2` fresh — plugin loads with no EEL2 syntax error (the transcription gate).
@@ -600,6 +634,9 @@ cp "JSFX/RCBitNova V0.2" "$HOME/Library/Application Support/REAPER/Effects/RCBit
 6. **Placements:** Mid-only HS de-ess (Side untouched); Both + Dual M/S (Side-heavy sibilance ducks in Side only); Linked (no width pumping).
 7. **Expected static (documented):** shelf band + Dyn Mode B = static, no PDC change — S-B is the next phase. Also HP/LP + Dyn = static (unchanged rule).
 8. CPU eyeball: no meaningful increase vs V0.1 with one dynamic shelf active.
+9. **Type switch under audio (state-carryover edge):** while audio plays, flip B1 Type Bell -> High Shelf -> Low Shelf -> Bell with Dyn on — expect at most a brief warm-up (spec-accepted), NO explosive transient, click, or stuck reduction. If it clicks: the documented fallback is a one-shot `@slider` zeroing of that band's `dst`/`cst` on type change.
+10. **Silence tail after reduction:** after a strong sibilant/boom burst, play silence — CPU and output settle normally (anti-denormal working; envelope releases to 1, doesn't stick).
+11. **Real rumble material on Low Shelf:** confirm the documented DC/subsonic sensitivity of the LP detector feels right as a rumble tamer (it is a feature, spec §2 — but Dima has veto).
 
 - [ ] **Step 3: On any failure** — undo nothing in REAPER; fix in Python mirror first if the failure is behavioral (then re-transcribe), or in the JSFX only if it is a pure transcription slip; re-run the full oracle; redeploy; re-check.
 
@@ -619,4 +656,5 @@ git push origin rcbitnova
 
 - **Spec coverage:** §2 detector -> Tasks 1/4; §3 Mode A cut -> Tasks 2/4; §5 gates/state-reuse -> Task 4 (gate ~267 sibling block; ~213/~346 explicitly deferred to S-B per Global Constraints); §6 permanent tests items 1, 3, 5, 6, 7, 8 -> Tasks 1-3 (items 2, 4 are S-B: split identity + Mode B off == identity); §6 live checks -> Task 5 (PDC-for-shelf check moves to S-B with the gates).
 - **Placeholders:** none; every step has complete code or an exact command.
+- **Weakness-review round 2 (Codex, 2026-07-02) adopted:** Mode-B-gate source guard test (Task 4 Step 1); two-sided de-esser band -9.0..-4.5; focused diff review Step 6b; state-transition policy restated in Global Constraints + live items 9-11; test-count baseline phrasing; sandbox permission note in Task 5. Not adopted: none of round 2's items were rejected (the worktree-path item is already covered by the first Global Constraint; execution handoffs must still quote the absolute worktree path).
 - **Type consistency:** `shelf_cut_coeffs` 7-tuple order `(a1,a2,a3,k,m0,m1,m2)` matches `svf_make` dict order and the JSFX `cf[]` layout; `shelf_cascade*` signatures match `modea_cascade*` conventions (`dyn_mode` strings identical).
