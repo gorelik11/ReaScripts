@@ -460,3 +460,43 @@ def test_shelf_cascade_stereo_linked_identical_channels():
     for a, b, m in zip(L, R, mono):
         assert a == b
         assert abs(a - m) < 1e-12
+
+
+def test_lowshelf_mirror_tames_low_burst():
+    # Spec item 6 (mirror symmetry): 60 Hz burst on a 5 kHz tone; low-shelf
+    # band at 200 Hz, Soft only, ceiling 0.25. Burst ducked, tone untouched.
+    n = SR
+    b0, b1 = int(0.3 * SR), int(0.7 * SR)
+    x = []
+    for i in range(n):
+        v = 0.2 * math.sin(2.0 * math.pi * 5000.0 * i / SR)
+        if b0 <= i < b1:
+            v += 0.8 * math.sin(2.0 * math.pi * 60.0 * i / SR)
+        x.append(v)
+    y = dsp.shelf_cascade(x, "lowshelf", 200.0, 0.7071, SR, 0.25, 0.5,
+                          0.5, 60.0, True, False)
+    w0, w1 = int(0.5 * SR), int(0.65 * SR)
+    red_db = 20.0 * math.log10(_tone_amp(y, 60.0, w0, w1) /
+                               _tone_amp(x, 60.0, w0, w1))
+    q0, q1 = int(0.05 * SR), int(0.25 * SR)
+    tone_db = 20.0 * math.log10(_tone_amp(y, 5000.0, q0, q1) /
+                                _tone_amp(x, 5000.0, q0, q1))
+    r0, r1 = int(0.9 * SR), int(0.99 * SR)
+    rel_db = 20.0 * math.log10(_tone_amp(y, 5000.0, r0, r1) /
+                               _tone_amp(x, 5000.0, r0, r1))
+    assert red_db < -6.0
+    assert abs(tone_db) < 0.1
+    assert abs(rel_db) < 0.1
+
+
+def test_lowshelf_detector_reacts_to_dc():
+    # Spec item 8: the LP detector is unity at DC by design (rumble/boom tamer);
+    # a DC offset above the ceiling gets pulled toward it. Documents the kept
+    # behaviour of spec section 2.
+    n = SR
+    x = [0.5] * n
+    y = dsp.shelf_cascade(x, "lowshelf", 100.0, 0.7071, SR, 0.25, 0.125,
+                          1.0, 80.0, True, False)
+    tail = y[-4800:]
+    m = sum(tail) / len(tail)
+    assert 0.20 < m < 0.32   # 0.5 * gdyn -> ~0.25 (ceiling), not 0.5
