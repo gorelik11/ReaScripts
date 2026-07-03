@@ -1,4 +1,4 @@
-desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade)
+desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A)
 
 // License: GPL - http://www.gnu.org/licenses/gpl.html
 // Author: Dima Gorelik (design with Claude)
@@ -6,6 +6,10 @@ desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Sof
 // Filters: TPT state-variable (Andy Simper / Cytomic). All state instance-local
 // (NOT gmem) - fixes the cross-instance bug of the gmem-based bit EQ.
 // Phase 1: static engine, zero-latency, 4 slider bands, no dynamics/GUI.
+// Shelf dynamics: Shelf ceiling = peak of the shelf-region detector
+// (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
+// -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
+// at DC by design (rumble/boom tamer) - it reacts to DC offset.
 
 in_pin:Left
 in_pin:Right
@@ -181,11 +185,15 @@ function setup_band(b)
 );
 
 function setup_band_dyn(b)
-  local(s, ds, fc, q, g, k, a1, a2, a3)
+  local(s, ds, ty, fc, q, qd, g, k, a1, a2, a3)
 (
   s = 10 * (b + 1); ds = 50 + 10 * b;
+  ty = slider(s + 2);
   fc = slider(s + 3); q = slider(s + 4);
-  g = tan($pi * fc / srate); k = 1 / q;              // detector bandpass, unity at fc
+  // Bell: bandpass detector at band Q (unity at fc). Shelf: HP/LP-tap detector
+  // at fixed Butterworth Q (spec: monotonic, unity passband, 0.7071 at fc).
+  qd = (ty == 1 || ty == 2) ? 0.7071 : q;
+  g = tan($pi * fc / srate); k = 1 / qd;
   a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
   det[b*4] = a1; det[b*4+1] = a2; det[b*4+2] = a3; det[b*4+3] = k;
   dp[b*4]   = pow(2, -(slider(ds+3) + slider(ds+4) * 0.01));   // ceil_lin
@@ -324,6 +332,86 @@ slider1 != 1 ? (
           v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
           cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
           chB = chB + cm1 * v1;
+        );
+      );
+
+      // ----- Dynamics (Mode A shelf): Low/High Shelf, Dyn on, Dyn Mode A -----
+      // Additive sibling of the Bell block above (types are mutually exclusive,
+      // so dst/cst/eg/egh slots are shared safely). Transcribed line-by-line
+      // from _shelf_cascade_ch in tools/rcbitnova_dsp.py.
+      ty = slider(10 * (b + 1) + 2);
+      (dp[b*4+3] == 1 && (ty == 1 || ty == 2) && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA: HP tap (High Shelf) or LP tap (Low Shelf)
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = ty == 2 ? abs(chA - dk*v1 - v2) : abs(v2);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = ty == 2 ? abs(chB - dk*v1 - v2) : abs(v2);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant) - same as Bell
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        // shelf-cut coeffs without tan(): g = cg*rA (HS) or cg/rA (LS); full
+        // m0/m1/m2 output (not the bell x + cm1*v1 shortcut)
+        A = sqrt(gA); rA = sqrt(A); ckq = 1 / qb;
+        ty == 2 ? (
+          cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+        ) : (
+          cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+        );
+        ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = cm0*chA + cm1*v1 + cm2*v2;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); rA = sqrt(A);
+          ty == 2 ? (
+            cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+          ) : (
+            cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+          );
+          ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = cm0*chB + cm1*v1 + cm2*v2;
         );
       );
 

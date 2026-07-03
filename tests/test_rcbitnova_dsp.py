@@ -500,3 +500,29 @@ def test_lowshelf_detector_reacts_to_dc():
     tail = y[-4800:]
     m = sum(tail) / len(tail)
     assert 0.20 < m < 0.32   # 0.5 * gdyn -> ~0.25 (ceiling), not 0.5
+
+
+def _jsfx_v02_text():
+    import pathlib
+    p = pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.2"
+    return p.read_bytes()
+
+
+def test_jsfx_v02_is_pure_ascii():
+    # REAPER's ascii codec crashed on an em-dash before (see reels_tempo_map);
+    # keep the V0.2 source byte-pure.
+    data = _jsfx_v02_text()
+    bad = [i for i, b in enumerate(data) if b >= 128]
+    assert not bad, f"non-ASCII bytes at offsets {bad[:5]} in RCBitNova V0.2"
+
+
+def test_jsfx_v02_modeb_gates_stay_bell_only_in_sa():
+    # S-A scope guard: BOTH Mode B gates (@slider any_b/PDC and the @sample
+    # Mode B pass) must remain Bell-only until Phase S-B flips them together
+    # in one commit (with this test updated in that same commit).
+    text = _jsfx_v02_text().decode("ascii")
+    gate = "mbmode[b] == 1 && slider(10*(b+1)+2) == 0"
+    assert text.count(gate) == 2, (
+        "Mode B Bell-only gate expected exactly twice (any_b + sample pass); "
+        "if you changed this deliberately you are in Phase S-B - update this test "
+        "in the SAME commit as both gate flips")
