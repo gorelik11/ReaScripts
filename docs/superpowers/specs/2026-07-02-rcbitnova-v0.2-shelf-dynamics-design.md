@@ -148,8 +148,57 @@ line-by-line JSFX transcription, deploy, live-verify with Dima.
 **Live checks:** Low Shelf and High Shelf each — Mode A and Mode B, Soft/Hard/cascade —
 plus an explicit **PDC-activates-for-shelf-in-Mode-B** check (the review's guard risk).
 
+Tests 2 and 4 are also the primary guards against the failure mode in §8 — they must
+pass in Python **before** JSFX transcription, not be discovered live.
+
 ## 7. Out of scope for V0.2
 
 - Dynamics on HP/LP; bell character models; phase modes / oversampling; GUI;
   RMS detector option; any change to `JSFX/RCBitNova V0.1` (frozen, tag
   `rcbitnova-v0.1`).
+
+## 8. Failure mode to guard against — "distortion instead of processing"
+
+Recorded at Dima's request. History: a prior RCBitNova build **loaded without error but
+output full-scale distortion / hash instead of processing**, recoverable only by undo. In
+this architecture that class has a small number of concrete causes; each has a guard that
+must be in place **before any live test** (pre-transcription gates, not live discoveries).
+
+1. **Broken perfect-reconstruction split (highest S-B risk).** Mode B extracts one branch
+   (HP for High Shelf, LP for Low Shelf) and passes the remainder untouched; correctness
+   needs `extracted + remainder == input` exactly, which needs the split SVF at **fixed
+   Q = 0.7071**. If the band's shelf Q leaks into the split SVF, or the remainder
+   double-counts / drops the `k*BP` term, or the wrong branch is extracted, energy is
+   duplicated or comb-filtered → coloration/distortion even with the limiter idle.
+   - **Guard:** permanent tests §6.2 (split identity ~2e-16) and §6.4 (Mode B both-stages-off
+     == identity on the split path) pass in Python before JSFX transcription. The split SVF is
+     hard-coded to 0.7071 and never reads the band-Q slider (§4 Q-asymmetry).
+
+2. **NaN / Inf propagation through the IIR feedback.** SVF and envelope integrators are
+   recursive; one Inf/NaN sample poisons every later sample → sustained hash. Sources:
+   divide-by-zero (`1/q` with q→0, `cS/level` or `cH/ps` with a zero denominator,
+   `1/(1+g(g+k))` degenerate) or reading an uninitialised / **wrongly-shared** memory slot.
+   - **Guard:** keep the existing division guards (`level>cS ? … : 1`, `ps>cH ? … : 1`) and the
+     anti-denormal `anti` (±~8e-31) in every new path; the Q slider keeps a floor > 0; memory
+     slots are reused only across **mutually-exclusive** band types (Bell XOR Shelf XOR HP/LP)
+     so slots never alias — the S-A slot audit established this and S-B must preserve it.
+
+3. **Gate half-flip / PDC desync.** The three Bell-only gates (`@slider` any_b/PDC, Mode A
+   pass, Mode B pass) must all move to `dyn_type = type<=2` **in one commit**. Flip only some
+   and either the shelf branch runs while PDC is off (lookahead-delayed correction applied at
+   the wrong offset → transient smearing / phase artifacts that read as distortion) or PDC
+   engages with no processing (latency without effect).
+   - **Guard:** the three-gate checklist (§5) + the guard test
+     `test_jsfx_v02_modeb_gates_stay_bell_only_in_sa`, updated in the SAME commit that flips
+     the gates + a live PDC-activates-for-shelf-in-Mode-B check.
+
+4. **Unstable coefficients / self-oscillation.** `tan(pi*fc/sr)` explodes as fc→Nyquist and
+   extreme Q makes the SVF resonate; either yields a self-sustaining tone independent of input.
+   - **Guard:** fc and Q stay within the static engine's already-tested bounds (no new range for
+     the split SVF); reproduce the design-stage stability prototype (§6: 150 Hz gain modulation,
+     peak 0.999, no NaN) as a permanent test.
+
+**If a live build ever distorts:** do NOT hunt in REAPER by ear — reload the frozen working
+instance (`RCBitNova V0.2 SA`, or `git checkout rcbitnova-v0.2-sa -- "JSFX/RCBitNova V0.2"`),
+then reproduce the failure in the Python mirror first. The Python oracle is what makes this
+class debuggable offline instead of by ear.
