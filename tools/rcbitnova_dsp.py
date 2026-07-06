@@ -736,3 +736,110 @@ def shelf_cascade_stereo(Lin, Rin, shelf_type, fc, q, sr, ceil_soft, ceil_hard,
     linked = dyn_mode == "linked"
     return _shelf_cascade_ch(Lin, Rin, True, shelf_type, fc, q, sr, ceil_soft,
                              ceil_hard, atk_ms, rel_ms, soft_on, hard_on, linked)
+
+
+def _shelf_modeb_cascade_ch(chA, chB, two, shelf_type, fc, sr, cS, cH, look_ms, rel_ms,
+                            soft_on, hard_on, linked, gsmooth):
+    """Mode-B shelf split limiter, 1 or 2 channels (mirror of _modeb_cascade_ch).
+    Extracts the shelf region via a fixed-DET_Q SVF: HP tap (high shelf) or LP tap
+    (low shelf), limits that branch through the same Soft+Hard lookahead cascade as
+    Bell, and passes the remainder untouched (perfect reconstruction LP + k*BP + HP
+    == input). Band shelf Q is intentionally unused (spec section 4 Q-asymmetry)."""
+    high = shelf_type == "highshelf"
+    det = svf_make("hp" if high else "lp", fc, DET_Q, 1.0, sr)
+    a1, a2, a3, k = det["a1"], det["a2"], det["a3"], det["k"]
+    L = max(1, int(look_ms * 0.001 * sr + 0.5))
+    rel = math.exp(-1.0 / (rel_ms * 0.001 * sr))
+    inv_g = 1.0 / (gsmooth + 1.0)
+    size = L + 1
+    bA = [0.0]*size; pA = [0.0]*size; dA = [0.0]*size
+    bB = [0.0]*size; pB = [0.0]*size; dB = [0.0]*size
+    wpos = 0
+    iA1 = iA2 = iB1 = iB2 = 0.0
+    envSA = gcA = envHA = 1.0
+    envSB = gcB = envHB = 1.0
+    outA = []
+    outB = [] if two else None
+
+    def _worst(ring):
+        w = 0.0
+        for i in range(size):
+            p = ring[(wpos - i) % size]
+            if p > w:
+                w = p
+        return w
+
+    def _stage(worst, envS, gc, envH):
+        if soft_on:
+            tS = cS / worst if worst > cS else 1.0
+            envS = tS if tS < envS else min(1.0, tS + (envS - tS) * rel)
+            gc = (gc * gsmooth + envS) * inv_g
+        else:
+            gc = 1.0
+        if hard_on:
+            ps = worst * gc
+            tH = cH / ps if ps > cH else 1.0
+            envH = tH if tH < envH else min(1.0, tH + (envH - tH) * rel)
+        else:
+            envH = 1.0
+        return gc * envH, envS, gc, envH
+
+    xbs = chB if two else chA
+    for xa, xb in zip(chA, xbs):
+        v3 = xa - iA2; v1a = a1*iA1 + a2*v3; v2 = iA2 + a2*iA1 + a3*v3
+        iA1 = 2.0*v1a - iA1; iA2 = 2.0*v2 - iA2
+        ba = (xa - k*v1a - v2) if high else v2
+        bA[wpos] = ba; pA[wpos] = abs(ba); dA[wpos] = xa
+        if two:
+            v3 = xb - iB2; v1b = a1*iB1 + a2*v3; v2 = iB2 + a2*iB1 + a3*v3
+            iB1 = 2.0*v1b - iB1; iB2 = 2.0*v2 - iB2
+            bb = (xb - k*v1b - v2) if high else v2
+            bB[wpos] = bb; pB[wpos] = abs(bb); dB[wpos] = xb
+        wa = _worst(pA)
+        wb = _worst(pB) if two else 0.0
+        if linked:
+            w = wa if wa > wb else wb
+            gA, envSA, gcA, envHA = _stage(w, envSA, gcA, envHA)
+            gB = gA
+        else:
+            gA, envSA, gcA, envHA = _stage(wa, envSA, gcA, envHA)
+            gB = 1.0
+            if two:
+                gB, envSB, gcB, envHB = _stage(wb, envSB, gcB, envHB)
+        rpos = (wpos - L) % size
+        bda = bA[rpos]; lim = bda * gA
+        if hard_on and abs(lim) > cH:
+            lim = cH if lim > 0 else -cH
+        outA.append(dA[rpos] - bda + lim)
+        if two:
+            bdb = bB[rpos]; lim = bdb * gB
+            if hard_on and abs(lim) > cH:
+                lim = cH if lim > 0 else -cH
+            outB.append(dB[rpos] - bdb + lim)
+        wpos = (wpos + 1) % size
+    return outA, outB
+
+
+def shelf_modeb_cascade(signal, shelf_type, fc, q, sr, ceil_soft, ceil_hard,
+                        look_ms, rel_ms, soft_on, hard_on, gsmooth=400.0):
+    # q accepted for API parallelism with shelf_cascade; Mode B split ignores the
+    # band Q (fixed DET_Q, spec section 4 Q-asymmetry).
+    out, _ = _shelf_modeb_cascade_ch(signal, signal, False, shelf_type, fc, sr,
+                                     ceil_soft, ceil_hard, look_ms, rel_ms,
+                                     soft_on, hard_on, False, gsmooth)
+    return out
+
+
+def shelf_modeb_cascade_stereo(Lin, Rin, shelf_type, fc, q, sr, ceil_soft, ceil_hard,
+                               look_ms, rel_ms, soft_on, hard_on, dyn_mode, gsmooth=400.0):
+    if dyn_mode == "dual_ms":
+        M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+        S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+        Mo, So = _shelf_modeb_cascade_ch(M, S, True, shelf_type, fc, sr, ceil_soft,
+                                         ceil_hard, look_ms, rel_ms, soft_on, hard_on,
+                                         False, gsmooth)
+        return ([m + s for m, s in zip(Mo, So)], [m - s for m, s in zip(Mo, So)])
+    linked = dyn_mode == "linked"
+    return _shelf_modeb_cascade_ch(Lin, Rin, True, shelf_type, fc, sr, ceil_soft,
+                                   ceil_hard, look_ms, rel_ms, soft_on, hard_on,
+                                   linked, gsmooth)

@@ -526,3 +526,55 @@ def test_jsfx_v02_modeb_gates_stay_bell_only_in_sa():
         "Mode B Bell-only gate expected exactly twice (any_b + sample pass); "
         "if you changed this deliberately you are in Phase S-B - update this test "
         "in the SAME commit as both gate flips")
+
+
+# ---- Phase S-B: Mode B shelf split limiter ----
+
+def _shelf_branch(x, shelf_type, fc, sr):
+    """The exact split branch the plugin extracts: HP tap for high shelf, LP tap
+    for low shelf, via the fixed-DET_Q detector SVF (same series as the plugin)."""
+    ft = "hp" if shelf_type == "highshelf" else "lp"
+    return dsp.svf_process(dsp.svf_make(ft, fc, dsp.DET_Q, 1.0, sr), x)
+
+
+def test_shelf_modeb_transparent_below_ceiling_is_exact_identity():
+    # Spec 6.2 perfect-reconstruction + Mode B idle: with the ceiling far above the
+    # signal the limiter never engages, so the summed output == input delayed by the
+    # lookahead, to machine precision (proto: max err 5.551e-17).
+    sig = [0.3*math.sin(0.21*i) + 0.2*math.sin(1.7*i + 0.5) for i in range(4000)]
+    L = max(1, int(2.0*0.001*SR + 0.5))
+    for st in ("lowshelf", "highshelf"):
+        out = dsp.shelf_modeb_cascade(sig, st, 3000.0, 0.7071, SR, 0.9, 0.95,
+                                      2.0, 80.0, True, True)
+        for n in range(L, len(sig)):
+            assert abs(out[n] - sig[n - L]) < 2e-16
+
+
+def test_shelf_modeb_both_stages_off_is_pure_delay():
+    # Spec 6.4: Mode B with both stages off contributes zero correction -> output is
+    # the input delayed by the lookahead (proto: 5.551e-17).
+    sig = [0.5*math.sin(0.3*i) for i in range(3000)]
+    L = max(1, int(2.0*0.001*SR + 0.5))
+    for st in ("lowshelf", "highshelf"):
+        out = dsp.shelf_modeb_cascade(sig, st, 2500.0, 0.7071, SR, 0.25, 0.5,
+                                      2.0, 80.0, False, False)
+        for n in range(L, len(sig)):
+            assert abs(out[n] - sig[n - L]) < 1e-15
+
+
+def test_shelf_modeb_highshelf_clamps_branch_at_ceiling():
+    # Spec 4 honest guarantee + 6.7 (Mode B de-esser): the extracted HIGH-SHELF
+    # region contribution is brick-clamped bit-exactly to the hard ceiling. Recover
+    # the clamped branch from output vs delayed input plus an independent HP
+    # extraction of the input (proto: recovered peak 0.249999 at ceiling 0.25, from
+    # a raw branch peak of 0.6417 -> it genuinely engaged).
+    w = 2*math.pi*8000.0/SR
+    x = [0.8*math.sin(w*i) for i in range(1 << 15)]
+    cH = 0.25
+    y = dsp.shelf_modeb_cascade(x, "highshelf", 6000.0, 0.7071, SR, cH, cH,
+                                2.0, 80.0, False, True)   # hard only
+    L = max(1, int(2.0*0.001*SR + 0.5))
+    branch = _shelf_branch(x, "highshelf", 6000.0, SR)
+    clamped = [branch[n - L] + (y[n] - x[n - L]) for n in range(L, len(x))]
+    assert max(abs(v) for v in clamped[-4000:]) <= cH * 1.001        # clamped to ceiling
+    assert max(abs(v) for v in branch[-4000:]) > cH * 2.0            # and it engaged
