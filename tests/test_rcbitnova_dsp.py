@@ -578,3 +578,73 @@ def test_shelf_modeb_highshelf_clamps_branch_at_ceiling():
     clamped = [branch[n - L] + (y[n] - x[n - L]) for n in range(L, len(x))]
     assert max(abs(v) for v in clamped[-4000:]) <= cH * 1.001        # clamped to ceiling
     assert max(abs(v) for v in branch[-4000:]) > cH * 2.0            # and it engaged
+
+
+def test_shelf_modeb_lowshelf_clamps_branch_at_ceiling():
+    # Spec 6.6 mirror symmetry (Mode B): the extracted LOW-SHELF region contribution
+    # is brick-clamped bit-exactly to the ceiling (proto: recovered peak 0.250000 at
+    # ceiling 0.25, from a raw branch peak of 0.7968).
+    w = 2*math.pi*60.0/SR
+    x = [0.8*math.sin(w*i) for i in range(1 << 16)]
+    cH = 0.25
+    y = dsp.shelf_modeb_cascade(x, "lowshelf", 200.0, 0.7071, SR, cH, cH,
+                                2.0, 200.0, False, True)
+    L = max(1, int(2.0*0.001*SR + 0.5))
+    branch = _shelf_branch(x, "lowshelf", 200.0, SR)
+    clamped = [branch[n - L] + (y[n] - x[n - L]) for n in range(L, len(x))]
+    assert max(abs(v) for v in clamped[-4000:]) <= cH * 1.001
+    assert max(abs(v) for v in branch[-4000:]) > cH * 2.0
+
+
+def test_shelf_modeb_dual_lr_equals_independent():
+    L, R = _stereo_sigs(1 << 14)
+    Lo, Ro = dsp.shelf_modeb_cascade_stereo(L, R, "highshelf", 6000.0, 0.7071, SR,
+                                            0.2, 0.4, 2.0, 120.0, 1, 1, "dual_lr")
+    assert Lo == dsp.shelf_modeb_cascade(L, "highshelf", 6000.0, 0.7071, SR,
+                                         0.2, 0.4, 2.0, 120.0, 1, 1)
+    assert Ro == dsp.shelf_modeb_cascade(R, "highshelf", 6000.0, 0.7071, SR,
+                                         0.2, 0.4, 2.0, 120.0, 1, 1)
+
+
+def test_shelf_modeb_dual_ms_equals_independent_ms():
+    L, R = _stereo_sigs(1 << 14)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.shelf_modeb_cascade(M, "highshelf", 6000.0, 0.7071, SR, 0.2, 0.4, 2.0, 120.0, 1, 1)
+    So = dsp.shelf_modeb_cascade(S, "highshelf", 6000.0, 0.7071, SR, 0.2, 0.4, 2.0, 120.0, 1, 1)
+    Lo, Ro = dsp.shelf_modeb_cascade_stereo(L, R, "highshelf", 6000.0, 0.7071, SR,
+                                            0.2, 0.4, 2.0, 120.0, 1, 1, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+def test_shelf_modeb_linked_identical_channels():
+    w = 2 * math.pi * 8000.0 / SR
+    mono = [0.8 * math.sin(w * i) for i in range(1 << 14)]
+    Lo, Ro = dsp.shelf_modeb_cascade_stereo(mono, list(mono), "highshelf", 6000.0,
+                                            0.7071, SR, 0.2, 0.4, 2.0, 120.0, 1, 1, "linked")
+    assert Lo == pytest.approx(Ro, abs=1e-12)
+
+
+def test_shelf_modea_dual_lr_equals_independent():
+    # Closes the S-A final-review open Minor: Mode A shelf dual_lr had no direct test.
+    L, R = _stereo_sigs(1 << 13)
+    Lo, Ro = dsp.shelf_cascade_stereo(L, R, "highshelf", 6000.0, 0.7071, SR,
+                                      0.25, 0.5, 0.5, 60.0, True, False, "dual_lr")
+    assert Lo == dsp.shelf_cascade(L, "highshelf", 6000.0, 0.7071, SR,
+                                   0.25, 0.5, 0.5, 60.0, True, False)
+    assert Ro == dsp.shelf_cascade(R, "highshelf", 6000.0, 0.7071, SR,
+                                   0.25, 0.5, 0.5, 60.0, True, False)
+
+
+def test_shelf_modea_dual_ms_equals_independent_ms():
+    # Closes the S-A final-review open Minor: Mode A shelf dual_ms had no direct test.
+    L, R = _stereo_sigs(1 << 13)
+    M = [(l + r) * 0.5 for l, r in zip(L, R)]
+    S = [(l - r) * 0.5 for l, r in zip(L, R)]
+    Mo = dsp.shelf_cascade(M, "highshelf", 6000.0, 0.7071, SR, 0.25, 0.5, 0.5, 60.0, True, False)
+    So = dsp.shelf_cascade(S, "highshelf", 6000.0, 0.7071, SR, 0.25, 0.5, 0.5, 60.0, True, False)
+    Lo, Ro = dsp.shelf_cascade_stereo(L, R, "highshelf", 6000.0, 0.7071, SR,
+                                      0.25, 0.5, 0.5, 60.0, True, False, "dual_ms")
+    assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
+    assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
