@@ -516,16 +516,18 @@ def test_jsfx_v02_is_pure_ascii():
     assert not bad, f"non-ASCII bytes at offsets {bad[:5]} in RCBitNova V0.2"
 
 
-def test_jsfx_v02_modeb_gates_stay_bell_only_in_sa():
-    # S-A scope guard: BOTH Mode B gates (@slider any_b/PDC and the @sample
-    # Mode B pass) must remain Bell-only until Phase S-B flips them together
-    # in one commit (with this test updated in that same commit).
+def test_jsfx_v02_modeb_gates_enable_shelf():
+    # Phase S-B: BOTH Mode B gates (@slider any_b/PDC and the @sample Mode B pass)
+    # must include shelf types via the `<= 2` predicate (Bell 0, Low Shelf 1, High
+    # Shelf 2; HP=3/LP=4 stay static). Exactly two occurrences; if you change this
+    # you are altering the Mode B gating and must update this test in the SAME commit.
     text = _jsfx_v02_text().decode("ascii")
-    gate = "mbmode[b] == 1 && slider(10*(b+1)+2) == 0"
+    gate = "mbmode[b] == 1 && slider(10*(b+1)+2) <= 2"
     assert text.count(gate) == 2, (
-        "Mode B Bell-only gate expected exactly twice (any_b + sample pass); "
-        "if you changed this deliberately you are in Phase S-B - update this test "
-        "in the SAME commit as both gate flips")
+        "Mode B shelf-enabled gate expected exactly twice (any_b + sample pass); "
+        "flipping only one gate creates PDC-without-processing or the reverse")
+    # the old Bell-only predicate must be fully gone (no half-flip left behind)
+    assert "mbmode[b] == 1 && slider(10*(b+1)+2) == 0" not in text
 
 
 # ---- Phase S-B: Mode B shelf split limiter ----

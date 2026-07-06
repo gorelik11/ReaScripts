@@ -1,4 +1,4 @@
-desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A)
+desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A+B)
 
 // License: GPL - http://www.gnu.org/licenses/gpl.html
 // Author: Dima Gorelik (design with Claude)
@@ -10,6 +10,11 @@ desc: RCBitNova V0.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Sof
 // (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
 // -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
 // at DC by design (rumble/boom tamer) - it reacts to DC offset.
+// Shelf Mode B (split limiter): extracts the shelf region (HP branch for High
+// Shelf, LP branch for Low Shelf) via the fixed-Q 0.7071 SVF, brick-limits that
+// branch to the ceiling, and passes the remainder untouched (perfect
+// reconstruction). The guarantee bounds the extracted region contribution, not
+// the summed output. The band Q shapes only the Mode A cut, never the Mode B split.
 
 in_pin:Left
 in_pin:Right
@@ -218,7 +223,7 @@ b = 0;
 loop(N_BANDS,
   mbmode[b] = slider(50 + 10 * b + 7);                                       // 0 A, 1 B
   hc[b] = pow(2, -(slider(90 + 10*b + 2) + slider(90 + 10*b + 3) * 0.01));   // hard ceiling
-  (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) == 0) ? any_b = 1;
+  (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
   b += 1;
 );
 pdc_delay = (slider1 != 1 && any_b) ? Lk : 0;   // 0 when bypassed (passthrough is zero-latency)
@@ -431,8 +436,9 @@ slider1 != 1 ? (
     corrL = 0; corrR = 0;
     b = 0;
     loop(N_BANDS,
-      (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) == 0) ? (
+      (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? (
         pl = slider(10*(b+1)+8);
+        ty = slider(10*(b+1)+2);
         qb = bp[b*3+1];
         da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
         cS = dp[b*4]; cH = hc[b]; rel = dp[b*4+2];
@@ -456,7 +462,7 @@ slider1 != 1 ? (
         ic1 = dst[b*4]; ic2 = dst[b*4+1];
         v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
         dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
-        bA = dk * v1;
+        bA = ty == 2 ? (xa - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
         mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
         worstA = 0; i = 0;
         loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
@@ -465,7 +471,7 @@ slider1 != 1 ? (
           ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
           v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
           dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
-          bB = dk * v1;
+          bB = ty == 2 ? (xb - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
           mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
           worstB = 0; i = 0;
           loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
