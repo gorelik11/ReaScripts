@@ -108,7 +108,7 @@ def test_qeff_proportional_narrowing_monotonic():
     fc = 1000.0
     w0 = [_octave_bw(fc, dsp.q_eff("bell", 1.0, 0.0, b), 2.0 ** b, SR, b * 6.0206 / 2.0)
           for b in (0.5, 1.0, 2.0)]
-    assert abs(w0[0] - w0[1]) < 1e-9 and abs(w0[1] - w0[2]) < 1e-9   # constant
+    assert abs(w0[0] - w0[1]) < 1e-6 and abs(w0[1] - w0[2]) < 1e-6   # constant (bisection resolves ~2e-9)
     w1 = [_octave_bw(fc, dsp.q_eff("bell", 1.0, 1.0, b), 2.0 ** b, SR, b * 6.0206 / 2.0)
           for b in (0.5, 1.0, 2.0)]
     assert w1[0] > w1[1] > w1[2]                                     # narrows
@@ -163,7 +163,9 @@ def svf_response(coeffs, freq, sr):
     return abs(C1 * x1 + C2 * x2 + D)
 ```
 
-Also add `import cmath` at the top of `tools/rcbitnova_dsp.py` next to `import math` (only if not already present).
+**REQUIRED before running the tests:** add `import cmath` at the top of
+`tools/rcbitnova_dsp.py` next to `import math` (the file currently imports only `math`;
+`svf_response` uses `cmath.exp` and will raise `NameError` without it).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
