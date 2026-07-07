@@ -87,20 +87,35 @@ the skirt or top.
   transition steepness / resonance, not a bell bandwidth; proportional-Q is undefined
   there and absent from the research units' shelf sections).
 - **`Q_eff` drives ALL Bell paths of the band, from static gain only (decided).**
-  For a Bell band, `q_eff` is computed once (in `setup_band` / shared band params) and
-  used for: the static Bell coefficients, the Bell **detector** coefficients, the Mode A
-  Bell **cut**, and the Mode B Bell **split**. This keeps the resting shape and the
-  dynamic behavior consistent (a high-character narrow bell also detects/cuts/splits
-  narrow). Rejected alternative: static-only `q_eff` with dynamics on raw `Q_knob` —
-  that makes a bell look narrow at rest but detect/cut wide, which is musically wrong.
+  For a Bell band, `q_eff` is computed from ONE shared expression and reused for: the
+  static Bell coefficients, the Bell **detector** coefficients, the Mode A Bell **cut**,
+  and the Mode B Bell **split**. This keeps the resting shape and the dynamic behavior
+  consistent (a high-character narrow bell also detects/cuts/splits narrow). Rejected
+  alternative: static-only `q_eff` with dynamics on raw `Q_knob` — that makes a bell
+  look narrow at rest but detect/cut wide, which is musically wrong.
+- **Exact substitution sites in the real V0.2 code (verified):** Q enters Bell
+  processing at three `@slider`-time spots, all of which take `q_eff` for Bell bands:
+  1. `setup_band()` — the static Bell coefficients (V0.2 ~line 189).
+  2. `setup_band_dyn()` — the detector Q `qd` → `det[]` (~line 200), which is shared by
+     BOTH the Mode A Bell detector AND the Mode B Bell band-extraction/split.
+  3. `bp[b*3+1]` (~line 209) — read per-sample by the Mode A Bell cut (~line 281).
+  Because these are separate functions each reading the sliders, the implementation MUST
+  use a single shared `q_eff` expression (compute once and store, or a shared helper) so
+  the three sites cannot diverge by even one float ulp. NOTE: the Mode B block's
+  `qb = bp[b*3+1]` read (~line 442) is **dead** — the split gets its Q from `det[]`, not
+  `qb` — so do NOT "wire the split through `qb`"; substituting at `det[]` (site 2) is what
+  narrows the Bell split.
 - **Driven by STATIC gain, not dynamic gain.** `q_eff` uses the band's **set**
   (`gain_bits_eff`) value only. The dynamic gain movement (Mode A/B envelopes) does NOT
   feed back into `q_eff` — Q character is a function of the knob setting, as in analog.
   So `q_eff` is recomputed on `@slider`, not per sample; the dynamic engines then run
   their existing per-sample math using the band's `q_eff` in place of raw `Q_knob`.
-- Wherever V0.2 currently reads the raw band Q for a Bell band (e.g. `bp[b*3+1]` and the
-  detector/cut/split coefficient setup), V0.3 substitutes `q_eff`. For non-Bell bands the
-  stored band-Q value is unchanged (see §3 first bullet and §7 tests).
+- **Mode B Bell reconstruction is safe under narrowing.** The Bell split output is
+  `dry + (lim − band)` — exact for ANY band definition — so narrowing the extraction Q
+  cannot break reconstruction; when the limiter is idle `lim == band` and out == dry
+  bit-exactly. (The shelf split's fixed `Q = 0.7071` / `DET_Q` is untouched: the fast
+  path returns `Q_knob` for non-Bell types.)
+- For non-Bell bands the stored band-Q value is unchanged (see §3 first bullet and §7).
 
 ## 4. Bit-accuracy invariant (unchanged, paramount)
 
@@ -119,20 +134,30 @@ class (V0.2 spec section 8, cause 4). Guards:
   constant (the plan confirms it against the TPT-SVF stability envelope already used by
   the static engine during numeric pre-validation; a safer value may only replace it
   with evidence). `Q_eff` never drops below the set `Q_knob`.
-- **`s` range 0–1** bounds the multiplier: at the gain ceiling (±16 macro bits) and
-  `s = 1`, `Q_eff` would be `Q_knob * 17` before clamping — the clamp is what actually
-  bounds it, so the clamp is mandatory, not cosmetic.
+- **`s` range 0–1** bounds the multiplier, but the pre-clamp value is LARGE. The real
+  V0.2 ranges are Macro ±16, Micro ±100 (= ±1 bit via `*0.01`), and **BitRatio 0–3**
+  (slider17 `1<0,3,0.1>`), so `|gain_bits_eff|` reaches `(16 + 1) * 3 = 51`. At `s = 1`
+  and `Q_knob = 10` the pre-clamp `Q_eff = 10 * (1 + 51) = 520`. The clamp to `Q_MAX`
+  is therefore the ONLY thing bounding `Q_eff` — mandatory, not cosmetic.
 - No new memory, no per-sample state: `Q_eff` is a coefficient input, so there is no
   stale-state transient beyond the existing `@slider` recompute.
 
 ## 6. Controls and JSFX surface
 
 - **One new per-band slider `s` — "B<n> Q Character"**, range `0–1`, default `0`,
-  fine step. **Reserved indices (pinned, appended — never inserted mid-list so existing
-  automation/TCP/preset parameter numbers do not shift): `slider19` = B1, `slider29` =
-  B2, `slider39` = B3, `slider49` = B4** (the free per-band slots after the 11–18 /
-  21–28 / 31–38 / 41–48 static banks). Four bands → four new sliders. Slider crowding is
-  accepted until the future GUI phase (per Dima; the GUI removes slider-reachability pain).
+  **step `0.001`** (matches the existing per-band Q slider's fine step). **Reserved
+  indices (pinned): `slider19` = B1, `slider29` = B2, `slider39` = B3, `slider49` = B4**
+  — the free per-band slots (they land at `slider(10*(b+1)+9)` in V0.2's existing band
+  addressing, and 19/29/39/49 are confirmed unused). Four bands → four new sliders.
+  Slider crowding is accepted until the future GUI phase (per Dima).
+- **Automation-index caveat (not a bug, but the plan must know):** slider *numbers*
+  11–123 stay stable, but REAPER assigns JSFX automation **parameter indices** over
+  *defined* sliders in ascending order, skipping gaps — so declaring `slider19` inserts a
+  new parameter *before* `slider21`, shifting the param index of every slider ≥ 21 by up
+  to 4 relative to V0.2. This is harmless because V0.3 is a **new plugin file** (§8) with
+  no automation carried over — but any script that addresses the plugin by parameter
+  index (e.g. `TrackFX_SetParam`) MUST re-derive indices for V0.3, never reuse V0.2's.
+  The plan verifies the index mapping live once.
 - UI labels are neutral (**`Q Character`**, `0` reads as Constant, increasing reads as
   Proportional) — no `SSL`/`Neve`/`API`/`GML`/`Sontec` naming (V0.3 is a musical control,
   not a fit to any unit; brand-style presets belong to a later measured-matching phase).
@@ -146,29 +171,39 @@ Method as in S-A / S-B: Python DSP mirror first (TDD), then line-by-line JSFX
 transcription, then live-verify with Dima. Numeric pre-validation before the plan.
 
 Permanent tests (Python oracle):
-1. **`s = 0` == constant-Q bit-identity:** for representative Bell settings the V0.3
-   coefficient tuple with `s = 0` **equals the V0.2 coefficient tuple exactly** (not
-   approximately) — exercise the mandatory fast path. Covers several `Q_knob`, freq, and
-   gain values.
+1. **`s = 0` == bit-identity at ALL THREE Bell Q sites:** for representative Bell
+   settings, with `s = 0`, the V0.3 values **equal V0.2 exactly** (not approximately) at
+   each substitution site — exercise the mandatory fast path: (a) the static Bell
+   coefficient tuple; (b) the Bell **detector** coefficient tuple (bandpass at band Q);
+   (c) the stored band-Q value the Mode A cut reads. Covers several `Q_knob`, freq, and
+   gain values. (Static-only coverage would let a dynamics-path arithmetic slip stay
+   green — hence all three sites.)
 2. **`gain_bits_eff` correctness (Bit Ratio edges):** (a) `BitRatio = 0` → `Q_eff ==
    Q_knob` for any Macro/Micro; (b) `Macro = 2, BitRatio = 0.5` gives the same `Q_eff`
    as `Macro = 1, BitRatio = 1`; (c) negative Macro/Micro narrows symmetrically via
-   `|gain_bits_eff|`.
-3. **Proportional narrowing (defined measurement):** with `s > 0`, the **−3 dB bandwidth
-   in octaves** decreases monotonically as `|gain_bits_eff|` increases. Convention: use
-   **boost** cases (e.g. +0.5, +1, +2 effective bits); measure the width at the level
-   halfway (in dB) between unity and the peak; center frequencies away from band edges
-   (1 kHz and 3 kHz at 48 kHz). (Cut symmetry is a separate assertion via test 2c.)
-4. **Clamp holds:** worst case `Q_knob = 10, gain_bits_eff = 16, s = 1` → `Q_eff == 16.0`;
-   a high-frequency Bell at `Q_eff = Q_MAX` produces no NaN/Inf and bounded output on
-   sine, sweep, and impulse-like input.
-5. **Non-bell untouched (two levels):** (a) static Shelf / HP / LP coefficient tuples are
-   identical for `s = 0` and `s = 1`; (b) the stored band-Q the dynamics read (`bp[]`)
-   for a Shelf band is unchanged by `s`, so Mode A shelf dynamics and Mode B shelf split
-   are bit-identical when `s` changes.
+   `|gain_bits_eff|`. The mirror's `gain_bits_eff` MUST use `(Macro + Micro*0.01)*BitRatio`
+   — the same `*0.01` float form as V0.2's `glin` exponent (line ~188) — so the JSFX and
+   mirror share the exact exponent float.
+3. **Proportional narrowing (analytic, defined measurement):** compute the bell's `|H(f)|`
+   **analytically from the coefficient tuple** (cheap, exact for the TPT-SVF) — do NOT
+   sine-probe (too slow for a bandwidth search). With `s > 0`, the **−3 dB bandwidth in
+   octaves** decreases monotonically as `|gain_bits_eff|` increases. Convention: **boost**
+   cases (+0.5, +1, +2 effective bits); width measured at the level halfway (in dB)
+   between unity and the peak; center frequencies away from band edges (1 kHz and 3 kHz at
+   48 kHz). (Cut symmetry via test 2c.)
+4. **Clamp holds (true worst case):** `Q_knob = 10, Macro = 16, Micro = 100, BitRatio = 3`
+   (`gain_bits_eff = 51`), `s = 1` → pre-clamp `520` → `Q_eff == 16.0`; a high-frequency
+   Bell at `Q_eff = Q_MAX` produces no NaN/Inf and bounded output on sine, sweep, and
+   impulse-like input.
+5. **Non-bell untouched:** (a) the `q_eff` helper returns `Q_knob` exactly for
+   `ftype ∈ {lowshelf, highshelf, hp, lp}` at any `s`; (b) `shelf_cascade` and
+   `shelf_modeb_cascade` outputs are **bit-identical across `s` values** (the mirror has no
+   shared `bp[]` store, so this is the mirror-level equivalent of "shelf dynamics see an
+   unchanged Q"). The JSFX-level `bp[]`-non-mutation for shelf bands is covered by test 6
+   (source guard) + the live null check.
 6. **Slider-surface source guard:** existing V0.2 slider numbers 11–48 / 51–88 / 91–123
    are unchanged in the JSFX source; the only added sliders are 19/29/39/49; each new
-   slider's default is exactly `0`.
+   slider's default is exactly `0` and its step is `0.001`.
 
 Live checks (Dima):
 - Bell boost/cut at low vs high static gain audibly/visibly widens/narrows as `s` rises;
