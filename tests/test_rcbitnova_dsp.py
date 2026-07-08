@@ -730,3 +730,30 @@ def test_svf_response_matches_probe():
     c = dsp.svf_make("bell", 1000.0, 2.0, 4.0, SR)
     assert abs(dsp.svf_response(c, 1000.0, SR) - dsp.svf_magnitude(c, 1000.0, SR)) < 1e-9
     assert abs(dsp.svf_response(c, 1000.0, SR) - 4.0) < 1e-9
+
+
+def _jsfx_v03_text():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.3").read_bytes()
+
+
+def test_jsfx_v03_is_pure_ascii():
+    data = _jsfx_v03_text()
+    bad = [i for i, b in enumerate(data) if b >= 128]
+    assert not bad, f"non-ASCII bytes at {bad[:5]} in RCBitNova V0.3"
+
+
+def test_jsfx_v03_qchar_sliders_added_not_renumbered():
+    text = _jsfx_v03_text().decode("ascii")
+    # the four new Q Character sliders exist, default 0
+    for n in (19, 29, 39, 49):
+        assert f"slider{n}:0<0,1,0.001>" in text, f"slider{n} Q Character missing/wrong"
+    # existing per-band static/dyn/hard slider numbers are untouched (spot-check anchors)
+    for n in (11, 14, 17, 41, 48, 51, 58, 91, 121):
+        assert f"slider{n}:" in text
+    # exactly four new sliders were added vs the V0.2 count
+    import pathlib, re
+    v2 = (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.2").read_text()
+    n2 = len(re.findall(r"^slider\d+:", v2, re.M))
+    n3 = len(re.findall(r"^slider\d+:", text, re.M))
+    assert n3 == n2 + 4
