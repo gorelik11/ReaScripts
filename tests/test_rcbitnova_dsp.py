@@ -650,3 +650,83 @@ def test_shelf_modea_dual_ms_equals_independent_ms():
                                       0.25, 0.5, 0.5, 60.0, True, False, "dual_ms")
     assert Lo == pytest.approx([m + s for m, s in zip(Mo, So)], abs=1e-12)
     assert Ro == pytest.approx([m - s for m, s in zip(Mo, So)], abs=1e-12)
+
+
+# ---- Phase V0.3: Proportional-Q law ----
+
+def _octave_bw(fc, q, glin, sr, level_db):
+    """Half-gain octave width: distance between the two freqs where |H|_dB == level_db,
+    using the exact analytic svf_response (not a sine-probe)."""
+    c = dsp.svf_make("bell", fc, q, glin, sr)
+    def mdb(f):
+        return 20.0 * math.log10(dsp.svf_response(c, f, sr))
+    def find(lo, hi):
+        for _ in range(60):
+            mid = math.sqrt(lo * hi)
+            if (mdb(mid) > level_db) == (mdb(lo) > level_db):
+                lo = mid
+            else:
+                hi = mid
+        return math.sqrt(lo * hi)
+    return math.log2(find(fc, sr / 2.0 - 1.0) / find(1.0, fc))
+
+
+def test_qeff_s0_is_bit_identical_bell_coeffs():
+    # s = 0 -> q_eff == q_knob exactly -> bell coefficient tuple identical to V0.2.
+    for qk in (0.5, 0.707, 2.0, 7.0):
+        for bits in (-16.0, -6.0, 0.0, 3.0, 16.0):
+            glin = 2.0 ** bits
+            qe = dsp.q_eff("bell", qk, 0.0, bits)
+            assert qe == qk
+            assert dsp.svf_make("bell", 1000.0, qe, glin, SR) == \
+                   dsp.svf_make("bell", 1000.0, qk, glin, SR)
+            # detector (bandpass) tuple identical too (the Mode A/B bell detector site)
+            assert dsp.svf_make("bandpass", 1000.0, qe, 1.0, SR) == \
+                   dsp.svf_make("bandpass", 1000.0, qk, 1.0, SR)
+
+
+def test_qeff_bitratio_and_symmetry():
+    assert dsp.q_eff("bell", 2.0, 1.0, 0.0) == 2.0            # gain_bits_eff 0 -> no-op
+    # BitRatio 0 gives gain_bits_eff 0 regardless of Macro/Micro
+    assert dsp.q_eff("bell", 2.0, 1.0, (16 + 100 * 0.01) * 0.0) == 2.0
+    # (Macro 2, BitRatio 0.5) == (Macro 1, BitRatio 1): both gain_bits_eff = 1.0
+    assert dsp.q_eff("bell", 2.0, 0.7, 2 * 0.5) == dsp.q_eff("bell", 2.0, 0.7, 1 * 1.0)
+    # symmetric in sign (boost vs cut)
+    assert dsp.q_eff("bell", 2.0, 0.7, 3.0) == dsp.q_eff("bell", 2.0, 0.7, -3.0)
+
+
+def test_qeff_non_bell_untouched():
+    for ft in ("lowshelf", "highshelf", "hp", "lp"):
+        for s in (0.0, 0.5, 1.0):
+            assert dsp.q_eff(ft, 0.9, s, 12.0) == 0.9
+
+
+def test_qeff_clamp_worst_case():
+    # true worst case: Macro 16, Micro 100, BitRatio 3 -> gain_bits_eff 51
+    gbits = (16 + 100 * 0.01) * 3
+    assert dsp.q_eff("bell", 10.0, 1.0, gbits) == 16.0
+    # a Q_MAX bell stays finite/bounded (no self-oscillation blow-up)
+    c = dsp.svf_make("bell", 12000.0, 16.0, 2.0 ** 8, SR)
+    out = dsp.svf_process(c, [1.0] + [0.0] * 20000)
+    assert all(math.isfinite(v) for v in out)
+    assert max(abs(v) for v in out) < 3.0
+
+
+def test_qeff_proportional_narrowing_monotonic():
+    # s = 0 holds constant width; s > 0 narrows monotonically as gain grows.
+    fc = 1000.0
+    w0 = [_octave_bw(fc, dsp.q_eff("bell", 1.0, 0.0, b), 2.0 ** b, SR, b * 6.0206 / 2.0)
+          for b in (0.5, 1.0, 2.0)]
+    assert abs(w0[0] - w0[1]) < 1e-6 and abs(w0[1] - w0[2]) < 1e-6   # constant (bisection resolves ~2e-9)
+    w1 = [_octave_bw(fc, dsp.q_eff("bell", 1.0, 1.0, b), 2.0 ** b, SR, b * 6.0206 / 2.0)
+          for b in (0.5, 1.0, 2.0)]
+    assert w1[0] > w1[1] > w1[2]                                     # narrows
+    # measured values from the prototype (loose bands, not a locked trajectory)
+    assert 0.90 < w1[0] < 0.98 and 0.68 < w1[1] < 0.74 and 0.45 < w1[2] < 0.50
+
+
+def test_svf_response_matches_probe():
+    # the analytic magnitude equals the sine-probe (exact at fc)
+    c = dsp.svf_make("bell", 1000.0, 2.0, 4.0, SR)
+    assert abs(dsp.svf_response(c, 1000.0, SR) - dsp.svf_magnitude(c, 1000.0, SR)) < 1e-9
+    assert abs(dsp.svf_response(c, 1000.0, SR) - 4.0) < 1e-9

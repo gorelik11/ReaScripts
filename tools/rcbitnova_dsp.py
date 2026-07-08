@@ -5,6 +5,7 @@ verified by pytest offline. Filters use Andy Simper's TPT state-variable form.
 """
 from __future__ import annotations
 
+import cmath
 import math
 
 ONE_BIT_DB = 6.0206
@@ -81,6 +82,38 @@ def svf_magnitude(coeffs: dict, freq: float, sr: float, n: int = 1 << 15) -> flo
     acc_o = sum(out[i] * out[i] for i in range(half, n))
     acc_i = sum(samples[i] * samples[i] for i in range(half, n))
     return math.sqrt(acc_o / acc_i)
+
+
+def q_eff(ftype, q_knob, qchar, gain_bits_eff, q_max=16.0):
+    """Proportional-Q law (V0.3). For a bell band, Q rises with the static gain:
+    Q_eff = min(q_max, q_knob*(1 + qchar*|gain_bits_eff|)). qchar in [0,1]; qchar=0 or
+    a non-bell type returns q_knob exactly (bit-identical fast path). gain_bits_eff is
+    the signed static gain exponent (Macro + Micro*0.01)*BitRatio."""
+    if qchar == 0.0 or ftype != "bell":
+        return q_knob
+    qe = q_knob * (1.0 + qchar * abs(gain_bits_eff))
+    return q_max if qe > q_max else qe          # qe >= q_knob always; no lower clamp
+
+
+def svf_response(coeffs, freq, sr):
+    """Exact |H(e^jw)| of the Simper TPT-SVF from its coefficient dict, via a
+    state-space evaluation. Cheap and exact; use instead of svf_magnitude for
+    bandwidth searches."""
+    a1, a2, a3 = coeffs["a1"], coeffs["a2"], coeffs["a3"]
+    m0, m1, m2 = coeffs["m0"], coeffs["m1"], coeffs["m2"]
+    A11 = 2.0 * a1 - 1.0; A12 = -2.0 * a2
+    A21 = 2.0 * a2;       A22 = 1.0 - 2.0 * a3
+    B1 = 2.0 * a2; B2 = 2.0 * a3
+    C1 = m1 * a1 + m2 * a2
+    C2 = -m1 * a2 + m2 * (1.0 - a3)
+    D = m0 + m1 * a2 + m2 * a3
+    z = cmath.exp(1j * 2.0 * math.pi * freq / sr)
+    M11 = z - A11; M12 = -A12
+    M21 = -A21;    M22 = z - A22
+    det = M11 * M22 - M12 * M21
+    x1 = (M22 * B1 - M12 * B2) / det
+    x2 = (-M21 * B1 + M11 * B2) / det
+    return abs(C1 * x1 + C2 * x2 + D)
 
 
 def process_band_stereo(ftype, placement, fc, q, gain_lin, sr, Lin, Rin):
