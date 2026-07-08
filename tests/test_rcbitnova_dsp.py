@@ -757,3 +757,15 @@ def test_jsfx_v03_qchar_sliders_added_not_renumbered():
     n2 = len(re.findall(r"^slider\d+:", v2, re.M))
     n3 = len(re.findall(r"^slider\d+:", text, re.M))
     assert n3 == n2 + 4
+
+
+def test_jsfx_v03_band_qeff_wired_at_all_three_bell_q_sites():
+    # Guard the core "one shared expression, three Bell Q sites" invariant: a future
+    # edit that reverts any substitution (e.g. back to slider(s+4)) must fail here,
+    # even though the DSP tests would stay green.
+    text = _jsfx_v03_text().decode("ascii")
+    assert "function band_qeff(b)" in text                                    # defined
+    assert "svf_set(b * 8, slider(s+2), slider(s+3), band_qeff(b), glin);" in text  # site 1: static
+    assert "? 0.7071 : band_qeff(b);" in text                                 # site 2: detector qd
+    assert "bp[b*3+1] = band_qeff(b);" in text                                # site 3: bp store
+    assert text.count("band_qeff(b)") == 4                                    # 1 def + 3 calls, no extras
