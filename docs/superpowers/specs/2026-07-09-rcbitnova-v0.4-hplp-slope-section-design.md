@@ -35,20 +35,31 @@ latency, a separate large subsystem); saturation. The existing per-band HP/LP ba
   recombine, so e.g. HP can be Side-only while LP is Both.
 - Off = bit-perfect passthrough for that filter (no state, no processing) — see §3 state rule.
 
-**Exact per-sample signal order (pinned):**
-`Master bypass -> passthrough (bit-perfect, nothing touched). Otherwise: input gain +
-channel-mode encode -> anti-denormal -> DEDICATED HP/LP SECTION (HP then LP) -> 4 EQ bands +
-Mode A -> Mode B delayed-bus / global pass -> output trim -> out.` The HP/LP output is what
-gets written into the Mode B delayed bus (Mode B limits the already-filtered signal). Because
-the HP/LP cascade is **zero-latency**, it does NOT change `pdc_delay` (PDC stays exactly as in
-V0.3); master bypass short-circuits BEFORE any HP/LP processing or bus writes.
+**Exact per-sample signal order (pinned to V0.3's REAL structure — verified).** V0.3 has NO
+input-gain stage (the only trim is `out_gain` from slider2/3, applied at the very END) and NO
+global channel-mode M/S encode — the running signal **stays L/R** and each element derives its
+working domain locally by Placement. So the order is:
+`Master bypass -> passthrough (bit-perfect). Otherwise: anti-denormal -> DEDICATED HP/LP
+SECTION (HP then LP) -> 4 EQ bands + Mode A -> Mode B delayed-bus / global pass -> out_gain ->
+out.` The HP/LP output becomes the running `L_in/R_in` the bands see and is written ONCE into
+the Mode B delayed bus (Mode B limits the already-filtered signal; no double-filtering). Because
+the HP/LP cascade is **zero-latency**, it does NOT change `pdc_delay` (PDC formula depends only
+on `any_b`/bypass — unchanged). The HP/LP section sits INSIDE the existing master-bypass
+short-circuit, so bypass stays zero-latency and bit-perfect.
 
-**Controls (JSFX slider surface).** Eight new sliders in a fresh bank beyond V0.3's Hard
-controls (V0.3 uses 1-4, 11-49, 51-88, 91-123): reserve **`slider131`=HP Slope, `132`=HP Freq,
-`133`=HP Q, `134`=HP Placement, `135`=LP Slope, `136`=LP Freq, `137`=LP Q, `138`=LP Placement**
-(exact numbers pinned so existing sliders never renumber; the plan confirms them free). No
-separate Enable — `Slope = Off` is the enable. Slope defaults **Off**; Freq defaults sensible
-(HP low, LP high); Q default `0.7071`; Placement default `Both`.
+**Controls (JSFX slider surface, pinned).** Eight new sliders in a fresh bank beyond V0.3's Hard
+controls (V0.3 uses 1-4, 11-49, 51-88, 91-123; max used = 123): reserve
+- `slider131` HP Slope — enum `0<0,5,1{Off,12,24,36,48,96}>`, default `0` (Off)
+- `slider132` HP Freq — `20<20,20000,1>`, default `20`
+- `slider133` HP Q — `0.707<0.1,10,0.001>`, default `0.707`
+- `slider134` HP Placement — enum `0<0,4,1{Both,Mid,Side,Left,Right}>`, default `0` (Both)
+- `slider135` LP Slope — enum, default `0` (Off)
+- `slider136` LP Freq — `20000<20,20000,1>`, default `20000`
+- `slider137` LP Q — `0.707<0.1,10,0.001>`, default `0.707`
+- `slider138` LP Placement — enum, default `0` (Both)
+
+Exact numbers pinned so existing sliders never renumber (the plan confirms 131-138 free). No
+separate Enable — `Slope = Off` is the enable.
 
 ## 3. Slope — minimum-phase SVF cascade
 
@@ -59,20 +70,29 @@ separate Enable — `Slope = Off` is the enable. Slope defaults **Off**; Freq de
   `nsec = (enum == 5) ? 8 : enum` -> `Off=0, 12=1, 24=2, 36=3, 48=4, 96=8`. A naive
   "sections = slider value" makes 96 dB/oct become 5 sections (60 dB/oct) — WRONG. Test every
   option's actual section count/slope.
-- Far-stopband asymptote = `nsec x 12 dB/oct` (numerically pre-validated 2026-07-09,
-  `hplp_cascade_proto.py`: measured 12.0 / 24.1 / 36.1 / 48.2 / 96.3 dB/oct).
+- Far-stopband asymptote = `nsec x 12 dB/oct` (session prototype, 2026-07-09: measured
+  12.0 / 24.1 / 36.1 / 48.2 / 96.3 dB/oct; promoted to permanent test §7.2).
 - **State / memory (plan pins exact offsets).** New block `hplp_state` **appended after the
   last V0.3 memory block** (no overlap with existing Mode B / band buffers — the plan proves
   non-overlap by a source-level range check). Worst-case size = 2 filters x 8 sections x 2
   channels x 2 SVF integrators = **64 slots**. Slot addressing keyed by
   `(filter, section, channel, ic1/ic2)`. Coefficients are precomputed in `@slider` (per
   section: `a1,a2,a3,k,m0,m1,m2`), never per sample.
-- **Off / state-reset policy (accepted warm-up, matches V0.2 §5).** An `Off` filter runs NO
-  cascade processing and advances NO state (its `@sample` branch is skipped). To avoid a
-  stale-integrator burst, that filter's cascade state is **zeroed on any change of its Slope,
-  Freq, Q, or Placement** (an `@slider`-time reset when the setting changes), so Off->On and
-  slope/placement switches start from clean state. This is a control-rate reset, not a
-  per-sample reset; a brief warm-up on a live change is accepted.
+- **Off / state-reset policy (corrected per review — do NOT reset on Freq/Q).** An `Off`
+  filter runs NO cascade processing and advances NO state (its `@sample` branch is skipped).
+  Cascade state is **zeroed only on a change of Slope (section count changes -> stale unused
+  sections) or Placement (working-domain identity changes)** — an `@slider`-time reset. `Off->On`
+  is a Slope change, so it is covered. **Freq and Q changes update coefficients ONLY; the state
+  PERSISTS** (they are continuous automatable params; zeroing state every block during a sweep
+  would re-charge an 8-section resonant filter from zero at block rate = buzz, far worse than a
+  warm-up). This matches V0.3's precedent: per-band filters modulate coefficients in `@slider`
+  and never touch state — the Simper TPT-SVF is well-behaved under coefficient modulation.
+- **Coefficient storage (two sets per filter, not per section).** Each filter has exactly TWO
+  distinct coefficient sets: section 0 (user Q) and sections 1..N-1 (identical Butterworth
+  0.7071). Store two full 7-tuples per filter (`a1,a2,a3,k,m0,m1,m2`) — NOTE the `m` vector
+  differs between the sets (for HP `m1 = -k`, `k = 1/q`), so they cannot share an m-vector. The
+  inner cascade loop uses set 0 for the first section and set 1 for the rest. Store as scalars
+  or a small `hplp_cf` block appended after `hplp_state`. All computed in `@slider`.
 - **No Brickwall** in this version (see section 1).
 
 ## 4. Q convention — "Q on the first section" (decided)
@@ -113,8 +133,16 @@ separate Enable — `Slope = Off` is the enable. Slope defaults **Off**; Freq de
 - Placement is independent per filter: HP-Side + LP-Both is valid (the classic "mono the
   lows" move = HP on Side only). Each filter encodes to its target domain, filters, and
   decodes back to L/R before the next stage.
-- Placement interacts with the global Channel Mode exactly as the per-band Placement already
-  does (reuse that mechanism; the plan pins the exact code path).
+- **Exact per-placement semantics (pinned — do NOT copy the band `both_ms` branch).** The
+  per-band Placement's Both branch chooses its domain by Dyn Stereo mode (`both_ms` for Dual
+  M/S); HP/LP has NO dynamics, so:
+  - **Both** = filter both channels in plain **L/R** (no M/S path).
+  - **Mid / Side** = local encode `M=(L+R)/2, S=(L-R)/2`, filter the one target channel, exact
+    recombine `L=M+S, R=M-S` (V0.3's encode/recombine is exactly invertible; HP-decode then
+    LP-encode back-to-back is clean, float-noise only).
+  - **Left / Right** = filter that one channel only, the other passes untouched.
+  There is no global Channel Mode in V0.3 for this to interact with (the running signal stays
+  L/R); Placement is purely local to each filter.
 
 ## 6. Bit-accuracy (unchanged)
 
@@ -126,10 +154,17 @@ quantize. The section is a pure 2nd-order SVF cascade in the existing clean styl
 ## 7. Verification
 
 Method as in S-A / S-B / V0.3: Python DSP mirror first (TDD), then line-by-line JSFX
-transcription, then live-verify with Dima. Numeric pre-validation done (`hplp_cascade_proto.py`).
+transcription, then live-verify with Dima. A session prototype validated the numbers
+numerically (ephemeral scratch, not an in-repo artifact); every claim is promoted to the
+permanent tests below.
 
-Permanent tests (Python oracle), using the shipped `svf_response` for analytic magnitude.
-Every numeric claim from `hplp_cascade_proto.py` is promoted to a permanent test:
+**New mirror scaffolding the plan must build (not present in V0.3's mirror):** a
+state-carrying HP/LP cascade (state-in/state-out or an object) so tests 7 can check "Off
+advances no state"; and a `process_hplp_stereo`-style placement wrapper (analogous to the
+existing `process_band_stereo`) so test 8 can check routing. Tests 1-6 and 9 are coverable by
+the existing `svf_make`/`svf_response`/`process_band_stereo`.
+
+Permanent tests (Python oracle), using the shipped `svf_response` for analytic magnitude:
 1. **Enum -> section mapping:** the mapping helper yields `Off=0, 12=1, 24=2, 36=3, 48=4,
    96=8` for enum `0..5` (catches the "96 -> 5 sections" trap).
 2. **Slope correctness:** an N-section HP/LP cascade has a far-stopband slope of
