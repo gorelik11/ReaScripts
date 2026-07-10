@@ -876,3 +876,63 @@ def shelf_modeb_cascade_stereo(Lin, Rin, shelf_type, fc, q, sr, ceil_soft, ceil_
     return _shelf_modeb_cascade_ch(Lin, Rin, True, shelf_type, fc, sr, ceil_soft,
                                    ceil_hard, look_ms, rel_ms, soft_on, hard_on,
                                    linked, gsmooth)
+
+
+_HPLP_SECTIONS = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 8}   # slope enum -> # of 2nd-order sections
+
+
+def hplp_sections(enum):
+    """Slope enum (0..5 = Off/12/24/36/48/96 dB/oct) -> cascade section count."""
+    return _HPLP_SECTIONS[enum]
+
+
+def _hplp_cascade_ch(x, state, ftype, fc, q, sr, nsec):
+    """One channel through nsec cascaded 2nd-order SVF sections. Section 0 uses the
+    user Q; sections 1.. use Butterworth 0.7071. state = list of [ic1, ic2] per
+    section (len nsec), mutated in place. ftype in {'hp','lp'}."""
+    c0 = svf_make(ftype, fc, q, 1.0, sr)
+    cR = svf_make(ftype, fc, 0.7071, 1.0, sr)
+    out = []
+    for v0 in x:
+        s = v0
+        for k in range(nsec):
+            c = c0 if k == 0 else cR
+            ic1, ic2 = state[k]
+            v3 = s - ic2
+            v1 = c["a1"]*ic1 + c["a2"]*v3
+            v2 = ic2 + c["a2"]*ic1 + c["a3"]*v3
+            state[k][0] = 2.0*v1 - ic1
+            state[k][1] = 2.0*v2 - ic2
+            s = c["m0"]*s + c["m1"]*v1 + c["m2"]*v2
+        out.append(s)
+    return out
+
+
+def hplp_cascade(x, ftype, fc, q, sr, nsec):
+    """Stateless convenience: fresh state, one channel through nsec sections.
+    nsec == 0 (Off) returns a copy of the input unchanged."""
+    if nsec == 0:
+        return list(x)
+    return _hplp_cascade_ch(x, [[0.0, 0.0] for _ in range(nsec)], ftype, fc, q, sr, nsec)
+
+
+def process_hplp_stereo(Lin, Rin, ftype, fc, q, sr, nsec, placement):
+    """One HP or LP filter (nsec-section cascade) applied per placement.
+    placement in {'both','mid','side','left','right'}."""
+    if nsec == 0:
+        return list(Lin), list(Rin)
+    def run(ch):
+        return hplp_cascade(ch, ftype, fc, q, sr, nsec)
+    if placement == "both":
+        return run(Lin), run(Rin)
+    if placement == "left":
+        return run(Lin), list(Rin)
+    if placement == "right":
+        return list(Lin), run(Rin)
+    M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+    S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+    if placement == "mid":
+        M = run(M)
+    else:  # side
+        S = run(S)
+    return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])

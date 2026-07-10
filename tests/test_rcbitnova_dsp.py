@@ -769,3 +769,90 @@ def test_jsfx_v03_band_qeff_wired_at_all_three_bell_q_sites():
     assert "? 0.7071 : band_qeff(b);" in text                                 # site 2: detector qd
     assert "bp[b*3+1] = band_qeff(b);" in text                                # site 3: bp store
     assert text.count("band_qeff(b)") == 4                                    # 1 def + 3 calls, no extras
+
+
+# ---- Phase V0.4: minimum-phase HP/LP cascade section ----
+
+def _hplp_cmag(f, ftype, fc, q, nsec):
+    m = dsp.svf_response(dsp.svf_make(ftype, fc, q, 1.0, SR), f, SR)
+    m *= dsp.svf_response(dsp.svf_make(ftype, fc, 0.7071, 1.0, SR), f, SR) ** (nsec - 1)
+    return m
+
+
+def test_hplp_enum_to_sections():
+    assert [dsp.hplp_sections(e) for e in range(6)] == [0, 1, 2, 3, 4, 8]
+
+
+def test_hplp_slope_db_per_oct():
+    fc = 100.0
+    for nsec in (1, 2, 3, 4, 8):
+        s = abs(20*math.log10(_hplp_cmag(fc/4, "hp", fc, 0.7071, nsec))
+                - 20*math.log10(_hplp_cmag(fc/8, "hp", fc, 0.7071, nsec)))
+        assert abs(s - nsec*12) < 0.5, (nsec, s)
+
+
+def test_hplp_fc_level_is_minus_3N():
+    fc = 100.0
+    for nsec in (1, 2, 3, 4, 8):
+        assert abs(20*math.log10(_hplp_cmag(fc, "hp", fc, 0.7071, nsec)) - (-3.0103*nsec)) < 0.1
+
+
+def test_hplp_passband_droop_high_slope():
+    fc = 100.0
+    assert -2.3 < 20*math.log10(_hplp_cmag(fc*2, "hp", fc, 0.7071, 8)) < -1.9
+
+
+def test_hplp_resonance_bump():
+    fc = 100.0
+    def peak(q):
+        return max(20*math.log10(_hplp_cmag(fc*(1+i*0.01), "hp", fc, q, 4)) for i in range(80))
+    assert peak(2.0) > peak(0.7071) + 2.0
+
+
+def test_hplp_q10_stability():
+    sweep = [math.sin(2*math.pi*(50 + i*0.5)*i/SR) for i in range(20000)]
+    for ftype, fc in (("hp", 200.0), ("lp", 8000.0)):
+        for nsec in (1, 2, 3, 4, 8):
+            out = dsp.hplp_cascade(sweep, ftype, fc, 10.0, SR, nsec)
+            assert all(math.isfinite(v) for v in out) and max(abs(v) for v in out) < 100.0
+
+
+def test_hplp_off_is_identity():
+    x = [0.5*math.sin(0.3*i) for i in range(500)]
+    assert dsp.hplp_cascade(x, "hp", 100.0, 0.7071, SR, 0) == x
+    Lo, Ro = dsp.process_hplp_stereo(x, list(x), "hp", 100.0, 0.7071, SR, 0, "both")
+    assert Lo == x and Ro == x
+
+
+def test_hplp_placement_side_leaves_mono_and_mid():
+    mono = [0.5*math.sin(0.25*i) for i in range(400)]
+    Lo, Ro = dsp.process_hplp_stereo(mono, mono, "hp", 200.0, 0.7071, SR, 4, "side")
+    assert all(abs(a-b) < 1e-12 for a, b in zip(Lo, mono))
+    assert all(abs(a-b) < 1e-12 for a, b in zip(Ro, mono))
+    L = [0.4*math.sin(0.2*i)+0.1 for i in range(400)]
+    R = [0.4*math.sin(0.2*i)-0.1 for i in range(400)]
+    Lo, Ro = dsp.process_hplp_stereo(L, R, "hp", 200.0, 0.7071, SR, 4, "side")
+    mid_in = [(l+r)*0.5 for l, r in zip(L, R)]
+    mid_out = [(a+b)*0.5 for a, b in zip(Lo, Ro)]
+    assert all(abs(a-b) < 1e-12 for a, b in zip(mid_out, mid_in))
+
+
+def test_hplp_12db_equals_existing_single_svf():
+    x = [0.5*math.sin(0.3*i) for i in range(500)]
+    one = dsp.hplp_cascade(x, "hp", 300.0, 2.0, SR, 1)
+    ref = dsp.svf_process(dsp.svf_make("hp", 300.0, 2.0, 1.0, SR), x)
+    assert one == ref
+    # placement routing continuity: 1-section Both == filter each channel independently
+    Lo, Ro = dsp.process_hplp_stereo(x, list(x), "hp", 300.0, 2.0, SR, 1, "both")
+    assert Lo == ref and Ro == ref
+
+
+def test_hplp_cascade_per_section_q_is_locked():
+    # Locks "section 0 = user Q, sections 1.. = Butterworth 0.7071" in the time domain
+    # (nsec>=2, non-default Q). A bug applying user Q to every section, or Butterworth to
+    # all, would otherwise pass every other test.
+    x = [0.5*math.sin(0.3*i) for i in range(500)]
+    got = dsp.hplp_cascade(x, "hp", 300.0, 2.0, SR, 2)          # sec0 Q=2, sec1 Butterworth
+    mid = dsp.svf_process(dsp.svf_make("hp", 300.0, 2.0, 1.0, SR), x)
+    ref = dsp.svf_process(dsp.svf_make("hp", 300.0, 0.7071, 1.0, SR), mid)
+    assert got == ref
