@@ -33,15 +33,46 @@ latency, a separate large subsystem); saturation. The existing per-band HP/LP ba
 - Two independent filters applied in series: **HP** then **LP**. Each is its own stage with
   its own Slope, Freq, Q, and Placement; each does its own local Placement transform and
   recombine, so e.g. HP can be Side-only while LP is Both.
-- Off = bit-perfect passthrough for that filter (no state, no processing).
+- Off = bit-perfect passthrough for that filter (no state, no processing) — see §3 state rule.
+
+**Exact per-sample signal order (pinned):**
+`Master bypass -> passthrough (bit-perfect, nothing touched). Otherwise: input gain +
+channel-mode encode -> anti-denormal -> DEDICATED HP/LP SECTION (HP then LP) -> 4 EQ bands +
+Mode A -> Mode B delayed-bus / global pass -> output trim -> out.` The HP/LP output is what
+gets written into the Mode B delayed bus (Mode B limits the already-filtered signal). Because
+the HP/LP cascade is **zero-latency**, it does NOT change `pdc_delay` (PDC stays exactly as in
+V0.3); master bypass short-circuits BEFORE any HP/LP processing or bus writes.
+
+**Controls (JSFX slider surface).** Eight new sliders in a fresh bank beyond V0.3's Hard
+controls (V0.3 uses 1-4, 11-49, 51-88, 91-123): reserve **`slider131`=HP Slope, `132`=HP Freq,
+`133`=HP Q, `134`=HP Placement, `135`=LP Slope, `136`=LP Freq, `137`=LP Q, `138`=LP Placement**
+(exact numbers pinned so existing sliders never renumber; the plan confirms them free). No
+separate Enable — `Slope = Off` is the enable. Slope defaults **Off**; Freq defaults sensible
+(HP low, LP high); Q default `0.7071`; Placement default `Both`.
 
 ## 3. Slope — minimum-phase SVF cascade
 
-- Slope options per filter: **Off / 12 / 24 / 36 / 48 / 96 dB/oct** = **0 / 1 / 2 / 3 / 4 / 8**
-  cascaded 2nd-order SVF sections (`svf_make("hp"/"lp", ...)`), applied in series.
-- Far-stopband asymptote = sections x 12 dB/oct (numerically pre-validated 2026-07-09,
+- Slope options per filter: **Off / 12 / 24 / 36 / 48 / 96 dB/oct**, applied as cascaded
+  2nd-order SVF sections in series.
+- **Enum-to-section mapping (pinned — the trap: the enum is NOT the section count).** The UI
+  enum slider returns `0..5` (`{Off,12,24,36,48,96}`). Convert to section count with
+  `nsec = (enum == 5) ? 8 : enum` -> `Off=0, 12=1, 24=2, 36=3, 48=4, 96=8`. A naive
+  "sections = slider value" makes 96 dB/oct become 5 sections (60 dB/oct) — WRONG. Test every
+  option's actual section count/slope.
+- Far-stopband asymptote = `nsec x 12 dB/oct` (numerically pre-validated 2026-07-09,
   `hplp_cascade_proto.py`: measured 12.0 / 24.1 / 36.1 / 48.2 / 96.3 dB/oct).
-- Each section holds its own 2nd-order SVF state (per channel / per placement domain).
+- **State / memory (plan pins exact offsets).** New block `hplp_state` **appended after the
+  last V0.3 memory block** (no overlap with existing Mode B / band buffers — the plan proves
+  non-overlap by a source-level range check). Worst-case size = 2 filters x 8 sections x 2
+  channels x 2 SVF integrators = **64 slots**. Slot addressing keyed by
+  `(filter, section, channel, ic1/ic2)`. Coefficients are precomputed in `@slider` (per
+  section: `a1,a2,a3,k,m0,m1,m2`), never per sample.
+- **Off / state-reset policy (accepted warm-up, matches V0.2 §5).** An `Off` filter runs NO
+  cascade processing and advances NO state (its `@sample` branch is skipped). To avoid a
+  stale-integrator burst, that filter's cascade state is **zeroed on any change of its Slope,
+  Freq, Q, or Placement** (an `@slider`-time reset when the setting changes), so Off->On and
+  slope/placement switches start from clean state. This is a control-rate reset, not a
+  per-sample reset; a brief warm-up on a live change is accepted.
 - **No Brickwall** in this version (see section 1).
 
 ## 4. Q convention — "Q on the first section" (decided)
@@ -63,7 +94,15 @@ latency, a separate large subsystem); saturation. The existing per-band HP/LP ba
     the desired musical feature.
 - At **12 dB/oct** (1 section) the filter is **identical** to the existing per-band HP/LP
   (user Q on a single 2nd-order SVF).
-- Q range follows the existing HP/LP Q slider convention.
+- Q range follows the existing HP/LP Q slider convention. **Worst-case stability (the
+  "distortion instead of processing" class):** at high Q (up to the slider max, e.g. 10) the
+  resonant first section plus up to 7 more sections can build a large narrow peak near cutoff.
+  The design KEEPS the existing Q range but REQUIRES stability tests at `Q = 10`, all slopes,
+  several cutoff frequencies, on impulse / sine / sweep — no NaN/Inf, bounded output (the
+  TPT-SVF is unconditionally stable for `k > 0`, so this is a guard, not an expected failure).
+- **Header/manual text (JSFX header, pure ASCII), because sliders carry no help text:**
+  `For slopes above 12 dB/oct, Freq is the cascade cutoff parameter, not the final -3 dB
+  point; at Q = 0.7071 the level at Freq is -3 dB per active section.`
 
 ## 5. Placement (Mid/Side) — full per-filter Placement
 
@@ -89,23 +128,45 @@ quantize. The section is a pure 2nd-order SVF cascade in the existing clean styl
 Method as in S-A / S-B / V0.3: Python DSP mirror first (TDD), then line-by-line JSFX
 transcription, then live-verify with Dima. Numeric pre-validation done (`hplp_cascade_proto.py`).
 
-Permanent tests (Python oracle), using the shipped `svf_response` for analytic magnitude:
-1. **Slope correctness:** an N-section HP/LP cascade has a far-stopband slope of
+Permanent tests (Python oracle), using the shipped `svf_response` for analytic magnitude.
+Every numeric claim from `hplp_cascade_proto.py` is promoted to a permanent test:
+1. **Enum -> section mapping:** the mapping helper yields `Off=0, 12=1, 24=2, 36=3, 48=4,
+   96=8` for enum `0..5` (catches the "96 -> 5 sections" trap).
+2. **Slope correctness:** an N-section HP/LP cascade has a far-stopband slope of
    `N x 12 dB/oct` (measured deep in the stopband, one octave apart) for N in {1,2,3,4,8}.
-2. **fc level per convention:** at `Q = 0.7071`, |H(fc)| = `-3 x N dB` for each slope
+3. **fc level per convention:** at `Q = 0.7071`, |H(fc)| = `-3 x N dB` for each slope
    (documents section 4's accepted behavior, catches a wrong Q wiring).
-3. **Resonance:** `Q = 2` on the first section produces a peak of a few dB near fc for a
+4. **Passband droop:** the ~-2.1 dB droop at `2 x fc` for 96 dB/oct is captured (documents the
+   convention, catches a shape regression).
+5. **Resonance:** `Q = 2` on the first section produces a peak of a few dB near fc for a
    multi-section HP; `Q = 0.7071` produces no bump.
-4. **Off == identity:** a filter set to Off is a bit-exact passthrough (no state, no change).
-5. **Placement:** Mid/Side/Left/Right each filter only the intended domain; e.g. an HP with
-   Placement = Side leaves a mono (Side = 0) signal unchanged, and leaves the Mid content of
-   a stereo signal unchanged; Left/Right filter only that channel.
-6. **12 dB/oct == existing single-section HP/LP:** a 1-section cascade with user Q equals the
-   current per-band HP/LP coefficient/response (continuity check).
+6. **Q = 10 worst-case stability:** HP and LP, every slope, several cutoff freqs, on impulse /
+   sine / sweep -> all output finite and bounded (no NaN/Inf, no runaway).
+7. **Off == identity + no state advance:** a filter set to Off returns its input bit-exactly
+   even with nonzero prior state; Off does not advance state; Off -> On after silence produces
+   no burst (state was zeroed on the transition per section 3).
+8. **Placement (routing, both levels):** Mid/Side/Left/Right each filter only the intended
+   domain — an HP with Placement = Side leaves a mono (Side = 0) signal unchanged and leaves
+   the Mid content of a stereo signal unchanged; Left/Right filter only that channel. Tested at
+   the routing level, not just the single-channel coefficient.
+9. **12 dB/oct == existing single-section HP/LP (coefficient AND routing):** a 1-section
+   cascade with user Q equals the existing per-band HP/LP in both the single-channel
+   coefficient/response AND the placement writeback for Both/Mid/Side/Left/Right.
 
-Live checks (Dima): each slope audibly/visibly steeper on an analyzer; Q>0.707 shows the
-resonant bump; HP-Side / LP-Both placement combos behave (mono-the-lows works); Off nulls;
-no zipper on slope/freq automation; CPU acceptable at 96 dB/oct on both filters.
+Live checks (Dima):
+- Each slope visibly steeper on an analyzer; the high-slope `Freq`-is-not-(-3 dB) shift is
+  visible at 48/96; `Q>0.707` shows the resonant bump.
+- HP-Side + LP-Both placement combos behave (mono-the-lows works); Off nulls (V0.4-with-both-
+  filters-Off renders identical to V0.3).
+- **Automation transitions** (the risky ones): Off->96, 96->Off, 12<->96, Both->Side->Mid,
+  and a Q sweep at high slope near cutoff — no click/zipper beyond the accepted control-rate
+  warm-up, no burst.
+- **Mode B coexistence:** HP/LP active with Mode B active does not change `pdc_delay`, does not
+  double-filter the delayed bus, and master bypass stays zero-latency / bit-perfect.
+- **CPU:** measure and record the CPU delta vs V0.3 with the worst case (HP 96 Both + LP 96
+  Both = 32 SVF ticks/sample + two M/S transforms); it must stay acceptable on the target
+  session. Source self-review item: coefficients precomputed in `@slider`, no per-sample branch
+  ladders in the 8-section inner loop.
 
 ## 8. Out of scope for V0.4
 
