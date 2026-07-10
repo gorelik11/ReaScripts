@@ -856,3 +856,33 @@ def test_hplp_cascade_per_section_q_is_locked():
     mid = dsp.svf_process(dsp.svf_make("hp", 300.0, 2.0, 1.0, SR), x)
     ref = dsp.svf_process(dsp.svf_make("hp", 300.0, 0.7071, 1.0, SR), mid)
     assert got == ref
+
+
+def _jsfx_v04_text():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.4").read_bytes()
+
+
+def test_jsfx_v04_is_pure_ascii():
+    data = _jsfx_v04_text()
+    bad = [i for i, b in enumerate(data) if b >= 128]
+    assert not bad, f"non-ASCII bytes at {bad[:5]} in RCBitNova V0.4"
+
+
+def test_jsfx_v04_hplp_sliders_and_wiring():
+    text = _jsfx_v04_text().decode("ascii")
+    for n, frag in ((131, "HP Slope"), (132, "HP Freq"), (133, "HP Q"), (134, "HP Placement"),
+                    (135, "LP Slope"), (136, "LP Freq"), (137, "LP Q"), (138, "LP Placement")):
+        assert f"slider{n}:" in text and frag in text, f"slider{n} {frag} missing"
+    # section helpers and the @sample calls exist
+    assert "function hplp_coef(" in text
+    assert "function hplp_run(" in text
+    assert "hplp_run(0," in text and "hplp_run(1," in text     # HP and LP invoked
+    # enum->sections mapping present (the 96 -> 8 trap)
+    assert "== 5 ? 8" in text
+    # existing V0.3 slider numbers unchanged (spot-check)
+    for n in (14, 19, 48, 91, 123):
+        assert f"slider{n}:" in text
+    import pathlib, re
+    v3 = (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.3").read_text()
+    assert len(re.findall(r"^slider\d+:", text, re.M)) == len(re.findall(r"^slider\d+:", v3, re.M)) + 8
