@@ -117,12 +117,23 @@ def test_hplp_12db_equals_existing_single_svf():
     # placement routing continuity: 1-section Both == filter each channel independently
     Lo, Ro = dsp.process_hplp_stereo(x, list(x), "hp", 300.0, 2.0, SR, 1, "both")
     assert Lo == ref and Ro == ref
+
+
+def test_hplp_cascade_per_section_q_is_locked():
+    # Locks "section 0 = user Q, sections 1.. = Butterworth 0.7071" in the time domain
+    # (nsec>=2, non-default Q). A bug applying user Q to every section, or Butterworth to
+    # all, would otherwise pass every other test.
+    x = [0.5*math.sin(0.3*i) for i in range(500)]
+    got = dsp.hplp_cascade(x, "hp", 300.0, 2.0, SR, 2)          # sec0 Q=2, sec1 Butterworth
+    mid = dsp.svf_process(dsp.svf_make("hp", 300.0, 2.0, 1.0, SR), x)
+    ref = dsp.svf_process(dsp.svf_make("hp", 300.0, 0.7071, 1.0, SR), mid)
+    assert got == ref
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k hplp`
-Expected: FAIL — `AttributeError: module 'rcbitnova_dsp' has no attribute 'hplp_sections'`.
+Expected: the 6 tests that call `hplp_sections`/`hplp_cascade`/`process_hplp_stereo` FAIL with `AttributeError: module 'rcbitnova_dsp' has no attribute 'hplp_sections'`; the 4 purely-analytic tests (`_slope_db_per_oct`, `_fc_level_is_minus_3N`, `_passband_droop_high_slope`, `_resonance_bump`, which use only the existing `svf_response`/`svf_make`) are already GREEN — that is expected, not a problem.
 
 - [ ] **Step 3: Implement** — append to `tools/rcbitnova_dsp.py` (after `process_band_stereo`):
 
@@ -190,7 +201,7 @@ def process_hplp_stereo(Lin, Rin, ftype, fc, q, sr, nsec, placement):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 80 passed (71 + 9).
+Expected: 81 passed (71 + 10).
 
 - [ ] **Step 5: Commit**
 
@@ -270,7 +281,7 @@ slider137:0.707<0.1,10,0.001>LP Q
 slider138:0<0,4,1{Both,Mid,Side,Left,Right}>LP Placement
 ```
 
-- [ ] **Step 3: Add the HP/LP memory + helper functions** — in `@init`, immediately AFTER the `egh = hc + N_BANDS * 2; i = 0; loop(...egh...);` block (the last memory block) and BEFORE `function svf_set(...)`, insert:
+- [ ] **Step 3: Add the HP/LP memory + helper functions** — in `@init`, immediately AFTER the last memory block (`egh = hc + N_BANDS;` followed by `i = 0; loop(N_BANDS * 2, egh[i] = 1; i += 1;);` — note the array is `N_BANDS*2` slots even though the offset is `hc + N_BANDS`) and BEFORE `function svf_set(...)`, insert:
 
 ```
 // ===== V0.4 HP/LP section memory + coeffs =====
@@ -402,7 +413,7 @@ and add to the header comment block (pure ASCII, near the other notes):
 - [ ] **Step 8: Run the full oracle**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 82 passed (80 + 2 V0.4 guards). Confirm both `test_jsfx_v04_*` green.
+Expected: 83 passed (81 + 2 V0.4 guards). Confirm both `test_jsfx_v04_*` green.
 
 - [ ] **Step 8b: Focused diff review**
 
