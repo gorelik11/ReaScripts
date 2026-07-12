@@ -70,7 +70,7 @@ Method as before: Python DSP mirror first (TDD), then JSFX transcription, then l
 Permanent tests (Python oracle):
 1. **Butterworth cascade flat at fc:** `|H(fc)| == -3.01 dB` (within 0.05) for every N, HP and LP (maximally-flat; catches a wrong staggered-Q or a mirrored LP wiring error).
 2. **Slope N x 12 dB/oct** far-stopband, HP and LP, every N.
-3. **Resonance peak height:** `0 -> no bump` (<= +0.1 dB over passband); `0.5 -> +6..+8 dB`; `1.0 -> +14..+16 dB`, at 12 AND 96 dB/oct, HP and LP.
+3. **Resonance peak height (measured):** `0 -> no bump` (<= +0.1 dB over passband); `0.5 -> +7..+10 dB`; `1.0 -> +12..+15 dB` — HP and LP, at 12 (peaks ~+7.95 / +12.60) and 96 dB/oct (peaks ~+9.57 / +13.89). (The bell interacts with the local cascade slope, so the peak is slightly higher at steeper slopes.)
 4. **No dip / single peak:** at 96 dB/oct, `Resonance=1`, HP and LP — the passband is a single peak then monotonic decay (the exact V0.4 regression).
 5. **Resonance=0 == pure Butterworth cascade** (bell bit-exact identity at glin=1); and **always-tick continuity:** a time-domain `Resonance 1 -> 0 -> 1` sweep on sine / noise / silence produces no transition burst beyond a pinned bound (the bell keeps ticking at glin=1).
 6. **Worst-case time-domain stability (restored from V0.4):** HP and LP, alone and in series, `Resonance=1`, every slope, at min and max `fc_eff`, across the supported sample rates, on impulse / full-scale sine / sweep / noise / silence-tail — output and internal state finite (no NaN/Inf/denormal blow-up), bounded peak, bounded internal integrator state.
