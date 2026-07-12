@@ -1000,3 +1000,32 @@ def test_v05_off_and_placement():
     Lo, Ro = dsp.process_hplp_butter_stereo(L, R, "hp", 200.0, 0.0, SR, 4, "side")
     mid_in = [(l+r)*0.5 for l, r in zip(L, R)]; mid_out = [(a+b)*0.5 for a, b in zip(Lo, Ro)]
     assert all(abs(a-b) < 1e-12 for a, b in zip(mid_out, mid_in))
+
+
+def _jsfx_v05_text():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.5").read_bytes()
+
+
+def test_jsfx_v05_is_pure_ascii():
+    data = _jsfx_v05_text()
+    bad = [i for i, b in enumerate(data) if b >= 128]
+    assert not bad, f"non-ASCII bytes at {bad[:5]} in RCBitNova V0.5"
+
+
+def test_jsfx_v05_consolidation_and_resonance():
+    text = _jsfx_v05_text().decode("ascii")
+    # per-band Type enum reduced to Bell/Low Shelf/High Shelf (max 2), all 4 bands
+    for n in (12, 22, 32, 42):
+        assert f"slider{n}:0<0,2,1{{Bell,Low Shelf,High Shelf}}>" in text, f"slider{n} Type not consolidated"
+    # svf_set no longer has an HP/LP branch (High Pass / Low Pass comment gone from svf_set)
+    assert "// High Pass" not in text and "// Low Pass" not in text
+    # dedicated-section Q sliders became Resonance 0..1
+    assert "slider133:0<0,1,0.001>" in text and "Resonance" in text
+    assert "slider137:0<0,1,0.001>" in text
+    # new DSP wiring present
+    assert "function butter_q(" in text
+    assert "function hplp_bell(" in text
+    assert "hplp_run(0," in text and "hplp_run(1," in text
+    # Type sanitize guard present
+    assert "> 2 || " in text or "ty > 2" in text
