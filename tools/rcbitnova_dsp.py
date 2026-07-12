@@ -936,3 +936,72 @@ def process_hplp_stereo(Lin, Rin, ftype, fc, q, sr, nsec, placement):
     else:  # side
         S = run(S)
     return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])
+
+
+def butter_q(k, N):
+    """Q of section k (0-based) for a 2N-th order Butterworth cascade of 2nd-order sections."""
+    return 1.0 / (2.0 * math.cos(math.pi * (2*k + 1) / (4*N)))
+
+
+def res_glin(r):
+    """Linear resonance-bell peak gain (no dB/log): 0 -> 1 (identity), 1 -> 6 (~+15.6 dB)."""
+    return 1.0 + r * 5.0
+
+
+def hplp_type_sanitize(ty):
+    """Clamp a per-band Type to the V0.5 range; a stale HP/LP (3/4) or out-of-range -> Bell(0)."""
+    return 0 if (ty > 2 or ty < 0) else ty
+
+
+def fc_eff(freq, sr):
+    """Effective cutoff, clamped below Nyquist for coefficient safety."""
+    return min(freq, sr * 0.49)
+
+
+def _hplp_butter_ch(x, state, ftype, freq, resonance, sr, nsec):
+    """One channel: nsec staggered-Butterworth 2nd-order sections + one ALWAYS-ticking
+    resonance bell (Q=2, glin=res_glin(resonance)). state = list of [ic1,ic2], length
+    nsec+1 (last = bell). ftype in {'hp','lp'}. Bell at glin=1 is a bit-exact identity."""
+    fe = fc_eff(freq, sr)
+    coefs = [svf_make(ftype, fe, butter_q(k, nsec), 1.0, sr) for k in range(nsec)]
+    coefs.append(svf_make("bell", fe, 2.0, res_glin(resonance), sr))
+    out = []
+    for v0 in x:
+        s = v0
+        for st in range(nsec + 1):
+            c = coefs[st]; ic1, ic2 = state[st]
+            v3 = s - ic2
+            v1 = c["a1"]*ic1 + c["a2"]*v3
+            v2 = ic2 + c["a2"]*ic1 + c["a3"]*v3
+            state[st][0] = 2.0*v1 - ic1
+            state[st][1] = 2.0*v2 - ic2
+            s = c["m0"]*s + c["m1"]*v1 + c["m2"]*v2
+        out.append(s)
+    return out
+
+
+def hplp_butter_cascade(x, ftype, freq, resonance, sr, nsec):
+    """Stateless convenience. nsec == 0 (Off) returns a copy of the input unchanged."""
+    if nsec == 0:
+        return list(x)
+    return _hplp_butter_ch(x, [[0.0, 0.0] for _ in range(nsec + 1)], ftype, freq, resonance, sr, nsec)
+
+
+def process_hplp_butter_stereo(Lin, Rin, ftype, freq, resonance, sr, nsec, placement):
+    if nsec == 0:
+        return list(Lin), list(Rin)
+    def run(ch):
+        return hplp_butter_cascade(ch, ftype, freq, resonance, sr, nsec)
+    if placement == "both":
+        return run(Lin), run(Rin)
+    if placement == "left":
+        return run(Lin), list(Rin)
+    if placement == "right":
+        return list(Lin), run(Rin)
+    M = [(l + r) * 0.5 for l, r in zip(Lin, Rin)]
+    S = [(l - r) * 0.5 for l, r in zip(Lin, Rin)]
+    if placement == "mid":
+        M = run(M)
+    else:  # side
+        S = run(S)
+    return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])

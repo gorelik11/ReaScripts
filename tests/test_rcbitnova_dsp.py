@@ -886,3 +886,117 @@ def test_jsfx_v04_hplp_sliders_and_wiring():
     import pathlib, re
     v3 = (pathlib.Path(__file__).resolve().parents[1] / "JSFX" / "RCBitNova V0.3").read_text()
     assert len(re.findall(r"^slider\d+:", text, re.M)) == len(re.findall(r"^slider\d+:", v3, re.M)) + 8
+
+
+# ---- Phase V0.5: staggered-Butterworth HP/LP + decoupled resonance ----
+
+def _v05_cmag(f, ftype, fc, resonance, nsec):
+    fe = dsp.fc_eff(fc, SR)
+    m = 1.0
+    for k in range(nsec):
+        m *= dsp.svf_response(dsp.svf_make(ftype, fe, dsp.butter_q(k, nsec), 1.0, SR), f, SR)
+    m *= dsp.svf_response(dsp.svf_make("bell", fe, 2.0, dsp.res_glin(resonance), SR), f, SR)
+    return m
+
+
+def test_v05_butter_flat_at_fc():
+    for ft, fc in (("hp", 380.0), ("lp", 6000.0)):
+        for n in (1, 2, 3, 4, 8):
+            assert abs(20*math.log10(_v05_cmag(fc, ft, fc, 0.0, n)) - (-3.0103)) < 0.05, (ft, n)
+
+
+def test_v05_slope_db_per_oct():
+    # probe INSIDE the stopband and well below Nyquist (both probes < srate/2). HP probes
+    # below fc (fc/8, fc/4); LP probes above fc (2*fc, 4*fc) with a low fc so 4*fc stays
+    # far below Nyquist. (Measured worst error: HP 0.33, LP 0.54 dB/oct at SR=48000.)
+    for ft, fc, f1, f2 in (("hp", 380.0, 380.0/8, 380.0/4), ("lp", 300.0, 1200.0, 600.0)):
+        for n in (1, 2, 3, 4, 8):
+            s = abs(20*math.log10(_v05_cmag(f1, ft, fc, 0.0, n))
+                    - 20*math.log10(_v05_cmag(f2, ft, fc, 0.0, n))) / abs(math.log2(f2/f1))
+            assert abs(s - n*12) < 0.8, (ft, n, s)
+
+
+def test_v05_resonance_peak_height():
+    for ft, fc in (("hp", 380.0), ("lp", 6000.0)):
+        for n in (1, 8):
+            def peak(r):
+                return max(20*math.log10(_v05_cmag(fc*(1+i*0.005) if ft == "hp" else fc*(1-i*0.005),
+                                                   ft, fc, r, n)) for i in range(200))
+            assert peak(0.0) <= 0.1
+            assert 7.0 < peak(0.5) < 10.5
+            assert 12.0 < peak(1.0) < 15.0
+
+
+def test_v05_no_dip_single_peak():
+    for ft, fc in (("hp", 380.0), ("lp", 6000.0)):
+        frs = [1 + i*0.02 for i in range(40)] if ft == "hp" else [1 - i*0.02 for i in range(40)]
+        vals = [20*math.log10(_v05_cmag(fc*fr, ft, fc, 1.0, 8)) for fr in frs]
+        minima = sum(1 for i in range(1, len(vals)-1)
+                     if vals[i] < vals[i-1]-0.03 and vals[i] < vals[i+1]-0.03)
+        assert minima == 0, (ft, minima)
+
+
+def test_v05_resonance0_is_pure_cascade():
+    x = [0.5*math.sin(0.3*i) for i in range(400)]
+    got = dsp.hplp_butter_cascade(x, "hp", 380.0, 0.0, SR, 4)
+    fe = dsp.fc_eff(380.0, SR)
+    ref = x
+    for k in range(4):
+        ref = dsp.svf_process(dsp.svf_make("hp", fe, dsp.butter_q(k, 4), 1.0, SR), ref)
+    assert got == ref   # bell at glin=1 is exact identity
+
+
+def test_v05_always_tick_stable_no_runaway():
+    # Always-tick bell: a 1 -> 0 -> 1 Resonance sweep through ONE persistent cascade stays
+    # FINITE and BOUNDED (no burst / runaway / NaN). The always-tick keeps the bell state
+    # current, so re-enabling Resonance does not cold-start. (An INSTANT glin step is a
+    # coefficient change and produces a bounded step like any IIR param jump; smoothness of
+    # instant jumps is NOT asserted - Resonance is a continuous automatable control per spec.)
+    sig = [0.5*math.sin(0.05*i) + 0.3*math.sin(0.31*i) for i in range(1500)]
+    out = []
+    fe = dsp.fc_eff(380.0, SR)
+    state = [[0.0, 0.0] for _ in range(9)]  # 8 sections + always-tick bell
+    for i, v0 in enumerate(sig):
+        r = 1.0 if i < 500 else (0.0 if i < 1000 else 1.0)
+        coefs = [dsp.svf_make("hp", fe, dsp.butter_q(k, 8), 1.0, SR) for k in range(8)]
+        coefs.append(dsp.svf_make("bell", fe, 2.0, dsp.res_glin(r), SR))
+        s = v0
+        for st in range(9):
+            c = coefs[st]; ic1, ic2 = state[st]
+            v3 = s - ic2; v1 = c["a1"]*ic1 + c["a2"]*v3; v2 = ic2 + c["a2"]*ic1 + c["a3"]*v3
+            state[st][0] = 2*v1 - ic1; state[st][1] = 2*v2 - ic2
+            s = c["m0"]*s + c["m1"]*v1 + c["m2"]*v2
+        out.append(s)
+    assert all(math.isfinite(v) for v in out)
+    assert max(abs(v) for v in out) < 50.0   # bounded, no runaway (typical peak is ~1-2)
+
+
+def test_v05_stability_across_sr_slope_fc():
+    for sr in (44100.0, 48000.0, 96000.0, 192000.0):
+        sweep = [math.sin(2*math.pi*(30 + i*0.4)*i/sr) for i in range(12000)]
+        for ft in ("hp", "lp"):
+            for fc in (20.0, 20000.0):
+                for n in (1, 4, 8):
+                    o = dsp.hplp_butter_cascade(sweep, ft, fc, 1.0, sr, n)
+                    assert all(math.isfinite(v) for v in o) and max(abs(v) for v in o) < 1000.0
+
+
+def test_v05_type_sanitize():
+    assert [dsp.hplp_type_sanitize(t) for t in (-1, 0, 1, 2, 3, 4, 5)] == [0, 0, 1, 2, 0, 0, 0]
+
+
+def test_v05_fc_eff_clamp():
+    assert dsp.fc_eff(20000.0, 44100.0) == 20000.0        # below nyquist*0.49=21609
+    assert dsp.fc_eff(20000.0, 32000.0) == 32000.0 * 0.49  # clamped on a low-rate session
+
+
+def test_v05_off_and_placement():
+    x = [0.5*math.sin(0.3*i) for i in range(400)]
+    assert dsp.hplp_butter_cascade(x, "hp", 380.0, 1.0, SR, 0) == x   # Off = identity even at r=1
+    mono = [0.5*math.sin(0.25*i) for i in range(400)]
+    Lo, Ro = dsp.process_hplp_butter_stereo(mono, mono, "hp", 200.0, 0.0, SR, 4, "side")
+    assert all(abs(a-b) < 1e-12 for a, b in zip(Lo, mono)) and all(abs(a-b) < 1e-12 for a, b in zip(Ro, mono))
+    L = [0.4*math.sin(0.2*i)+0.1 for i in range(400)]; R = [0.4*math.sin(0.2*i)-0.1 for i in range(400)]
+    Lo, Ro = dsp.process_hplp_butter_stereo(L, R, "hp", 200.0, 0.0, SR, 4, "side")
+    mid_in = [(l+r)*0.5 for l, r in zip(L, R)]; mid_out = [(a+b)*0.5 for a, b in zip(Lo, Ro)]
+    assert all(abs(a-b) < 1e-12 for a, b in zip(mid_out, mid_in))
