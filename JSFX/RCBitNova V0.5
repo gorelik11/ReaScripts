@@ -172,12 +172,12 @@ i = 0; loop(N_BANDS * 2, mbeh[i] = 1; i += 1;);
 egh = hc + N_BANDS;          // Mode-A hard env per (band,channel): 2/band
 i = 0; loop(N_BANDS * 2, egh[i] = 1; i += 1;);
 
-// ===== V0.4 HP/LP section memory + coeffs =====
-// hplp_state: 2 filters * 8 sections * 2 channels * 2 integrators = 64 slots.
-//   per filter base = fi*32; per section k, chA = base+k*4 (+0 ic1,+1 ic2),
-//   chB = base+k*4+2 (+0 ic1,+1 ic2).
-// hplp_cf: 2 filters * 2 coeff-sets(first/rest) * 7 = 28 slots.
-//   per filter base = fi*14; set0 (user Q) = base+0..6; set1 (Butterworth) = base+7..13.
+// ===== V0.5 HP/LP section memory + coeffs =====
+// hplp_state: 2 filters * (8 Butterworth sections + 1 resonance bell) * 2 channels
+//   * 2 integrators = 72 slots. Per filter base = fi*36; stage s (0..7 sections,
+//   8 = bell), chA = base+s*4 (+0 ic1,+1 ic2), chB = base+s*4+2 (bell state at 32..35).
+// hplp_cf: 2 filters * (8 section sets + 1 bell set) * 7 = 126 slots. Per filter base
+//   = fi*63; section k set = base+k*7 (k 0..7); bell set = base+56.
 hplp_state = egh + N_BANDS * 2;   // V0.5: 2 filters * (8 sec + 1 bell) * 2 ch * 2 = 72
 memset(hplp_state, 0, 72);
 hplp_cf = hplp_state + 72;         // V0.5: 2 filters * (8 sec + 1 bell) * 7 = 126
@@ -206,7 +206,8 @@ function svf_set(base, ftype, fc, q, glin)
   cf[base+4] = m0; cf[base+5] = m1; cf[base+6] = m2;
 );
 
-// V0.4: write HP/LP section coeffs (no gain). ftype 3=HP, 4=LP. dst[0..6].
+// write one HP/LP cascade-section's coeffs (no gain). ftype 3=HP, 4=LP. dst[0..6].
+// V0.5: called per staggered-Butterworth section with q = butter_q(k, N).
 function hplp_coef(dst, ftype, fc, q) local(g, k, a1, a2, a3) (
   g = tan($pi * fc / srate); k = 1 / q;
   a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
