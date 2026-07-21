@@ -1005,3 +1005,57 @@ def process_hplp_butter_stereo(Lin, Rin, ftype, freq, resonance, sr, nsec, place
     else:  # side
         S = run(S)
     return ([m + s for m, s in zip(M, S)], [m - s for m, s in zip(M, S)])
+
+
+# ===================== V0.6: linear-phase HP/LP kernel engine =====================
+# Pure stdlib. Hand-written radix-2 FFT (no numpy). All math verified numerically
+# against the digital V0.5 magnitude before this file was written.
+
+def lp_fft(a, inverse=False):
+    """In-place iterative radix-2 FFT. Natural order in and out. len must be 2^k.
+    Unnormalized forward; inverse divides by n (so ifft(fft(x)) == x)."""
+    n = len(a)
+    assert n & (n - 1) == 0, "length must be a power of two"
+    a = list(a)
+    j = 0
+    for i in range(1, n):
+        bit = n >> 1
+        while j & bit:
+            j ^= bit; bit >>= 1
+        j ^= bit
+        if i < j:
+            a[i], a[j] = a[j], a[i]
+    length = 2
+    while length <= n:
+        ang = (2j if inverse else -2j) * math.pi / length
+        wlen = cmath.exp(ang)
+        for i in range(0, n, length):
+            w = 1 + 0j; half = length >> 1
+            for k in range(half):
+                u = a[i + k]; v = a[i + k + half] * w
+                a[i + k] = u + v
+                a[i + k + half] = u - v
+                w *= wlen
+        length <<= 1
+    if inverse:
+        a = [x / n for x in a]
+    return a
+
+
+def lp_ifft(a):
+    return lp_fft(a, inverse=True)
+
+
+def _kaiser_i0(x):
+    """Modified Bessel I0 via series (matches Arthur's kaiser_i0, 40 terms)."""
+    s = 1.0; t = 1.0; k = 1; xh = x * 0.5
+    while k < 40:
+        t *= (xh / k) * (xh / k); s += t; k += 1
+    return s
+
+
+def kaiser_window(N, beta):
+    """Length-N Kaiser window, symmetric about (N-1)/2 (same as Arthur's win_k)."""
+    iv = 1.0 / _kaiser_i0(beta); nf = N - 1
+    return [_kaiser_i0(beta * math.sqrt(max(1.0 - (2.0 * i / nf - 1.0) ** 2, 0.0))) * iv
+            for i in range(N)]

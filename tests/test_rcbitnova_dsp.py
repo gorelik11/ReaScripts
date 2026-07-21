@@ -1,4 +1,5 @@
 import math
+import cmath
 import pytest
 from tools import rcbitnova_dsp as dsp
 
@@ -1029,3 +1030,26 @@ def test_jsfx_v05_consolidation_and_resonance():
     assert "hplp_run(0," in text and "hplp_run(1," in text
     # Type sanitize guard present
     assert "> 2 || " in text or "ty > 2" in text
+
+
+# ---- Phase V0.6: Hand-written FFT/IFFT + Kaiser window (oracle) ----
+
+def test_lp_fft_ifft_roundtrip():
+    x = [complex(math.sin(i), 0.3 * math.cos(2 * i)) for i in range(64)]
+    rt = dsp.lp_ifft(dsp.lp_fft(x))
+    assert max(abs(a - b) for a, b in zip(x, rt)) < 1e-12
+
+
+def test_lp_fft_matches_naive_dft_small():
+    x = [complex(i % 3 - 1, 0) for i in range(8)]
+    got = dsp.lp_fft(x)
+    for k in range(8):
+        ref = sum(x[n] * cmath.exp(-2j * math.pi * k * n / 8) for n in range(8))
+        assert abs(got[k] - ref) < 1e-12
+
+
+def test_kaiser_window_symmetric_and_peaks_center():
+    w = dsp.kaiser_window(256, 14.0)
+    assert w[0] < 1e-3 and w[-1] < 1e-3
+    assert w[128] == pytest.approx(1.0, abs=2e-4)
+    assert all(abs(w[i] - w[255 - i]) < 1e-12 for i in range(256))
