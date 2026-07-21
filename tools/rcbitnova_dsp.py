@@ -1144,3 +1144,74 @@ def partitioned_convolve(sig, ker, P):
                 pend.append(y[P + i].real)          # valid overlap-save region = last P
             fdl_wr = (fdl_wr + 1) % KMAX
     return out
+
+
+# ---- Task 6: Page-safe memory layout helper ----
+
+_LP_PAGE = 65536
+
+
+def _round_up(x, m):
+    """Round x up to the next multiple of m."""
+    return ((x + m - 1) // m) * m
+
+
+def lp_engine_buffers(BD, P):
+    """One engine's buffers as (name, size_words, fft_touched). Sizes per spec §11.
+    Complex buffers count 2 words/item. B=2P, KMAX=BD//P, PB2=B*2."""
+    B = 2 * P; KMAX = BD // P; PB2 = B * 2
+    return [
+        ("desbuf", BD * 2, True),          # complex kernel spectrum, FFT'd
+        ("ktime",  BD,     False),         # real kernel (scratch)
+        ("win_k",  BD,     False),
+        ("Hspec",  KMAX * PB2, True),      # partitions, each span PB2 convolve_c'd
+        ("fdlA",   KMAX * PB2, True),
+        ("fdlB",   KMAX * PB2, True),
+        ("fftw",   PB2, True),
+        ("yacc",   PB2, True),
+        ("tmpc",   PB2, True),
+        ("inA",    B,   False),
+        ("inB",    B,   False),
+        ("outA",   16384, False),
+        ("outB",   16384, False),
+        ("dryA",   16384, False),
+        ("dryB",   16384, False),
+    ]
+
+
+def page_layout(base, BD, P):
+    """Assign offsets so every FFT-touched buffer's whole span lies in one 65536 page.
+    Strategy: place each FFT-touched block on a boundary that is a multiple of its own
+    span (span <= 16384 <= page, so alignment guarantees no page crossing); pack non-FFT
+    ring buffers afterwards. Partitioned buffers (Hspec/fdlA/fdlB) are page-safe per
+    PARTITION: each partition span is PB2; align the block base to PB2 and PB2 divides the
+    page, so every partition stays in-page."""
+    B = 2 * P; PB2 = B * 2
+    layout = {}
+    ptr = base
+    for name, size, touched in lp_engine_buffers(BD, P):
+        if touched:
+            unit = PB2 if name in ("Hspec", "fdlA", "fdlB") else size
+            # align so the (sub)block never straddles a page; unit divides the page
+            ptr = _round_up(ptr, min(unit, _LP_PAGE))
+        layout[name] = ptr
+        ptr += size
+    layout["__top"] = ptr
+    return layout
+
+
+def page_layout_ok(layout, BD, P):
+    """Assert every FFT-touched span [start, start+size) lies within a single 65536 page."""
+    B = 2 * P; PB2 = B * 2; KMAX = BD // P
+    for name, size, touched in lp_engine_buffers(BD, P):
+        if not touched:
+            continue
+        start = layout[name]
+        if name in ("Hspec", "fdlA", "fdlB"):
+            spans = [(start + kp * PB2, PB2) for kp in range(KMAX)]   # per-partition
+        else:
+            spans = [(start, size)]
+        for s, sz in spans:
+            if s // _LP_PAGE != (s + sz - 1) // _LP_PAGE:
+                return False
+    return True

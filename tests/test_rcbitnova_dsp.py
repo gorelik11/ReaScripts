@@ -1152,3 +1152,31 @@ def test_partitioned_equals_direct():
     P = 16   # partitioned lags direct by the hop P
     err = max(abs(out[n + P] - ref[n]) for n in range(64, 160))
     assert err < 1e-12
+
+
+# ---- Task 6: Page-safe memory layout helper ----
+
+PAGE = 65536
+
+
+def test_lp_engine_buffer_inventory():
+    bufs = dsp.lp_engine_buffers(8192, 2048)
+    names = {n for n, _, _ in bufs}
+    assert {"desbuf", "Hspec", "fdlA", "fdlB", "fftw", "yacc", "tmpc"} <= names
+    # FFT-touched buffers are flagged
+    touched = {n for n, _, t in bufs if t}
+    assert {"desbuf", "Hspec", "fftw", "yacc", "tmpc"} <= touched
+
+
+def test_page_layout_keeps_every_fft_span_in_one_page():
+    for base in [0, 12345, 200000, 458752]:      # incl. the tight ~7-page start
+        layout = dsp.page_layout(base, 8192, 2048)
+        assert dsp.page_layout_ok(layout, 8192, 2048)
+
+
+def test_two_engines_layouts_are_disjoint_and_page_safe():
+    l1 = dsp.page_layout(0, 8192, 2048)
+    l2 = dsp.page_layout(l1["__top"], 8192, 2048)
+    assert dsp.page_layout_ok(l1, 8192, 2048)
+    assert dsp.page_layout_ok(l2, 8192, 2048)
+    assert l2["__top"] > l1["__top"]             # second engine strictly above the first
