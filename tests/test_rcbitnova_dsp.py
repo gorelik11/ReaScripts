@@ -1083,3 +1083,33 @@ def test_kernel_symmetric_about_BD_over_2():
     asym = max(abs(k[half + d] - k[half - d]) for d in range(1, half)) / kmax
     assert asym < 1e-6           # window-centering half-sample; NOT exact
     assert dsp.kernel_group_delay(BD) == 4096
+
+
+# ---- Phase V0.6: Magnitude-parity acceptance tests (oracle verification) ----
+
+def _kmag(k, f, sr):
+    """|DTFT(kernel)| at frequency f."""
+    w = 2.0 * math.pi * f / sr
+    return abs(sum(kn * cmath.exp(-1j * w * n) for n, kn in enumerate(k) if kn != 0.0))
+
+def test_linear_passband_matches_v05_within_0p3_dB():
+    sr = 48000.0; BD = 8192
+    k = dsp.build_lp_kernel(BD, "hp", 120.0, 0.6, 4, 14.0, sr)      # 48 dB/oct + res
+    for f in [300, 500, 1000, 4000, 12000, 20000]:                  # passband (>= 2*fc)
+        got = 20 * math.log10(_kmag(k, f, sr) + 1e-30)
+        ana = 20 * math.log10(dsp.hplp_digital_mag("hp", 120.0, 0.6, 4, f, sr))
+        assert abs(got - ana) < 0.3
+
+def test_linear_stopband_is_attenuated():
+    sr = 48000.0; BD = 8192
+    k = dsp.build_lp_kernel(BD, "hp", 120.0, 0.6, 4, 14.0, sr)
+    for f in [20, 30, 40, 55]:                                      # >= ~1 octave below fc
+        assert 20 * math.log10(_kmag(k, f, sr) + 1e-30) < -40.0
+
+def test_lp_kernel_passband_matches_v05():
+    sr = 48000.0; BD = 8192
+    k = dsp.build_lp_kernel(BD, "lp", 8000.0, 0.0, 4, 14.0, sr)     # LP, no resonance
+    for f in [100, 500, 2000, 5000]:                               # passband (<= fc/2 region)
+        got = 20 * math.log10(_kmag(k, f, sr) + 1e-30)
+        ana = 20 * math.log10(dsp.hplp_digital_mag("lp", 8000.0, 0.0, 4, f, sr))
+        assert abs(got - ana) < 0.3
