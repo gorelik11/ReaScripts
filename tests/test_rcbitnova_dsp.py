@@ -1053,3 +1053,33 @@ def test_kaiser_window_symmetric_and_peaks_center():
     assert w[0] < 1e-3 and w[-1] < 1e-3
     assert w[128] == pytest.approx(1.0, abs=2e-4)
     assert all(abs(w[i] - w[255 - i]) < 1e-12 for i in range(256))
+
+
+# ---- Phase V0.6: Kernel construction + symmetry/delay contract (oracle) ----
+
+def test_hplp_digital_mag_matches_v05_min_phase():
+    # digital_mag must equal the realized magnitude of the actual V0.5 cascade+bell
+    sr = 48000.0
+    for f in [80, 250, 1000, 8000, 18000]:
+        # reconstruct the V0.5 realized magnitude independently
+        fe = dsp.fc_eff(120.0, sr); m = 1.0
+        for k in range(4):
+            m *= dsp.svf_response(dsp.svf_make("hp", fe, dsp.butter_q(k, 4), 1.0, sr), f, sr)
+        m *= dsp.svf_response(dsp.svf_make("bell", fe, 2.0, dsp.res_glin(0.6), sr), f, sr)
+        assert dsp.hplp_digital_mag("hp", 120.0, 0.6, 4, f, sr) == pytest.approx(m, rel=1e-12)
+
+def test_identity_kernel_is_delta_at_BD_over_2():
+    BD = 8192
+    k = dsp.build_lp_kernel(BD, "hp", 100.0, 0.0, 0, 14.0, 48000.0)  # nsec=0 -> mag==1
+    peak = max(range(BD), key=lambda i: abs(k[i]))
+    other = max(abs(k[i]) for i in range(BD) if abs(i - BD // 2) > 4)
+    assert peak == BD // 2
+    assert other < 1e-9
+
+def test_kernel_symmetric_about_BD_over_2():
+    BD = 8192; half = BD // 2
+    k = dsp.build_lp_kernel(BD, "hp", 120.0, 0.6, 4, 14.0, 48000.0)
+    kmax = max(abs(v) for v in k)
+    asym = max(abs(k[half + d] - k[half - d]) for d in range(1, half)) / kmax
+    assert asym < 1e-6           # window-centering half-sample; NOT exact
+    assert dsp.kernel_group_delay(BD) == 4096

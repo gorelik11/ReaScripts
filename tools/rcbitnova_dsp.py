@@ -1059,3 +1059,38 @@ def kaiser_window(N, beta):
     iv = 1.0 / _kaiser_i0(beta); nf = N - 1
     return [_kaiser_i0(beta * math.sqrt(max(1.0 - (2.0 * i / nf - 1.0) ** 2, 0.0))) * iv
             for i in range(N)]
+
+
+def hplp_digital_mag(ftype, freq, resonance, nsec, f, sr):
+    """Exact realized |H| of the V0.5 min-phase HP/LP filter (nsec staggered-Butterworth
+    2nd-order sections + one always-tick resonance bell, Q=2 -> effective 2*sqrt(glin))
+    at frequency f. nsec==0 -> 1.0 (Off/identity). Same coefficients as JSFX hplp_coef/
+    hplp_bell, so kernel magnitude == min-phase magnitude by construction."""
+    if nsec == 0:
+        return 1.0
+    fe = fc_eff(freq, sr)
+    m = 1.0
+    for k in range(nsec):
+        m *= svf_response(svf_make(ftype, fe, butter_q(k, nsec), 1.0, sr), f, sr)
+    m *= svf_response(svf_make("bell", fe, 2.0, res_glin(resonance), sr), f, sr)
+    return m
+
+
+def kernel_group_delay(BD):
+    return BD // 2
+
+
+def build_lp_kernel(BD, ftype, freq, resonance, nsec, beta, sr):
+    """Arthur-style linear-phase FIR: sample the desired magnitude over BD bins (natural
+    order, mirrored above Nyquist) as a real zero-phase spectrum -> ifft -> fftshift by
+    BD/2 -> Kaiser(beta) window. Result is symmetric about index BD/2 (integer group
+    delay BD/2) to within ~1e-6 (window centering)."""
+    spec = [0j] * BD
+    for i in range(BD):
+        kk = i if i <= BD // 2 else BD - i          # mirror above Nyquist
+        f = max(kk * sr / BD, 0.001)
+        spec[i] = complex(hplp_digital_mag(ftype, freq, resonance, nsec, f, sr), 0.0)
+    t = lp_ifft(spec)                               # real, circularly even about 0
+    half = BD // 2
+    win = kaiser_window(BD, beta)
+    return [t[(i + half) % BD].real * win[i] for i in range(BD)]
