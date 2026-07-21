@@ -1184,14 +1184,15 @@ def page_layout(base, BD, P):
     Strategy: place each FFT-touched block on a boundary that is a multiple of its own
     span (span <= 16384 <= page, so alignment guarantees no page crossing); pack non-FFT
     ring buffers afterwards. Partitioned buffers (Hspec/fdlA/fdlB) are page-safe per
-    PARTITION: each partition span is PB2; align the block base to PB2 and PB2 divides the
-    page, so every partition stays in-page."""
+    PARTITION: each partition span is PB2; alignment requires that PB2 divides the page
+    (a precondition holding for RCBitNova's power-of-two engine sizes)."""
     B = 2 * P; PB2 = B * 2
     layout = {}
     ptr = base
     for name, size, touched in lp_engine_buffers(BD, P):
         if touched:
             unit = PB2 if name in ("Hspec", "fdlA", "fdlB") else size
+            assert _LP_PAGE % min(unit, _LP_PAGE) == 0, f"page_layout: alignment unit {unit} must divide page {_LP_PAGE}"
             # align so the (sub)block never straddles a page; unit divides the page
             ptr = _round_up(ptr, min(unit, _LP_PAGE))
         layout[name] = ptr
