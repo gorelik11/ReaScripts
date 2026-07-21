@@ -1094,3 +1094,21 @@ def build_lp_kernel(BD, ftype, freq, resonance, nsec, beta, sr):
     half = BD // 2
     win = kaiser_window(BD, beta)
     return [t[(i + half) % BD].real * win[i] for i in range(BD)]
+
+
+def fir_brick_kernel(BD, ftype, freq, beta, sr):
+    """Linear-phase FIR Brick: magnitude step at fc (no resonance). HP: f>=fc -> 1 else 0;
+    LP: f<=fc -> 1 else 0. Finite windowed FIR -> finite transition/ringing (NOT infinite
+    slope); the 'FIR Brick' label is deliberately distinct from Mode-B 'Brick' (hard bit
+    ceiling)."""
+    fe = fc_eff(freq, sr)
+    spec = [0j] * BD
+    for i in range(BD):
+        kk = i if i <= BD // 2 else BD - i
+        f = max(kk * sr / BD, 0.001)
+        m = (1.0 if f >= fe else 0.0) if ftype == "hp" else (1.0 if f <= fe else 0.0)
+        spec[i] = complex(m, 0.0)
+    t = lp_ifft(spec)
+    half = BD // 2
+    win = kaiser_window(BD, beta)
+    return [t[(i + half) % BD].real * win[i] for i in range(BD)]

@@ -1113,3 +1113,18 @@ def test_lp_kernel_passband_matches_v05():
         got = 20 * math.log10(_kmag(k, f, sr) + 1e-30)
         ana = 20 * math.log10(dsp.hplp_digital_mag("lp", 8000.0, 0.0, 4, f, sr))
         assert abs(got - ana) < 0.3
+
+def test_fir_brick_symmetric_and_steep():
+    sr = 48000.0; BD = 8192; half = BD // 2
+    k = dsp.fir_brick_kernel(BD, "hp", 500.0, 14.0, sr)
+    kmax = max(abs(v) for v in k)
+    assert max(abs(k[half + d] - k[half - d]) for d in range(1, half)) / kmax < 1e-6
+    # passband well above fc ~ unity, deep stopband an octave below
+    assert 20 * math.log10(_kmag(k, 4000.0, sr) + 1e-30) > -0.5
+    assert 20 * math.log10(_kmag(k, 125.0, sr) + 1e-30) < -60.0   # 2 octaves below, beta=14
+
+def test_fir_brick_lp_passes_lows():
+    sr = 48000.0; BD = 8192
+    k = dsp.fir_brick_kernel(BD, "lp", 2000.0, 14.0, sr)
+    assert 20 * math.log10(_kmag(k, 200.0, sr) + 1e-30) > -0.5
+    assert 20 * math.log10(_kmag(k, 8000.0, sr) + 1e-30) < -60.0
