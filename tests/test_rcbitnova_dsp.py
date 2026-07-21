@@ -1128,3 +1128,27 @@ def test_fir_brick_lp_passes_lows():
     k = dsp.fir_brick_kernel(BD, "lp", 2000.0, 14.0, sr)
     assert 20 * math.log10(_kmag(k, 200.0, sr) + 1e-30) > -0.5
     assert 20 * math.log10(_kmag(k, 8000.0, sr) + 1e-30) < -60.0
+
+
+# ---- Phase V0.6: Partitioned overlap-save FFT convolution (oracle) ----
+
+def _direct_conv(sig, ker):
+    return [sum(sig[n - m] * ker[m] for m in range(len(ker)) if 0 <= n - m < len(sig))
+            for n in range(len(sig))]
+
+
+def test_partitioned_identity_latency_is_P():
+    sig = [float(i) for i in range(80)]
+    ker = [0.0] * 16; ker[0] = 1.0
+    out = dsp.partitioned_convolve(sig, ker, 16)
+    assert all(out[16 + i] == pytest.approx(sig[i], abs=1e-12) for i in range(32))
+
+
+def test_partitioned_equals_direct():
+    sig = [math.sin(0.3 * i) + 0.5 * math.sin(0.02 * i) for i in range(240)]
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]   # 4 partitions of P=16
+    ref = _direct_conv(sig, ker)
+    out = dsp.partitioned_convolve(sig, ker, 16)
+    P = 16   # partitioned lags direct by the hop P
+    err = max(abs(out[n + P] - ref[n]) for n in range(64, 160))
+    assert err < 1e-12

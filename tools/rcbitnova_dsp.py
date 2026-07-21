@@ -1112,3 +1112,35 @@ def fir_brick_kernel(BD, ftype, freq, beta, sr):
     half = BD // 2
     win = kaiser_window(BD, beta)
     return [t[(i + half) % BD].real * win[i] for i in range(BD)]
+
+
+def partitioned_convolve(sig, ker, P):
+    """Uniform-partitioned overlap-save FFT convolution (Arthur's runtime scheme):
+    B=2P, KMAX=len(ker)//P; each partition is P taps zero-padded to B; a frequency-domain
+    delay line (FDL) accumulates delayed partitions. Output lags a direct linear
+    convolution by exactly P samples. len(ker) must be a multiple of P and P a power of 2."""
+    B = 2 * P
+    KMAX = len(ker) // P
+    Hspec = [lp_fft([complex(ker[kp * P + i], 0) if i < P else 0j for i in range(B)])
+             for kp in range(KMAX)]
+    fdl = [[0j] * B for _ in range(KMAX)]
+    fdl_wr = 0
+    hist = [0.0] * B; hp = 0; cnt = 0
+    out = []; pend = []
+    for n in range(len(sig)):
+        hist[hp] = sig[n]; hp = (hp + 1) % B; cnt += 1
+        out.append(pend.pop(0) if pend else 0.0)
+        if cnt >= P:
+            cnt = 0
+            blk = [complex(hist[(hp + i) % B], 0) for i in range(B)]   # oldest..newest
+            X = lp_fft(blk); fdl[fdl_wr] = X
+            yacc = [0j] * B
+            for kp in range(KMAX):
+                Fd = fdl[(fdl_wr - kp) % KMAX]; H = Hspec[kp]
+                for i in range(B):
+                    yacc[i] += Fd[i] * H[i]
+            y = lp_ifft(yacc)
+            for i in range(P):
+                pend.append(y[P + i].real)          # valid overlap-save region = last P
+            fdl_wr = (fdl_wr + 1) % KMAX
+    return out
