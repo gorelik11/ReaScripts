@@ -1,6 +1,8 @@
 # RCBitNova V0.6 — Linear-Phase HP/LP + FIR Brick — Design Spec
 
-**Date:** 2026-07-21 (rev 2 — folds in Fable weakness review `…-weaknesses.md`)
+**Date:** 2026-07-21 (rev 3 — rev 2 folded Codex review `…-weaknesses.md`; rev 3 folds Fable
+review `…-weaknesses-fable.md`: Brick-in-Min mapping fix, exact bell Q=2√glin, Phase-toggle
+crossfade, pinned page layout, Phase slider #, Mode-B sample-index contract)
 **Branch:** `rcbitnova` (worktree `~/projects/reascripts/.claude/worktrees/rcbitnova/`)
 **Base:** V0.5 (frozen, tag `rcbitnova-v0.5`, commit `5a6d985`) — new file `JSFX/RCBitNova V0.6`
 **Reference engine:** `~/Library/Application Support/REAPER/Effects/linear_artur_slope_7.jsfx`
@@ -50,9 +52,18 @@ dynamics.
 
 ### 3.1 Phase-mode switch (global)
 - New **global** slider `Phase: Min / Linear` for the entire HP/LP section. Fresh bank.
-- `Phase = Min` → V0.5 path (`hplp_run`), byte-identical to V0.5.
+- `Phase = Min` → V0.5 path (`hplp_run`), byte-identical to V0.5 (except the intentional
+  constant-latency delay of §9).
 - `Phase = Linear` → `hplp_run` bypassed; HP and LP each run an independent
   partitioned-convolution engine on their own Placement domain.
+
+**Phase toggle is click-safe (resolves the residual gap in the constant-PDC contract).**
+Constant MAXLAT removes the *latency* jump but not audio-content continuity across the
+Min↔Linear code-path swap. Because the linear engines are kept **warm** (§8) and **both** the
+Min path and the Linear path are delayed to the same MAXLAT origin (§9), their outputs are
+sample-aligned. On a Phase change, do a short **output crossfade** (≈ one partition `P`)
+between the Min-path buffer and the Linear-path buffer — the same click-safe treatment
+Freq/Slope/Placement get. No host latency renegotiation occurs (PDC is constant).
 
 ### 3.2 Slope enum extension
 HP (`slider131`) / LP (`slider135`) enum grows: `Off / 12 / 24 / 36 / 48 / 96 / FIR Brick`
@@ -60,6 +71,13 @@ HP (`slider131`) / LP (`slider135`) enum grows: `Off / 12 / 24 / 36 / 48 / 96 / 
 (Brick is a Linear-only concept; stock enum sliders cannot grey out without custom UI). The
 label is `FIR Brick`, deliberately distinct from Mode-B "Brick" (a hard bit ceiling) to
 avoid confusing a finite-FIR slope with a literal-guarantee limiter.
+
+**MANDATORY mapping fix (else index 6 mis-runs in Min):** V0.5 computes
+`hp_nsec = slider131 == 5 ? 8 : slider131` (line 342) and the LP analogue (356). Extending
+the enum to index 6 without updating this makes Min mode run a **6-section (72 dB/oct)**
+cascade instead of Off. Both mappings MUST become, in Min mode:
+`nsec = slider == 6 ? 0 : slider == 5 ? 8 : slider` (Brick → Off = 0 sections). In Linear
+mode index 6 selects the FIR Brick kernel (magnitude step), not a min-phase cascade.
 
 ### 3.3 Two independent serial engines (chosen tradeoff — NOT a requirement)
 Independent HP/LP Placement means the two filters do not share one scalar transfer function
@@ -123,8 +141,10 @@ mag(f) = Π_k svf_response(section_k, f) · svf_response(resonance_bell, f)
 ```
 
 - Sections use `butter_q(k, N) = 1/(2·cos(pi·(2k+1)/(4N)))` (same as V0.5), HP or LP shape.
-- Resonance bell: fixed `Q=2`, `glin = 1 + Resonance·5` (linear), identical to `hplp_bell`;
-  `glin=1` → identity.
+- Resonance bell: `glin = 1 + Resonance·5` (linear), `A = sqrt(glin)`, and the SVF `k`-term
+  is `bk = 1/(2A)` → **effective `Q = 2A = 2·sqrt(glin)`, NOT a fixed 2** (Q equals 2 only at
+  `glin=1`; it rises with Resonance). This is exactly `hplp_bell` (`bk=1/(2A)`,
+  `m1=bk·(A²−1)`); the oracle must use this coupled `bk`, not a constant Q. `glin=1` → identity.
 - `fc_eff = min(freq, srate·0.49)` (same Nyquist guard).
 - **FIR Brick** → magnitude step (HP `f≥fc?1:0`, LP `f≤fc?1:0`), no resonance.
 
@@ -161,6 +181,29 @@ delayed-dry lane / decode for all five placements:
 
 Routing tests (§10): impulse and random-signal prove the untouched component nulls after
 compensating the exact latency (no channel/domain leakage).
+
+### 7.1 Mode-B integration — sample-index contract (resolves Codex P1-8)
+
+In Linear mode the downstream signal is already delayed by the HP/LP convolution, so Mode-B
+must **not** add that latency again inside its own `bus_dry`. Let `n` index the original input
+stream, `Dhp`/`Dlp` be the active linear-engine delays (each `BD/2+P`, or 0 if that filter is
+Off/Min), `Dlin = Dhp + Dlp` (series), and `Lk` the global Mode-B lookahead. Per-sample:
+
+```
+x[n]              = original input sample
+hp_out[n]         = LinearHP( x[n] )                    // delayed by Dhp
+lp_out[n]         = LinearLP( hp_out[n] )               // total delay Dlin
+static/ModeA[n]   = bells/shelves on lp_out[n]          // no added delay
+modeB_detect[n]   = level of static/ModeA[n]            // detector on the CURRENT post-HP/LP sample (un-delayed RELATIVE to that stream)
+bus_dry write[n]  = static/ModeA[n];  read = bus_dry[n − Lk]   // delay ONLY Lk, never Dlin again
+correction[n]     = clamp/gain from modeB_detect[n−Lk] applied to the Lk-delayed bus
+out[n]            = correction[n]
+reported PDC      = MAXLAT   (constant; MAXLAT already accounts for max Dlin + Lk — §9)
+```
+
+The invariant: linear latency `Dlin` is applied **once** (by the engines); Mode-B adds only
+`Lk` internally; the externally reported figure is the constant MAXLAT. Impulse tests (§10)
+with one/two linear filters × {no Mode-B, Mode-B} catch any double-delay or off-by-one.
 
 ## 8. Kernel-rebuild & Off-engine policy (resolves P1 #8, #9)
 
@@ -227,17 +270,31 @@ Method unchanged: oracle green FIRST → line-by-line transcription into `JSFX/R
 ## 11. Memory — 65,536-page-safe layout (resolves P0-1)
 
 Contiguity after `hplp_cf` guarantees disjointness but **not** JSFX FFT page-safety: every
-`fft`/`ifft`/`convolve_c` span must stay inside one 65,536-item page. The plan pins a
-**page-aware layout** (not just a disjointness test): for every actual FFT/convolution call
-assert `floor(start/65536) == floor((start+count-1)/65536)`, covering all per-lane buffers
-(`fdlA/fdlB`, `inA/inB`, `outA/outB`, `dryA/dryB`), `Hspec` partitions, `fftw/yacc/tmpc`,
-padding, the final high-water mark, the `freembuf` boundary, and a `__memtop()` guard. Two
-engines ⇒ do this for both. Ref: <https://www.reaper.fm/sdk/js/advfunc.php>.
+`fft`/`ifft`/`convolve_c` span must stay inside one 65,536-item page. (There is **no** hard
+total-page cap — JSFX local memory is large; the constraint is strictly per-call, so padding
+to align is fine and does not "overflow a budget.") But the footprint is tight enough that
+placement is not automatic: one engine's Arthur-style allocation is ≈`229,736` words
+(`desbuf 16384 + ktime 8192 + win_k 8192 + Hspec 32768 + fdlA 32768 + fdlB 32768 + fftw 8192
++ yacc 8192 + tmpc 8192 + inA 4096 + inB 4096 + outA 16384 + outB 16384 + dryA 16384 +
+dryB 16384`; drop `real_db` display buffer), ×2 engines ≈`459,472` words ≈ 7 pages.
+
+**This spec pins the layout rule (not deferred to the plan):** every buffer that is passed to
+`fft`/`ifft`/`fft_permute`/`convolve_c` — `desbuf`(BD), each `Hspec` partition (span `B*2`),
+each `fdl` partition (span `B*2`), `fftw`/`yacc`/`tmpc` (span `B*2`) — must be placed so its
+whole span lies within a single page. Because each such span is ≤ `16384` and pages are
+`65536`, aligning each FFT-touched block's **base** to a multiple of its own span (or to a
+page start) is sufficient; pure ring buffers never touched by an FFT call (`inA/inB`,
+`outA/outB`, `dryA/dryB`) have no page constraint and fill the gaps. The plan carries the
+concrete base-offset table + a per-call assertion
+`floor(start/65536) == floor((start+count-1)/65536)` for both engines, plus the `freembuf`
+boundary and a `__memtop()` guard. Ref: <https://www.reaper.fm/sdk/js/advfunc.php>.
 
 ## 12. Sliders / memory / UI / pinned open items (resolves P2 #2)
 
-- **Phase slider** — global, fresh bank; default `Min` (0). Automatable, but Phase/Slope are
-  **topology changes** (not click-continuous); latency is constant so no host renegotiation.
+- **Phase slider** — `slider140:0<0,1,1{Min,Linear}>Phase` (global, default `Min`). Fresh
+  bank past the HP/LP block (131–138), leaving 139 as a gap per the banked-numbering
+  convention. Automatable; Phase/Slope changes are click-safe via the §3.1/§8 crossfade, and
+  latency is constant so there is no host renegotiation.
 - **Slope enum** HP/LP: add `FIR Brick` (index 6), range 0–6. Brick-in-Min = Off.
 - **beta** — fixed `14` (no slider). Deterministic Min/Linear parity.
 - **Freq / Resonance** — continuous, automatable; changes coalesced with the dual-kernel
