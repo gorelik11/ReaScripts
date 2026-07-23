@@ -274,6 +274,139 @@ function hplp_run(fi, nsec, pl)
             ( spl0 = mid + chA; spl1 = mid - chA; );
 );
 
+// ============ V0.6 linear-phase HP/LP: partitioned-convolution engines ============
+// Two independent engines (0=HP, 1=LP), Arthur-style partitioned overlap-save
+// (P=2048, B=4096, BD=8192, KMAX=4). Kernel magnitude = FFT of the ACTUAL min-phase
+// cascade's impulse response (reuses hplp_coef/hplp_bell) -> Linear magnitude == Min
+// magnitude by construction. Zero-phase kernel -> integer group delay BD/2; +P from the
+// runtime hop -> 6144 samples/engine. Page-safe layout (every FFT/convolve span within
+// one 65536 page); offsets from tools page_layout. Task 8 = Both placement only.
+lpP = 2048; lpB = 4096; lpBD = 8192; lpKMAX = 4; lpPB2 = lpB * 2;
+
+// modified Bessel I0 (matches Arthur's kaiser_i0 / Python _kaiser_i0, 40 terms)
+function lp_i0(x) local(s, t, kk, xh) (
+  s = 1; t = 1; kk = 1; xh = x * 0.5;
+  while (kk < 40) ( t *= (xh / kk) * (xh / kk); s += t; kk += 1; );
+  s;
+);
+
+// Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
+// brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
+function lpk_build(eng, ftype, freq, res, nsec, brick)
+  local(eb, desbuf, ktime, hspec, fftw, fe, i, kk, n, s, st, c, a1, a2, a3, m0, m1, m2,
+        ic1, ic2, v1, v2, v3, f, m, re, im, src, half, inv, k, base) (
+  eb = lp_base + eng * 229376;
+  desbuf = eb + 0; ktime = eb + 16384; hspec = eb + 32768; fftw = eb + 131072;
+  fe = min(freq, srate * 0.49);
+  brick ? (
+    i = 0; loop(lpBD,
+      kk = i <= lpBD * 0.5 ? i : lpBD - i; f = max(kk * srate / lpBD, 0.001);
+      m = ftype == 3 ? (f >= fe ? 1 : 0) : (f <= fe ? 1 : 0);
+      desbuf[i*2] = m; desbuf[i*2+1] = 0; i += 1;
+    );
+  ) : nsec <= 0 ? (
+    i = 0; loop(lpBD, desbuf[i*2] = 1; desbuf[i*2+1] = 0; i += 1;);
+  ) : (
+    // min-phase impulse response -> FFT -> magnitude (exact digital, reuses V0.5 coeffs)
+    kk = 0; loop(nsec, hplp_coef(lp_kc + kk*7, ftype, fe, butter_q(kk, nsec)); kk += 1;);
+    hplp_bell(lp_kc + nsec*7, fe, 1 + res * 5);
+    memset(lp_ks, 0, (nsec + 1) * 2);
+    n = 0; loop(lpBD,
+      s = n == 0 ? 1 : 0;
+      st = 0; loop(nsec + 1,
+        c = lp_kc + st*7; a1 = c[0]; a2 = c[1]; a3 = c[2]; m0 = c[4]; m1 = c[5]; m2 = c[6];
+        ic1 = lp_ks[st*2]; ic2 = lp_ks[st*2+1];
+        v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        lp_ks[st*2] = 2*v1 - ic1; lp_ks[st*2+1] = 2*v2 - ic2;
+        s = m0*s + m1*v1 + m2*v2; st += 1;
+      );
+      desbuf[n*2] = s; desbuf[n*2+1] = 0; n += 1;
+    );
+    fft(desbuf, lpBD); fft_permute(desbuf, lpBD);
+    i = 0; loop(lpBD, re = desbuf[i*2]; im = desbuf[i*2+1];
+      desbuf[i*2] = sqrt(re*re + im*im); desbuf[i*2+1] = 0; i += 1;);
+  );
+  // zero-phase magnitude -> time -> fftshift(BD/2) -> Kaiser window -> partition into Hspec
+  fft_ipermute(desbuf, lpBD); ifft(desbuf, lpBD);
+  inv = 1.0 / lpBD; half = lpBD * 0.5;
+  i = 0; loop(lpBD, src = i + half; src >= lpBD ? src -= lpBD;
+    ktime[i] = desbuf[src*2] * inv * lp_win[i]; i += 1;);
+  k = 0; loop(lpKMAX,
+    base = k * lpPB2;
+    i = 0; loop(lpP, fftw[i*2] = ktime[k*lpP + i]; fftw[i*2+1] = 0; i += 1;);
+    i = lpP; loop(lpB - lpP, fftw[i*2] = 0; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(hspec + base, fftw, lpB * 2);
+    k += 1;
+  );
+);
+
+// Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
+function lpk_run(eng, iA, iB)
+  local(eb, hspec, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
+        ir, cnt, out_rd, out_wr, fdl_wr, i, si, k, idx, ow, sc) (
+  eb = lp_base + eng * 229376;
+  hspec = eb + 32768; fdlA = eb + 65536; fdlB = eb + 98304;
+  fftw = eb + 131072; yacc = eb + 139264; tmpc = eb + 147456;
+  inA = eb + 155648; inB = eb + 159744; outA = eb + 163840; outB = eb + 180224;
+  rt = lp_rt + eng * 8;
+  ir = rt[0]; cnt = rt[1]; out_rd = rt[2]; out_wr = rt[3]; fdl_wr = rt[4];
+  inA[ir] = iA; inB[ir] = iB; ir += 1; ir >= lpB ? ir = 0; cnt += 1;
+  lp_outA = outA[out_rd]; lp_outB = outB[out_rd];
+  out_rd += 1; out_rd >= 16384 ? out_rd = 0;
+  cnt >= lpP ? (
+    cnt = 0; sc = 1.0 / lpB;
+    // lane A
+    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inA[si]; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(fdlA + fdl_wr * lpPB2, fftw, lpB * 2);
+    memset(yacc, 0, lpB * 2);
+    k = 0; loop(lpKMAX,
+      idx = fdl_wr - k; idx < 0 ? idx += lpKMAX;
+      memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+      convolve_c(tmpc, hspec + k * lpPB2, lpB);
+      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+      k += 1;
+    );
+    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outA[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+    // lane B
+    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inB[si]; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(fdlB + fdl_wr * lpPB2, fftw, lpB * 2);
+    memset(yacc, 0, lpB * 2);
+    k = 0; loop(lpKMAX,
+      idx = fdl_wr - k; idx < 0 ? idx += lpKMAX;
+      memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+      convolve_c(tmpc, hspec + k * lpPB2, lpB);
+      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+      k += 1;
+    );
+    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outB[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+    out_wr += lpP; out_wr >= 16384 ? out_wr -= 16384;
+    fdl_wr += 1; fdl_wr >= lpKMAX ? fdl_wr = 0;
+  );
+  rt[0] = ir; rt[1] = cnt; rt[2] = out_rd; rt[3] = out_wr; rt[4] = fdl_wr;
+);
+
+// --- linear-engine memory setup (page-aligned; offsets from tools page_layout) ---
+lp_rt = hplp_cf + 126;         // 16 words runtime state (2 engines * 8), in the free gap
+lp_kc = lp_rt + 16;            // 63 words kernel coeff scratch (<=9 sections * 7)
+lp_ks = lp_kc + 63;            // 18 words kernel state scratch
+lp_base = ceil((lp_ks + 18) / 65536) * 65536;   // page-align the engine block start
+memset(lp_base, 0, 458752);    // two engines * 229376 words
+lp_win = lp_base + 24576;      // shared Kaiser window (engine 0 win_k slot)
+lp_kbeta = 14; lp_iv = 1.0 / lp_i0(lp_kbeta); lp_nf = lpBD - 1;
+i = 0; loop(lpBD,
+  lp_warg = 2.0 * i / lp_nf - 1.0; lp_warg = max(1.0 - lp_warg * lp_warg, 0);
+  lp_win[i] = lp_i0(lp_kbeta * sqrt(lp_warg)) * lp_iv; i += 1;
+);
+// runtime state: ir=0, cnt=0, out_rd=0, out_wr=P, fdl_wr=0 (per engine)
+lp_rt[0] = 0; lp_rt[1] = 0; lp_rt[2] = 0; lp_rt[3] = lpP; lp_rt[4] = 0;
+lp_rt[8] = 0; lp_rt[9] = 0; lp_rt[10] = 0; lp_rt[11] = lpP; lp_rt[12] = 0;
+hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
+
 // Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
 // Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
 // (bit-identical to V0.2). Non-Bell and shelf split fixed Q are untouched.
@@ -336,7 +469,10 @@ loop(N_BANDS,
   (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
   b += 1;
 );
-pdc_delay = (slider1 != 1 && any_b) ? Lk : 0;   // 0 when bypassed (passthrough is zero-latency)
+// Linear phase adds two serial engine latencies (BD/2 + P each). Task 8: rough PDC so the
+// live shape test stays roughly in sync; Task 10 replaces this with constant MAXLAT.
+lin_lat = slider140 == 1 ? 2 * (lpBD / 2 + lpP) : 0;
+pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
 pdc_bot_ch = 0; pdc_top_ch = 2;
 
 // ===== V0.5 HP/LP: staggered-Butterworth sections + resonance bell + reset =====
@@ -360,15 +496,35 @@ lp_nsec > 0 ? (
   memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
 );
 
+// ===== V0.6 linear-phase kernels: rebuild when slope/freq/resonance changes =====
+// (placement is routing, not magnitude -> excluded from the signature)
+hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
+hp_sig != hp_sig_prev ? (
+  hp_sig_prev = hp_sig;
+  lpk_build(0, 3, slider132, slider133,
+    (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
+);
+lp_sig = slider135 + slider136 * 100003 + slider137 * 1009;
+lp_sig != lp_sig_prev ? (
+  lp_sig_prev = lp_sig;
+  lpk_build(1, 4, slider136, slider137,
+    (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
+);
+
 @sample
 
 // Running signal stays L/R. Each band derives its working domain by placement.
 // Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
 slider1 != 1 ? (
   anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
-  // ===== DEDICATED HP/LP FILTER SECTION (min-phase cascade, before bands) =====
-  hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
-  lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
+  // ===== DEDICATED HP/LP FILTER SECTION (Phase Min = cascade / Linear = convolution) =====
+  slider140 == 0 ? (                                    // Min phase (V0.5 path, zero-latency)
+    hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
+    lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
+  ) : (                                                 // Linear phase (Task 8: Both placement)
+    lpk_run(0, spl0, spl1); spl0 = lp_outA; spl1 = lp_outB;   // HP engine
+    lpk_run(1, spl0, spl1); spl0 = lp_outA; spl1 = lp_outB;   // LP engine (series)
+  );
   b = 0;
   loop(N_BANDS,
     slider(10 * (b + 1) + 1) == 1 ? (         // enable
