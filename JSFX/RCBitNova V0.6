@@ -390,6 +390,33 @@ function lpk_run(eng, iA, iB)
   rt[0] = ir; rt[1] = cnt; rt[2] = out_rd; rt[3] = out_wr; rt[4] = fdl_wr;
 );
 
+// Route L/R through engine eng honoring placement pl (0 Both,1 Mid,2 Side,3 Left,4 Right).
+// Both: filter both lanes. Else: filter the active component (lane A), delay the untouched
+// complementary component by the exact engine latency (lp_lat), then recombine. Writes spl0/spl1.
+function lpk_process(eng, pl)
+  local(l, r, mid, sid, act, comp, eb, dryA, rt, dwp, drd, cd) (
+  l = spl0; r = spl1;
+  pl == 0 ? (
+    lpk_run(eng, l, r); spl0 = lp_outA; spl1 = lp_outB;
+  ) : (
+    eb = lp_base + eng * 229376; dryA = eb + 196608; rt = lp_rt + eng * 8;
+    pl == 3 ? ( act = l; comp = r; ) :
+    pl == 4 ? ( act = r; comp = l; ) : (
+      mid = (l + r) * 0.5; sid = (l - r) * 0.5;
+      pl == 1 ? ( act = mid; comp = sid; ) : ( act = sid; comp = mid; );
+    );
+    dwp = rt[5]; dryA[dwp] = comp;
+    drd = dwp - lp_lat; drd < 0 ? drd += 16384;
+    cd = dryA[drd];
+    dwp += 1; dwp >= 16384 ? dwp = 0; rt[5] = dwp;
+    lpk_run(eng, act, 0);
+    pl == 3 ? ( spl0 = lp_outA; spl1 = cd; ) :
+    pl == 4 ? ( spl0 = cd; spl1 = lp_outA; ) :
+    pl == 1 ? ( spl0 = lp_outA + cd; spl1 = lp_outA - cd; ) :
+              ( spl0 = cd + lp_outA; spl1 = cd - lp_outA; );
+  );
+);
+
 // --- linear-engine memory setup (page-aligned; offsets from tools page_layout) ---
 lp_rt = hplp_cf + 126;         // 16 words runtime state (2 engines * 8), in the free gap
 lp_kc = lp_rt + 16;            // 63 words kernel coeff scratch (<=9 sections * 7)
@@ -402,9 +429,10 @@ i = 0; loop(lpBD,
   lp_warg = 2.0 * i / lp_nf - 1.0; lp_warg = max(1.0 - lp_warg * lp_warg, 0);
   lp_win[i] = lp_i0(lp_kbeta * sqrt(lp_warg)) * lp_iv; i += 1;
 );
-// runtime state: ir=0, cnt=0, out_rd=0, out_wr=P, fdl_wr=0 (per engine)
-lp_rt[0] = 0; lp_rt[1] = 0; lp_rt[2] = 0; lp_rt[3] = lpP; lp_rt[4] = 0;
-lp_rt[8] = 0; lp_rt[9] = 0; lp_rt[10] = 0; lp_rt[11] = lpP; lp_rt[12] = 0;
+// runtime state per engine (stride 8): 0 ir, 1 cnt, 2 out_rd, 3 out_wr, 4 fdl_wr, 5 dry_wp
+lp_lat = lpBD / 2 + lpP;        // 6144: engine latency (kernel BD/2 + hop P) = dry delay
+lp_rt[0] = 0; lp_rt[1] = 0; lp_rt[2] = 0; lp_rt[3] = lpP; lp_rt[4] = 0; lp_rt[5] = 0;
+lp_rt[8] = 0; lp_rt[9] = 0; lp_rt[10] = 0; lp_rt[11] = lpP; lp_rt[12] = 0; lp_rt[13] = 0;
 hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 
 // Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
@@ -521,9 +549,9 @@ slider1 != 1 ? (
   slider140 == 0 ? (                                    // Min phase (V0.5 path, zero-latency)
     hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
     lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
-  ) : (                                                 // Linear phase (Task 8: Both placement)
-    lpk_run(0, spl0, spl1); spl0 = lp_outA; spl1 = lp_outB;   // HP engine
-    lpk_run(1, spl0, spl1); spl0 = lp_outA; spl1 = lp_outB;   // LP engine (series)
+  ) : (                                                 // Linear phase (convolution engines)
+    lpk_process(0, slider134);                          // HP engine + HP placement
+    lpk_process(1, slider138);                          // LP engine + LP placement (series)
   );
   b = 0;
   loop(N_BANDS,
