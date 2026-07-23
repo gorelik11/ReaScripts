@@ -1,0 +1,674 @@
+desc: RCBitNova V0.6 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A+B + proportional-Q bells + min-phase HP/LP (staggered-Butterworth slope + decoupled resonance) + linear-phase HP/LP + FIR Brick)
+
+// License: GPL - http://www.gnu.org/licenses/gpl.html
+// Author: Dima Gorelik (design with Claude)
+// Bit logic: 1 bit = 6.0206 dB; gain_lin = 2^((macro + micro/100) * bitratio).
+// Filters: TPT state-variable (Andy Simper / Cytomic). All state instance-local
+// (NOT gmem) - fixes the cross-instance bug of the gmem-based bit EQ.
+// Phase 1: static engine, zero-latency, 4 slider bands, no dynamics/GUI.
+// Shelf dynamics: Shelf ceiling = peak of the shelf-region detector
+// (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
+// -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
+// at DC by design (rumble/boom tamer) - it reacts to DC offset.
+// Shelf Mode B (split limiter): extracts the shelf region (HP branch for High
+// Shelf, LP branch for Low Shelf) via the fixed-Q 0.7071 SVF, brick-limits that
+// branch to the ceiling, and passes the remainder untouched (perfect
+// reconstruction). The guarantee bounds the extracted region contribution, not
+// the summed output. The band Q shapes only the Mode A cut, never the Mode B split.
+// HP/LP section (V0.5): staggered-Butterworth SVF cascade (12/24/36/48/96 dB/oct),
+// section Q set per Butterworth pole angle (maximally-flat slope, no ripple), plus a
+// separate always-ticking resonance bell (fixed Q=2, decoupled from slope) at the same
+// effective cutoff; Resonance 0 = identity (bit-exact bypass of the bell). Per-filter
+// Placement Both/Mid/Side/Left/Right. Zero latency; runs before the EQ bands.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:0<0,1,1{Off,On}>-Bypass
+slider2:0<-16,16,1>-Output Macro (bits)
+slider3:0<-100,100,0.1>-Output Micro (% bit)
+slider4:2<0.1,10,0.1>-Lookahead (ms, Mode B)
+
+slider11:1<0,1,1{Off,On}>B1 Enable
+slider12:0<0,2,1{Bell,Low Shelf,High Shelf}>B1 Type
+slider13:100<20,20000,1>B1 Freq
+slider14:0.707<0.1,10,0.001>B1 Q
+slider15:0<-16,16,1>B1 Macro (bits)
+slider16:0<-100,100,0.1>B1 Micro (% bit)
+slider17:1<0,3,0.1>B1 Bit Ratio
+slider18:0<0,4,1{Both,Mid,Side,Left,Right}>B1 Placement
+slider19:0<0,1,0.001>B1 Q Character (0 Constant .. 1 Proportional)
+
+slider21:0<0,1,1{Off,On}>B2 Enable
+slider22:0<0,2,1{Bell,Low Shelf,High Shelf}>B2 Type
+slider23:1000<20,20000,1>B2 Freq
+slider24:0.707<0.1,10,0.001>B2 Q
+slider25:0<-16,16,1>B2 Macro (bits)
+slider26:0<-100,100,0.1>B2 Micro (% bit)
+slider27:1<0,3,0.1>B2 Bit Ratio
+slider28:0<0,4,1{Both,Mid,Side,Left,Right}>B2 Placement
+slider29:0<0,1,0.001>B2 Q Character (0 Constant .. 1 Proportional)
+
+slider31:0<0,1,1{Off,On}>B3 Enable
+slider32:0<0,2,1{Bell,Low Shelf,High Shelf}>B3 Type
+slider33:3000<20,20000,1>B3 Freq
+slider34:0.707<0.1,10,0.001>B3 Q
+slider35:0<-16,16,1>B3 Macro (bits)
+slider36:0<-100,100,0.1>B3 Micro (% bit)
+slider37:1<0,3,0.1>B3 Bit Ratio
+slider38:0<0,4,1{Both,Mid,Side,Left,Right}>B3 Placement
+slider39:0<0,1,0.001>B3 Q Character (0 Constant .. 1 Proportional)
+
+slider41:0<0,1,1{Off,On}>B4 Enable
+slider42:0<0,2,1{Bell,Low Shelf,High Shelf}>B4 Type
+slider43:10000<20,20000,1>B4 Freq
+slider44:0.707<0.1,10,0.001>B4 Q
+slider45:0<-16,16,1>B4 Macro (bits)
+slider46:0<-100,100,0.1>B4 Micro (% bit)
+slider47:1<0,3,0.1>B4 Bit Ratio
+slider48:0<0,4,1{Both,Mid,Side,Left,Right}>B4 Placement
+slider49:0<0,1,0.001>B4 Q Character (0 Constant .. 1 Proportional)
+
+slider51:0<0,1,1{Off,On}>B1 Dyn
+slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>B1 Dyn Stereo (Both only)
+slider53:1<0,16,1>B1 Soft Ceiling Macro (bits below 0)
+slider54:0<-100,100,0.1>B1 Soft Ceiling Micro (% bit)
+slider55:1<0.05,50,0.01>B1 Attack (ms)
+slider56:80<1,500,1>B1 Release (ms)
+slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>B1 Dyn Mode
+slider58:1<0,1,1{Off,On}>B1 Soft
+
+slider61:0<0,1,1{Off,On}>B2 Dyn
+slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
+slider63:1<0,16,1>B2 Soft Ceiling Macro (bits below 0)
+slider64:0<-100,100,0.1>B2 Soft Ceiling Micro (% bit)
+slider65:1<0.05,50,0.01>B2 Attack (ms)
+slider66:80<1,500,1>B2 Release (ms)
+slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>B2 Dyn Mode
+slider68:1<0,1,1{Off,On}>B2 Soft
+
+slider71:0<0,1,1{Off,On}>B3 Dyn
+slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
+slider73:1<0,16,1>B3 Soft Ceiling Macro (bits below 0)
+slider74:0<-100,100,0.1>B3 Soft Ceiling Micro (% bit)
+slider75:1<0.05,50,0.01>B3 Attack (ms)
+slider76:80<1,500,1>B3 Release (ms)
+slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>B3 Dyn Mode
+slider78:1<0,1,1{Off,On}>B3 Soft
+
+slider81:0<0,1,1{Off,On}>B4 Dyn
+slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
+slider83:1<0,16,1>B4 Soft Ceiling Macro (bits below 0)
+slider84:0<-100,100,0.1>B4 Soft Ceiling Micro (% bit)
+slider85:1<0.05,50,0.01>B4 Attack (ms)
+slider86:80<1,500,1>B4 Release (ms)
+slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
+slider88:1<0,1,1{Off,On}>B4 Soft
+
+slider91:0<0,1,1{Off,On}>B1 Hard
+slider92:0<0,16,1>B1 Hard Ceiling Macro (bits below 0)
+slider93:0<-100,100,0.1>B1 Hard Ceiling Micro (% bit)
+slider101:0<0,1,1{Off,On}>B2 Hard
+slider102:0<0,16,1>B2 Hard Ceiling Macro (bits below 0)
+slider103:0<-100,100,0.1>B2 Hard Ceiling Micro (% bit)
+slider111:0<0,1,1{Off,On}>B3 Hard
+slider112:0<0,16,1>B3 Hard Ceiling Macro (bits below 0)
+slider113:0<-100,100,0.1>B3 Hard Ceiling Micro (% bit)
+slider121:0<0,1,1{Off,On}>B4 Hard
+slider122:0<0,16,1>B4 Hard Ceiling Macro (bits below 0)
+slider123:0<-100,100,0.1>B4 Hard Ceiling Micro (% bit)
+
+slider131:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>HP Slope (dB/oct)
+slider132:20<20,20000,1>HP Freq (Hz)
+slider133:0<0,1,0.001>HP Resonance
+slider134:0<0,4,1{Both,Mid,Side,Left,Right}>HP Placement
+slider135:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>LP Slope (dB/oct)
+slider136:20000<20,20000,1>LP Freq (Hz)
+slider137:0<0,1,0.001>LP Resonance
+slider138:0<0,4,1{Both,Mid,Side,Left,Right}>LP Placement
+slider140:0<0,1,1{Min,Linear}>Phase
+
+@init
+
+N_BANDS = 4;
+cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
+st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
+memset(st, 0, N_BANDS * 4);
+
+// Dynamics (Phase 2b) instance-local memory
+det = 96;   // detector bandpass coeffs: 4/band (a1,a2,a3,k)
+dst = 128;  // detector state: 4/band (chA ic1,ic2 ; chB ic1,ic2)
+cst = 160;  // cut SVF state:  4/band (chA ic1,ic2 ; chB ic1,ic2)
+dp  = 192;  // dyn params: 4/band (ceil_lin, atk, rel, dynOn)
+dm  = 208;  // dyn stereo mode: 1/band (0 Linked,1 Dual L/R,2 Dual M/S)
+bp  = 216;  // band params: 3/band (fc, q, cg)
+eg  = 256;  // env_gain: 2/band (chA, chB)
+memset(dst, 0, N_BANDS * 4);
+memset(cst, 0, N_BANDS * 4);
+i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
+anti = pow(2, -100);  // anti-denormal toggle (~8e-31; EEL2 rejects 1e-30 literal)
+
+// Mode B (Phase 3a) instance-local memory
+MAX_LOOK = 2048;   // covers the 10 ms slider max up to 192 kHz (1920 samples)
+mb_band = 1024;    // band ring: per (band,channel) MAX_LOOK each (cs = b*2+c)
+mb_peak = mb_band + N_BANDS * 2 * MAX_LOOK;
+mb_end  = mb_peak + N_BANDS * 2 * MAX_LOOK;
+memset(mb_band, 0, mb_end - mb_band);
+mbenv  = mb_end;               // Mode-B env per (band,channel): 2/band
+mbmode = mbenv + N_BANDS * 2;  // Dyn Mode per band (0 A, 1 B)
+mbwpos = mbmode + N_BANDS;     // Mode-B write pos per band
+bus_dry = mbwpos + N_BANDS;    // shared stereo dry delay (L at [0..], R at [MAX_LOOK..])
+bus_wp = 0;
+memset(bus_dry, 0, MAX_LOOK * 2);
+i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
+memset(mbwpos, 0, N_BANDS);
+GSMOOTH = 400; inv_gsmooth = 1 / (GSMOOTH + 1);   // PurestGain (Mode-B Soft)
+mbgc = bus_dry + MAX_LOOK * 2;                     // PurestGain gain state: 2/band
+i = 0; loop(N_BANDS * 2, mbgc[i] = 1; i += 1;);
+mbeh = mbgc + N_BANDS * 2;   // Mode-B hard env per (band,channel): 2/band
+hc   = mbeh + N_BANDS * 2;   // hard ceiling (linear) per band: 1/band
+i = 0; loop(N_BANDS * 2, mbeh[i] = 1; i += 1;);
+egh = hc + N_BANDS;          // Mode-A hard env per (band,channel): 2/band
+i = 0; loop(N_BANDS * 2, egh[i] = 1; i += 1;);
+
+// ===== V0.5 HP/LP section memory + coeffs =====
+// hplp_state: 2 filters * (8 Butterworth sections + 1 resonance bell) * 2 channels
+//   * 2 integrators = 72 slots. Per filter base = fi*36; stage s (0..7 sections,
+//   8 = bell), chA = base+s*4 (+0 ic1,+1 ic2), chB = base+s*4+2 (bell state at 32..35).
+// hplp_cf: 2 filters * (8 section sets + 1 bell set) * 7 = 126 slots. Per filter base
+//   = fi*63; section k set = base+k*7 (k 0..7); bell set = base+56.
+hplp_state = egh + N_BANDS * 2;   // V0.5: 2 filters * (8 sec + 1 bell) * 2 ch * 2 = 72
+memset(hplp_state, 0, 72);
+hplp_cf = hplp_state + 72;         // V0.5: 2 filters * (8 sec + 1 bell) * 7 = 126
+prev_hp_slope = -1; prev_hp_pl = -1;
+prev_lp_slope = -1; prev_lp_pl = -1;
+hp_nsec = 0; lp_nsec = 0;
+
+// TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
+// Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
+function svf_set(base, ftype, fc, q, glin)
+  local(A, g, k, m0, m1, m2, a1, a2, a3)
+(
+  A = sqrt(glin);
+  ftype == 0 ? (                 // Bell
+    g = tan($pi * fc / srate); k = 1 / (q * A);
+    m0 = 1; m1 = k * (A * A - 1); m2 = 0;
+  ) : ftype == 1 ? (             // Low Shelf
+    g = tan($pi * fc / srate) / sqrt(A); k = 1 / q;
+    m0 = 1; m1 = k * (A - 1); m2 = A * A - 1;
+  ) : (                          // High Shelf
+    g = tan($pi * fc / srate) * sqrt(A); k = 1 / q;
+    m0 = A * A; m1 = k * (1 - A) * A; m2 = 1 - A * A;
+  );
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  cf[base]   = a1; cf[base+1] = a2; cf[base+2] = a3; cf[base+3] = k;
+  cf[base+4] = m0; cf[base+5] = m1; cf[base+6] = m2;
+);
+
+// write one HP/LP cascade-section's coeffs (no gain). ftype 3=HP, 4=LP. dst[0..6].
+// V0.5: called per staggered-Butterworth section with q = butter_q(k, N).
+function hplp_coef(dst, ftype, fc, q) local(g, k, a1, a2, a3) (
+  g = tan($pi * fc / srate); k = 1 / q;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = k;
+  ftype == 3 ? ( dst[4] = 1; dst[5] = -k; dst[6] = -1; )
+             : ( dst[4] = 0; dst[5] = 0;  dst[6] = 1;  );
+);
+
+// V0.5: staggered-Butterworth section Q for a 2N-th order cascade.
+function butter_q(kk, nn) ( 1 / (2 * cos($pi * (2*kk + 1) / (4*nn))) );
+
+// V0.5: resonance bell coeffs (fixed Q=2), glin = 1 + Resonance*5. glin=1 -> identity.
+function hplp_bell(dst, fc, glin) local(A, g, bk, a1, a2, a3) (
+  A = sqrt(glin); g = tan($pi * fc / srate); bk = 1 / (2 * A);
+  a1 = 1 / (1 + g * (g + bk)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = bk;
+  dst[4] = 1; dst[5] = bk * (A * A - 1); dst[6] = 0;
+);
+
+// V0.5: run one HP/LP filter (fi 0=HP,1=LP): N Butterworth sections + always-tick bell.
+function hplp_run(fi, nsec, pl)
+  local(cfb, stb, chA, chB, mid, sid, do_b, s, kk, cs, ic1, ic2, v1, v2, v3, a1, a2, a3, m0, m1, m2) (
+  cfb = hplp_cf + fi*63; stb = hplp_state + fi*36;
+  pl == 0 ? ( chA = spl0; chB = spl1; do_b = 1; ) :
+  pl == 3 ? ( chA = spl0; do_b = 0; ) :
+  pl == 4 ? ( chA = spl1; do_b = 0; ) : (
+    mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+    pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+    do_b = 0;
+  );
+  s = chA; kk = 0;
+  loop(nsec,
+    cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[kk*4]; ic2 = stb[kk*4+1];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[kk*4] = 2*v1 - ic1; stb[kk*4+1] = 2*v2 - ic2;
+    s = m0*s + m1*v1 + m2*v2; kk += 1;
+  );
+  cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];  // bell, fixed slot 8
+  ic1 = stb[32]; ic2 = stb[33];
+  v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+  stb[32] = 2*v1 - ic1; stb[33] = 2*v2 - ic2;
+  chA = m0*s + m1*v1 + m2*v2;
+  do_b ? (
+    s = chB; kk = 0;
+    loop(nsec,
+      cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+      ic1 = stb[kk*4+2]; ic2 = stb[kk*4+3];
+      v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      stb[kk*4+2] = 2*v1 - ic1; stb[kk*4+3] = 2*v2 - ic2;
+      s = m0*s + m1*v1 + m2*v2; kk += 1;
+    );
+    cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[34]; ic2 = stb[35];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[34] = 2*v1 - ic1; stb[35] = 2*v2 - ic2;
+    chB = m0*s + m1*v1 + m2*v2;
+  );
+  pl == 0 ? ( spl0 = chA; spl1 = chB; ) :
+  pl == 3 ? ( spl0 = chA; ) :
+  pl == 4 ? ( spl1 = chA; ) :
+  pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :
+            ( spl0 = mid + chA; spl1 = mid - chA; );
+);
+
+// Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
+// Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
+// (bit-identical to V0.2). Non-Bell and shelf split fixed Q are untouched.
+function band_qeff(b)
+  local(s, ty, qk, qc, gbits, qe)
+(
+  s = 10 * (b + 1);
+  ty = slider(s + 2); qk = slider(s + 4); qc = slider(s + 9);
+  (qc == 0 || ty != 0) ? ( qe = qk; ) : (
+    gbits = (slider(s+5) + slider(s+6) * 0.01) * slider(s+7);
+    qe = qk * (1 + qc * abs(gbits));
+    qe > 16 ? ( qe = 16; ) : ( qe = qe; );
+  );
+  qe;
+);
+
+function setup_band(b)
+  local(s, glin, bty)
+(
+  s = 10 * (b + 1);                                  // slider base: 10,20,30,40
+  glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
+  bty = slider(s+2); (bty > 2 || bty < 0) ? bty = 0;
+  svf_set(b * 8, bty, slider(s+3), band_qeff(b), glin);
+);
+
+function setup_band_dyn(b)
+  local(s, ds, ty, fc, qd, g, k, a1, a2, a3)
+(
+  s = 10 * (b + 1); ds = 50 + 10 * b;
+  ty = slider(s + 2);
+  fc = slider(s + 3);
+  // Bell: bandpass detector at Q_eff (proportional-Q). Shelf: HP/LP-tap detector
+  // at fixed Butterworth Q (monotonic, unity passband, 0.7071 at fc).
+  qd = (ty == 1 || ty == 2) ? 0.7071 : band_qeff(b);
+  g = tan($pi * fc / srate); k = 1 / qd;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  det[b*4] = a1; det[b*4+1] = a2; det[b*4+2] = a3; det[b*4+3] = k;
+  dp[b*4]   = pow(2, -(slider(ds+3) + slider(ds+4) * 0.01));   // ceil_lin
+  dp[b*4+1] = exp(-1 / (slider(ds+5) * 0.001 * srate));        // atk
+  dp[b*4+2] = exp(-1 / (slider(ds+6) * 0.001 * srate));        // rel
+  dp[b*4+3] = slider(ds+1);                                    // dynOn
+  dm[b]     = slider(ds+2);                                    // 0 Linked,1 DualLR,2 DualMS
+  bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
+);
+
+@slider
+
+out_gain = pow(2, slider2 + slider3 * 0.01);
+b = 0;
+loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
+
+// Mode-B global lookahead + PDC
+Lk = floor(slider4 * 0.001 * srate + 0.5);
+Lk = min(max(Lk, 1), MAX_LOOK - 1);
+any_b = 0;
+b = 0;
+loop(N_BANDS,
+  mbmode[b] = slider(50 + 10 * b + 7);                                       // 0 A, 1 B
+  hc[b] = pow(2, -(slider(90 + 10*b + 2) + slider(90 + 10*b + 3) * 0.01));   // hard ceiling
+  (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
+  b += 1;
+);
+pdc_delay = (slider1 != 1 && any_b) ? Lk : 0;   // 0 when bypassed (passthrough is zero-latency)
+pdc_bot_ch = 0; pdc_top_ch = 2;
+
+// ===== V0.5 HP/LP: staggered-Butterworth sections + resonance bell + reset =====
+hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;   // FIR Brick (6) -> Off in min-phase path
+hp_fe = min(slider132, srate * 0.49);
+hp_nsec > 0 ? (
+  kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
+);
+(slider131 != prev_hp_slope || slider134 != prev_hp_pl) ? (
+  memset(hplp_state + 0, 0, 36); prev_hp_slope = slider131; prev_hp_pl = slider134;
+);
+
+lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;   // FIR Brick (6) -> Off in min-phase path
+lp_fe = min(slider136, srate * 0.49);
+lp_nsec > 0 ? (
+  kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+);
+(slider135 != prev_lp_slope || slider138 != prev_lp_pl) ? (
+  memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
+);
+
+@sample
+
+// Running signal stays L/R. Each band derives its working domain by placement.
+// Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
+slider1 != 1 ? (
+  anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
+  // ===== DEDICATED HP/LP FILTER SECTION (min-phase cascade, before bands) =====
+  hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
+  lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
+  b = 0;
+  loop(N_BANDS,
+    slider(10 * (b + 1) + 1) == 1 ? (         // enable
+      base = b * 8; sb = b * 4;
+      a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
+      m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
+      pl = slider(10 * (b + 1) + 8);          // 0 Both,1 Mid,2 Side,3 Left,4 Right
+      both_ms = 0;
+
+      pl == 0 ? (                             // Both: domain by dyn mode
+        (dp[b*4+3] == 1 && dm[b] == 2) ? (    // dyn on + Dual M/S -> work in M/S
+          mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+          chA = mid; chB = sid; both_ms = 1;
+        ) : (
+          chA = spl0; chB = spl1;
+        );
+        do_b = 1;
+      ) : pl == 3 ? (                         // Left -> L only
+        chA = spl0; do_b = 0;
+      ) : pl == 4 ? (                         // Right -> R only
+        chA = spl1; do_b = 0;
+      ) : (                                   // Mid/Side -> M/S
+        mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+        pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+        do_b = 0;
+      );
+
+      // Filter channel A (slot A state)
+      ic1 = st[sb]; ic2 = st[sb+1];
+      v3 = chA - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      st[sb] = 2*v1 - ic1; st[sb+1] = 2*v2 - ic2;
+      chA = m0*chA + m1*v1 + m2*v2;
+
+      // Filter channel B if needed (Both; slot B state)
+      do_b ? (
+        ic1 = st[sb+2]; ic2 = st[sb+3];
+        v3 = chB - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        st[sb+2] = 2*v1 - ic1; st[sb+3] = 2*v2 - ic2;
+        chB = m0*chB + m1*v1 + m2*v2;
+      );
+
+      // ----- Dynamics (Mode A Soft): Bell type only, Dyn on, Dyn Mode A -----
+      (dp[b*4+3] == 1 && slider(10*(b+1)+2) == 0 && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = abs(dk * v1);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = abs(dk * v1);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant)
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        A = sqrt(gA); ck = 1 / (qb * A);
+        ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = chA + cm1 * v1;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); ck = 1 / (qb * A);
+          ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = chB + cm1 * v1;
+        );
+      );
+
+      // ----- Dynamics (Mode A shelf): Low/High Shelf, Dyn on, Dyn Mode A -----
+      // Additive sibling of the Bell block above (types are mutually exclusive,
+      // so dst/cst/eg/egh slots are shared safely). Transcribed line-by-line
+      // from _shelf_cascade_ch in tools/rcbitnova_dsp.py.
+      ty = slider(10 * (b + 1) + 2);
+      (dp[b*4+3] == 1 && (ty == 1 || ty == 2) && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA: HP tap (High Shelf) or LP tap (Low Shelf)
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = ty == 2 ? abs(chA - dk*v1 - v2) : abs(v2);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = ty == 2 ? abs(chB - dk*v1 - v2) : abs(v2);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant) - same as Bell
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        // shelf-cut coeffs without tan(): g = cg*rA (HS) or cg/rA (LS); full
+        // m0/m1/m2 output (not the bell x + cm1*v1 shortcut)
+        A = sqrt(gA); rA = sqrt(A); ckq = 1 / qb;
+        ty == 2 ? (
+          cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+        ) : (
+          cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+        );
+        ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = cm0*chA + cm1*v1 + cm2*v2;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); rA = sqrt(A);
+          ty == 2 ? (
+            cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+          ) : (
+            cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+          );
+          ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = cm0*chB + cm1*v1 + cm2*v2;
+        );
+      );
+
+      // Write working channels back to L/R
+      pl == 0 ? ( both_ms ? ( spl0 = chA + chB; spl1 = chA - chB; ) : ( spl0 = chA; spl1 = chB; ) ) :
+      pl == 3 ? ( spl0 = chA; ) :
+      pl == 4 ? ( spl1 = chA; ) :
+      pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
+                ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
+    );
+    b += 1;
+  );
+
+  // ===== Mode B (Brick, band-split, bit-exact) on the globally-delayed bus =====
+  any_b ? (
+    L_in = spl0; R_in = spl1;          // intermediate (post static + Mode-A)
+    corrL = 0; corrR = 0;
+    b = 0;
+    loop(N_BANDS,
+      (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? (
+        pl = slider(10*(b+1)+8);
+        ty = slider(10*(b+1)+2);
+        qb = bp[b*3+1];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        ms_dom = 0; two = 0;
+        pl == 0 ? (
+          (dm[b] == 2) ? ( xa = (L_in + R_in)*0.5; xb = (L_in - R_in)*0.5; ms_dom = 1; ) :
+                         ( xa = L_in; xb = R_in; );
+          two = 1;
+        ) : pl == 1 ? ( xa = (L_in + R_in)*0.5; ms_dom = 1; ) :
+            pl == 2 ? ( xa = (L_in - R_in)*0.5; ms_dom = 1; ) :
+            pl == 3 ? ( xa = L_in; ) : ( xa = R_in; );
+
+        wp = mbwpos[b];
+        csA = b*2; csB = b*2 + 1;
+        baseA = csA*MAX_LOOK; baseB = csB*MAX_LOOK;
+
+        // channel A: extract band (detector state slot A), ring write, worst-peak
+        ic1 = dst[b*4]; ic2 = dst[b*4+1];
+        v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
+        bA = ty == 2 ? (xa - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
+        worstA = 0; i = 0;
+        loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
+
+        two ? (
+          ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
+          v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
+          bB = ty == 2 ? (xb - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
+          worstB = 0; i = 0;
+          loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
+        );
+
+        linked ? ( worstA = max(worstA, worstB); );   // linked: both channels share max peak
+
+        // ----- channel A cascade gain (gSoft smoothed * gHard instant) -----
+        soft_on ? (
+          tS = worstA > cS ? cS / worstA : 1;
+          esa = mbenv[csA]; tS < esa ? esa = tS : ( esa = tS + (esa - tS)*rel; esa = min(esa,1); ); mbenv[csA] = esa;
+          mbgc[csA] = (mbgc[csA] * GSMOOTH + esa) * inv_gsmooth;
+        ) : ( mbgc[csA] = 1; );
+        hard_on ? (
+          ps = worstA * mbgc[csA];
+          tH = ps > cH ? cH / ps : 1;
+          eha = mbeh[csA]; tH < eha ? eha = tH : ( eha = tH + (eha - tH)*rel; eha = min(eha,1); ); mbeh[csA] = eha;
+        ) : ( mbeh[csA] = 1; );
+        gA = mbgc[csA] * mbeh[csA];
+
+        rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
+        bdA = mb_band[baseA + rpos];
+        limA = bdA * gA; hard_on ? ( abs(limA) > cH ? (limA = limA > 0 ? cH : -cH); );
+        dcA = limA - bdA;
+
+        two ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = worstB > cS ? cS / worstB : 1;
+              esb = mbenv[csB]; tS < esb ? esb = tS : ( esb = tS + (esb - tS)*rel; esb = min(esb,1); ); mbenv[csB] = esb;
+              mbgc[csB] = (mbgc[csB] * GSMOOTH + esb) * inv_gsmooth;
+            ) : ( mbgc[csB] = 1; );
+            hard_on ? (
+              ps = worstB * mbgc[csB];
+              tH = ps > cH ? cH / ps : 1;
+              ehb = mbeh[csB]; tH < ehb ? ehb = tH : ( ehb = tH + (ehb - tH)*rel; ehb = min(ehb,1); ); mbeh[csB] = ehb;
+            ) : ( mbeh[csB] = 1; );
+            gB = mbgc[csB] * mbeh[csB];
+          );
+          bdB = mb_band[baseB + rpos];
+          limB = bdB * gB; hard_on ? ( abs(limB) > cH ? (limB = limB > 0 ? cH : -cH); );
+          dcB = limB - bdB;
+        );
+
+        pl == 0 ? (
+          ms_dom ? ( corrL += dcA + dcB; corrR += dcA - dcB; ) : ( corrL += dcA; corrR += dcB; );
+        ) : pl == 1 ? ( corrL += dcA; corrR += dcA; ) :
+            pl == 2 ? ( corrL += dcA; corrR -= dcA; ) :
+            pl == 3 ? ( corrL += dcA; ) : ( corrR += dcA; );
+
+        mbwpos[b] = (wp + 1) % MAX_LOOK;
+      );
+      b += 1;
+    );
+
+    // delayed dry L/R bus + accumulated band corrections
+    bus_dry[bus_wp] = L_in; bus_dry[bus_wp + MAX_LOOK] = R_in;
+    rp = (bus_wp - Lk + MAX_LOOK) % MAX_LOOK;
+    spl0 = bus_dry[rp] + corrL;
+    spl1 = bus_dry[rp + MAX_LOOK] + corrR;
+    bus_wp = (bus_wp + 1) % MAX_LOOK;
+  );
+
+  spl0 *= out_gain;
+  spl1 *= out_gain;
+);
