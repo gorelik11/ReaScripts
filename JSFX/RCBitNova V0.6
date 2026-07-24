@@ -434,6 +434,9 @@ lp_lat = lpBD / 2 + lpP;        // 6144: engine latency (kernel BD/2 + hop P) = 
 lp_rt[0] = 0; lp_rt[1] = 0; lp_rt[2] = 0; lp_rt[3] = lpP; lp_rt[4] = 0; lp_rt[5] = 0;
 lp_rt[8] = 0; lp_rt[9] = 0; lp_rt[10] = 0; lp_rt[11] = lpP; lp_rt[12] = 0; lp_rt[13] = 0;
 hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
+// FIR ring-out: two serial BD-tap kernels -> keep processing after input silence so
+// offline renders capture the full linear-phase tail. Harmless in Min (IIR, no FIR tail).
+ext_tail_size = 2 * lpBD;
 
 // Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
 // Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
@@ -497,8 +500,10 @@ loop(N_BANDS,
   (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
   b += 1;
 );
-// Linear phase adds two serial engine latencies (BD/2 + P each). Task 8: rough PDC so the
-// live shape test stays roughly in sync; Task 10 replaces this with constant MAXLAT.
+// PDC policy (c): Min = zero-latency (V0.5); Linear = constant two-engine latency (both
+// engines always run, even at Slope=Off, so it never varies with filter settings). Only the
+// deliberate Min<->Linear switch changes latency (no seamless live switch needed - Dima).
+// Mode-B adds its lookahead Lk on top (linear delay is applied ONCE by the engines).
 lin_lat = slider140 == 1 ? 2 * (lpBD / 2 + lpP) : 0;
 pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
 pdc_bot_ch = 0; pdc_top_ch = 2;
