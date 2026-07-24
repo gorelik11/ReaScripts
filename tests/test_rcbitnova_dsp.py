@@ -1180,3 +1180,33 @@ def test_two_engines_layouts_are_disjoint_and_page_safe():
     assert dsp.page_layout_ok(l1, 8192, 2048)
     assert dsp.page_layout_ok(l2, 8192, 2048)
     assert l2["__top"] > l1["__top"]             # second engine strictly above the first
+
+
+def test_impulse_fft_kernel_matches_analytic_in_passband_and_transition():
+    # The JSFX builds the kernel from the FFT of the min-phase impulse response;
+    # build_lp_kernel uses the analytic magnitude. They must agree in passband/transition
+    # (same true magnitude there) -> this verifies the shipping JSFX method.
+    sr = 96000.0; BD = 8192
+    ki = dsp.impulse_fft_kernel(BD, "hp", 240.0, 0.6, 2, 14.0, sr)
+    ka = dsp.build_lp_kernel(BD, "hp", 240.0, 0.6, 2, 14.0, sr)
+    for f in [200, 300, 500, 1000, 4000, 12000, 20000]:
+        gi = 20 * math.log10(_kmag(ki, f, sr) + 1e-30)
+        ga = 20 * math.log10(_kmag(ka, f, sr) + 1e-30)
+        assert abs(gi - ga) < 0.1
+
+
+def test_linear_phase_lowfreq_resolution_limit_is_method_independent():
+    # At very low freq a fixed-length linear-phase FIR (BD=8192, ~11.7 Hz/bin at 96k) cannot
+    # resolve a steep sub-cutoff transition, so its deep-stopband rejection is limited. This
+    # is INHERENT to linear phase (identical for the analytic and impulse-FFT builds) -- NOT
+    # a transcription bug. Documented so future changes stay aware: use Min phase for deep
+    # sub-bass low-cut. (res=0 -> proves it is resolution, not resonance-tail truncation.)
+    sr = 96000.0; BD = 8192
+    ki = dsp.impulse_fft_kernel(BD, "hp", 20.0, 0.0, 8, 14.0, sr)
+    ka = dsp.build_lp_kernel(BD, "hp", 20.0, 0.0, 8, 14.0, sr)
+    di = 20 * math.log10(_kmag(ki, 13.0, sr) + 1e-30)
+    da = 20 * math.log10(_kmag(ka, 13.0, sr) + 1e-30)
+    assert abs(di - da) < 3.0                                  # both builds share the same limit
+    true_db = 20 * math.log10(dsp.hplp_digital_mag("hp", 20.0, 0.0, 8, 13.0, sr))
+    assert true_db < -55.0                                     # the ideal IIR rejects deeply
+    assert di > true_db + 20.0                                 # the FIR cannot (resolution-limited)

@@ -1216,3 +1216,33 @@ def page_layout_ok(layout, BD, P):
             if s // _LP_PAGE != (s + sz - 1) // _LP_PAGE:
                 return False
     return True
+
+
+def impulse_fft_kernel(BD, ftype, freq, resonance, nsec, beta, sr):
+    """Kernel built the way the JSFX `lpk_build` builds it: run a unit impulse through the
+    ACTUAL min-phase cascade (nsec staggered-Butterworth sections + resonance bell), FFT the
+    impulse response to get its true magnitude, then zero-phase it -> ifft -> fftshift(BD/2)
+    -> Kaiser window. This mirrors the shipping JSFX method; `build_lp_kernel` uses the
+    analytic magnitude instead. The two agree in the passband/transition (same true
+    magnitude), which is what lets the oracle verify the JSFX's impulse-FFT choice. nsec>=1."""
+    fe = fc_eff(freq, sr)
+    coefs = [svf_make(ftype, fe, butter_q(k, nsec), 1.0, sr) for k in range(nsec)]
+    coefs.append(svf_make("bell", fe, 2.0, res_glin(resonance), sr))
+    state = [[0.0, 0.0] for _ in range(nsec + 1)]
+    h = []
+    for n in range(BD):
+        s = 1.0 if n == 0 else 0.0
+        for c, st in zip(coefs, state):
+            ic1, ic2 = st
+            v3 = s - ic2
+            v1 = c["a1"] * ic1 + c["a2"] * v3
+            v2 = ic2 + c["a2"] * ic1 + c["a3"] * v3
+            st[0] = 2.0 * v1 - ic1
+            st[1] = 2.0 * v2 - ic2
+            s = c["m0"] * s + c["m1"] * v1 + c["m2"] * v2
+        h.append(s)
+    mag = [abs(x) for x in lp_fft([complex(x, 0.0) for x in h])]   # unnormalized FFT of IR = true |H| at bins
+    t = lp_ifft([complex(m, 0.0) for m in mag])
+    half = BD // 2
+    win = kaiser_window(BD, beta)
+    return [t[(i + half) % BD].real * win[i] for i in range(BD)]

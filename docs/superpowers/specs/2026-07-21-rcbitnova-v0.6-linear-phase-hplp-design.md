@@ -319,3 +319,38 @@ boundary and a `__memtop()` guard. Ref: <https://www.reaper.fm/sdk/js/advfunc.ph
   phase does not touch the bit claim.
 - New file `JSFX/RCBitNova V0.6` (copy V0.5); V0.5 stays frozen + tagged.
 - Python DSP mirror remains THE ORACLE (pure stdlib); live REAPER confirms transcription.
+
+## 15. As-shipped outcome, known limitations & deferred to V0.7 (2026-07-25, tagged)
+
+**Shipped as tagged `rcbitnova-v0.6`.** Live-verified: Min == V0.5; Linear HP/LP + FIR
+Brick work; pass/stopband parity 0.002 dB; Mid/Side/Left/Right route cleanly; Mode-B works
+in Linear; high-cut FIR Brick reaches −150 dB within ~600 Hz near Nyquist (ReaFIR-class, at
+BD=8192 ⇒ ~64 ms/engine, lower latency than ReaFIR@32768). Fable final review: bit-accuracy
+INTACT, no P0.
+
+**Implementation deviations from the earlier sections (intentional, live-driven):**
+- **Kernel magnitude via impulse-FFT, not analytic (§6).** `lpk_build` builds the magnitude
+  from the FFT of the ACTUAL min-phase cascade's impulse response (reuses `hplp_coef`/
+  `hplp_bell`), not the analytic `svf_response`. Proven equivalent to the analytic build in
+  the passband/transition (oracle test `test_impulse_fft_kernel_matches_analytic_*`, <0.1 dB).
+- **PDC policy (c), not constant-MAXLAT (§9).** Owner decided no seamless Min↔Linear switch
+  during playback is needed. So Min stays zero-latency; Linear is constant (both engines
+  always run); only the deliberate Min↔Linear switch changes latency. Warm engines + the
+  Phase-toggle crossfade (§3.1) are therefore **not implemented** (not needed).
+
+**Known limitation (inherent, accepted):** a fixed-length linear-phase FIR (BD=8192,
+~11.7 Hz/bin @96k) cannot resolve a steep sub-cutoff transition at very low frequencies, so
+Linear HP below ~50 Hz has **limited deep-stopband rejection** (documented + tested,
+`test_linear_phase_lowfreq_resolution_limit_is_method_independent`). This is inherent to
+linear phase — identical for the analytic and impulse-FFT builds, same as ReaFIR/Pro-Q — NOT
+a bug. High-frequency cuts are unaffected (ample bin resolution near Nyquist). **Guidance:
+use Min phase for deep sub-bass low-cut; Linear for tonal EQ and high-cut brickwall.**
+
+**Deferred to V0.7:**
+- Click-safe dual-kernel **crossfade** on Freq/Resonance/Slope change in Linear (spec §8;
+  currently an in-place `Hspec` swap → possible click on a live knob sweep; fine for
+  set-and-play mastering).
+- Selectable **resolution** (BD 8192 ↔ 32768) — a "high-resolution" mode that improves
+  linear-phase deep-low-cut at 4× latency. Not needed for high-cut (8192 already −150 dB).
+- Placement-toggle transient (no crossfade on live placement change) — polish.
+- Update spec §9 prose (still describes constant-MAXLAT); superseded by policy (c) here.
