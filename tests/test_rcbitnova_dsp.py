@@ -1322,3 +1322,46 @@ def test_impulse_fft_equals_analytic_at_BD_32768_in_passband():
         gi = 20 * math.log10(_kmag(ki, f, sr) + 1e-30)
         ga = 20 * math.log10(_kmag(ka, f, sr) + 1e-30)
         assert abs(gi - ga) < 0.1
+
+
+# ---- Task 4: Oracle — measured runtime latency per configuration ----
+
+def _impulse_peak(kernels, P, BDs, pos=100):
+    """Feed a unit impulse at `pos` through the given kernels in series via
+    partitioned_convolve and return the output index of the peak."""
+    need = pos + sum(BD // 2 + P for BD in BDs) + 4 * P
+    sig = [0.0] * need
+    sig[pos] = 1.0
+    out = sig
+    for ker in kernels:
+        out = dsp.partitioned_convolve(out, ker, P)
+    return max(range(len(out)), key=lambda i: abs(out[i]))
+
+
+def test_runtime_latency_formula_on_a_small_geometry():
+    # Cheap structural check of "kernel BD/2 + hop P" with a scaled-down geometry.
+    BD, P = 512, 128
+    ker = dsp.build_lp_kernel(BD, "hp", 4000.0, 0.0, 2, 14.0, 96000.0)
+    assert _impulse_peak([ker], P, [BD]) == 100 + BD // 2 + P     # 100 + 384
+
+
+def test_runtime_latency_single_normal_engine_is_6144():
+    ker = _hires_kernel("build_lp_kernel", 8192, "hp", 500.0, 0.0, 2, 14.0, 96000.0)
+    assert _impulse_peak([ker], 2048, [8192]) == 100 + 6144
+
+
+def test_runtime_latency_single_high_engine_is_18432():
+    ker = _hires_kernel("build_lp_kernel", 32768, "hp", 500.0, 0.0, 2, 14.0, 96000.0)
+    assert _impulse_peak([ker], 2048, [32768]) == 100 + 18432
+
+
+def test_runtime_latency_series_normal_then_high_is_24576():
+    k_n = _hires_kernel("build_lp_kernel", 8192, "hp", 500.0, 0.0, 2, 14.0, 96000.0)
+    k_h = _hires_kernel("build_lp_kernel", 32768, "lp", 8000.0, 0.0, 2, 14.0, 96000.0)
+    assert _impulse_peak([k_n, k_h], 2048, [8192, 32768]) == 100 + 24576
+
+
+def test_runtime_latency_series_high_then_high_is_36864():
+    k_a = _hires_kernel("build_lp_kernel", 32768, "hp", 500.0, 0.0, 2, 14.0, 96000.0)
+    k_b = _hires_kernel("build_lp_kernel", 32768, "lp", 8000.0, 0.0, 2, 14.0, 96000.0)
+    assert _impulse_peak([k_a, k_b], 2048, [32768, 32768]) == 100 + 36864
