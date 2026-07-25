@@ -1257,3 +1257,68 @@ def test_hires_desbuf_page_aligned_even_when_engine_base_is_not():
     l0, l1 = dsp.lp_packed_layouts(0, 8192, 32768, 2048)
     assert l1["desbuf"] % 65536 == 0
     assert l1["desbuf"] == 262144
+
+
+# ---- Task 3: Oracle — hi-res benefit via the production builder, sample-rate scope, BD=32768 ----
+
+_HIRES_CACHE = {}
+
+
+def _hires_kernel(builder_name, *args):
+    """Memoised kernel build - BD=32768 kernels are expensive in pure Python."""
+    key = (builder_name, args)
+    if key not in _HIRES_CACHE:
+        _HIRES_CACHE[key] = getattr(dsp, builder_name)(*args)
+    return _HIRES_CACHE[key]
+
+
+def test_hires_deepens_the_lowcut_with_the_production_builder():
+    # PRODUCTION path is impulse_fft_kernel (spec §6), not build_lp_kernel.
+    sr = 96000.0
+    k8 = _hires_kernel("impulse_fft_kernel", 8192, "hp", 20.0, 0.0, 8, 14.0, sr)
+    k32 = _hires_kernel("impulse_fft_kernel", 32768, "hp", 20.0, 0.0, 8, 14.0, sr)
+    d8 = 20 * math.log10(_kmag(k8, 10.0, sr) + 1e-30)
+    d32 = 20 * math.log10(_kmag(k32, 10.0, sr) + 1e-30)
+    assert d8 - d32 >= 20.0        # measured ~27 dB deeper at 10 Hz
+
+
+def test_hires_40hz_lowcut_approaches_the_ideal_iir():
+    sr = 96000.0
+    k32 = _hires_kernel("impulse_fft_kernel", 32768, "hp", 40.0, 0.0, 4, 14.0, sr)
+    got = 20 * math.log10(_kmag(k32, 20.0, sr) + 1e-30)
+    ideal = 20 * math.log10(dsp.hplp_digital_mag("hp", 40.0, 0.0, 4, 20.0, sr))
+    assert got - ideal < 8.0       # measured 6.0 dB from ideal
+
+
+def test_hires_benefit_is_smaller_at_192k_scope_documented():
+    # The deep-cut claim is scoped to <=96 kHz: the benefit scales with BD/srate.
+    sr = 192000.0
+    k8 = _hires_kernel("impulse_fft_kernel", 8192, "hp", 20.0, 0.0, 8, 14.0, sr)
+    k32 = _hires_kernel("impulse_fft_kernel", 32768, "hp", 20.0, 0.0, 8, 14.0, sr)
+    d8 = 20 * math.log10(_kmag(k8, 10.0, sr) + 1e-30)
+    d32 = 20 * math.log10(_kmag(k32, 10.0, sr) + 1e-30)
+    assert d8 - d32 >= 5.0         # still improves (measured ~10 dB)
+    assert d32 > -40.0             # but NOT a deep cut at 192k - this is the scope, not a bug
+
+
+def test_kernel_contracts_hold_at_BD_32768():
+    sr = 96000.0; BD = 32768; half = BD // 2
+    k = _hires_kernel("build_lp_kernel", BD, "hp", 120.0, 0.6, 4, 14.0, sr)
+    kmax = max(abs(v) for v in k)
+    asym = max(abs(k[half + d] - k[half - d]) for d in range(1, half)) / kmax
+    assert asym < 1e-6                          # symmetric about BD/2
+    assert dsp.kernel_group_delay(BD) == 16384   # integer group delay
+    for f in [300, 1000, 12000]:                 # passband parity vs analytic magnitude
+        got = 20 * math.log10(_kmag(k, f, sr) + 1e-30)
+        ana = 20 * math.log10(dsp.hplp_digital_mag("hp", 120.0, 0.6, 4, f, sr))
+        assert abs(got - ana) < 0.3
+
+
+def test_impulse_fft_equals_analytic_at_BD_32768_in_passband():
+    sr = 96000.0
+    ki = _hires_kernel("impulse_fft_kernel", 32768, "hp", 240.0, 0.6, 2, 14.0, sr)
+    ka = _hires_kernel("build_lp_kernel", 32768, "hp", 240.0, 0.6, 2, 14.0, sr)
+    for f in [500, 1000, 4000, 12000]:
+        gi = 20 * math.log10(_kmag(ki, f, sr) + 1e-30)
+        ga = 20 * math.log10(_kmag(ka, f, sr) + 1e-30)
+        assert abs(gi - ga) < 0.1
