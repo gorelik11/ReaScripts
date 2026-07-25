@@ -1210,3 +1210,50 @@ def test_linear_phase_lowfreq_resolution_limit_is_method_independent():
     true_db = 20 * math.log10(dsp.hplp_digital_mag("hp", 20.0, 0.0, 8, 13.0, sr))
     assert true_db < -55.0                                     # the ideal IIR rejects deeply
     assert di > true_db + 20.0                                 # the FIR cannot (resolution-limited)
+
+
+def test_dry_ring_size_scales_with_BD():
+    lo = dict((n, s) for n, s, _ in dsp.lp_engine_buffers(8192, 2048))
+    hi = dict((n, s) for n, s, _ in dsp.lp_engine_buffers(32768, 2048))
+    assert lo["dryA"] == 16384 and lo["dryB"] == 16384
+    assert hi["dryA"] == 32768 and hi["dryB"] == 32768
+
+
+def test_dry_ring_covers_engine_latency_at_every_resolution():
+    # the complementary-dry delay equals the engine latency BD/2 + P; the ring must exceed it
+    for BD in (8192, 16384, 32768):
+        lat = BD // 2 + 2048
+        bufs = dict((n, s) for n, s, _ in dsp.lp_engine_buffers(BD, 2048))
+        assert bufs["dryA"] > lat, f"BD={BD}: ring {bufs['dryA']} cannot hold delay {lat}"
+
+
+def test_used_span_per_resolution():
+    span = lambda BD: sum(s for _, s, _ in dsp.lp_engine_buffers(BD, 2048))
+    assert span(8192) == 229376
+    assert span(16384) == 360448
+    assert span(32768) == 655360
+
+
+def test_packed_normal_pair_matches_v06_footprint():
+    l0, l1 = dsp.lp_packed_layouts(0, 8192, 8192, 2048)
+    assert l1["__top"] == 458752          # byte-identical to V0.6
+    assert dsp.page_layout_ok(l0, 8192, 2048)
+    assert dsp.page_layout_ok(l1, 8192, 2048)
+
+
+def test_packed_layouts_all_four_combinations():
+    expect = {(8192, 8192): 458752, (32768, 8192): 884736,
+              (8192, 32768): 917504, (32768, 32768): 1310720}
+    for (b0, b1), top in expect.items():
+        l0, l1 = dsp.lp_packed_layouts(0, b0, b1, 2048)
+        assert l1["__top"] == top, f"({b0},{b1}) top {l1['__top']} != {top}"
+        assert dsp.page_layout_ok(l0, b0, 2048)
+        assert dsp.page_layout_ok(l1, b1, 2048)
+
+
+def test_hires_desbuf_page_aligned_even_when_engine_base_is_not():
+    # engine 1 packed after a Normal engine 0 starts at 229376 (not page-aligned);
+    # a High desbuf spans one full page so the layout must push it to 262144.
+    l0, l1 = dsp.lp_packed_layouts(0, 8192, 32768, 2048)
+    assert l1["desbuf"] % 65536 == 0
+    assert l1["desbuf"] == 262144

@@ -1157,9 +1157,12 @@ def _round_up(x, m):
 
 
 def lp_engine_buffers(BD, P):
-    """One engine's buffers as (name, size_words, fft_touched). Sizes per spec §11.
-    Complex buffers count 2 words/item. B=2P, KMAX=BD//P, PB2=B*2."""
+    """One engine's buffers as (name, size_words, fft_touched). Sizes per spec §11/§5.5.
+    Complex buffers count 2 words/item. B=2P, KMAX=BD//P, PB2=B*2. The complementary-dry
+    ring must exceed the engine latency BD/2+P, so it scales with BD (16384 is enough for
+    BD<=16384; BD=32768 needs 32768 because its latency is 18432)."""
     B = 2 * P; KMAX = BD // P; PB2 = B * 2
+    dry = 32768 if BD >= 32768 else 16384
     return [
         ("desbuf", BD * 2, True),          # complex kernel spectrum, FFT'd
         ("ktime",  BD,     False),         # real kernel (scratch)
@@ -1172,10 +1175,10 @@ def lp_engine_buffers(BD, P):
         ("tmpc",   PB2, True),
         ("inA",    B,   False),
         ("inB",    B,   False),
-        ("outA",   16384, False),
+        ("outA",   16384, False),          # output FIFO: only needs to exceed the hop P
         ("outB",   16384, False),
-        ("dryA",   16384, False),
-        ("dryB",   16384, False),
+        ("dryA",   dry, False),            # complementary-dry ring: must exceed BD/2+P
+        ("dryB",   dry, False),
     ]
 
 
@@ -1246,3 +1249,15 @@ def impulse_fft_kernel(BD, ftype, freq, resonance, nsec, beta, sr):
     half = BD // 2
     win = kaiser_window(BD, beta)
     return [t[(i + half) % BD].real * win[i] for i in range(BD)]
+
+
+def lp_packed_layouts(base, BD0, BD1, P):
+    """Both linear engines' layouts with engine 1 packed immediately after engine 0's used
+    span (spec §4). Packing is what makes a Normal+Normal pair occupy exactly the V0.6
+    footprint, so selecting High costs nothing until it is actually active. page_layout
+    aligns each FFT-touched buffer inside a layout, so an engine base that is not itself
+    page-aligned is still safe (a High desbuf gets pushed to the next page boundary).
+    Returns (layout0, layout1); layout1["__top"] is the overall high-water mark."""
+    l0 = page_layout(base, BD0, P)
+    l1 = page_layout(l0["__top"], BD1, P)
+    return l0, l1
