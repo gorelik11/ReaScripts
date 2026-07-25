@@ -297,7 +297,27 @@ until the smoke test passes.
 32768 kernel on a page-aligned buffer and confirm the output is correct (not silent, not
 corrupted), including `fft_permute`/`fft_ipermute` at that size. Only then proceed.
 
-**Fallback if 32768 is genuinely unusable:** `High` = **BD 16384** (KMAX 8, latency 10240,
+### 8.1 GATE RESULT (2026-07-25): PASSED — hypothesis confirmed empirically
+
+The live gate ran in REAPER and settled the question:
+
+| Probe | Setup | Result |
+|---|---|---|
+| 1 | `fft(32768)`, base 0 (**page-aligned**) | `|X[k]| min = max = 1.000000000`; ifft round-trip max err `0.000000000000` → **works perfectly** |
+| 2 | `fft(32768)`, base 98304 (**misaligned**) | `min = 0.000000000`, `max = 1.0` → **silent corruption** (zeroed bins, no error reported) |
+| control | `fft(8192)`, aligned (what V0.6 ships) | `min = max = 1.0` |
+
+**Decision: `BD_HIGH = 32768`.** The fallback below is not needed.
+
+**The finding, stated plainly:** JSFX fully supports a 32768-point FFT. What it does *not*
+tolerate is a misaligned buffer — and because a 32768-point complex FFT spans exactly one
+65536-word page, "aligned" means *exactly on a page boundary*, which almost no hand-written
+allocation satisfies by accident. The failure mode is **silent** (zeroed bins, no compile or
+runtime error), which is why previous attempts — including earlier AI-written code — concluded
+that "32768 doesn't work in JSFX". It works; it just has to be page-aligned. V0.6's
+`page_layout` already does this, and `lp_layout` (V0.7 §5.1) carries it into the plugin.
+
+**Fallback (now unused) if 32768 had been unusable:** `High` = **BD 16384** (KMAX 8, latency 10240,
 ≈107 ms @96k, ~5.9 Hz/bin, used span 360448, dry ring 16384 suffices since 10240 < 16384).
 Still a 2× resolution gain, and its `desbuf` span (32768 words = half a page) sidesteps the
 exact-page-alignment requirement entirely. The architecture of §3–§6 is unchanged; only the
