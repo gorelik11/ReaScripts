@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
-SCRIPT_PATH = Path(__file__).with_name("Grid Align Transients V1.0.py")
+sys.path.insert(0, str(Path(__file__).parent))
+
+SCRIPT_PATH = Path(__file__).with_name("Grid Align Transients V2.0.py")
 
 
 def load_module(path: Path):
-    spec = importlib.util.spec_from_file_location("grid_align_v1", str(path))
+    spec = importlib.util.spec_from_file_location("grid_align_v2", str(path))
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module from {path}")
     module = importlib.util.module_from_spec(spec)
@@ -129,20 +132,25 @@ def test_existing_splits_source() -> None:
 def test_grid_candidates() -> None:
     module = load_module(SCRIPT_PATH)
     cfg = {
-        "allow_sixteenth": True,
+        "fine_qn": 0.25,
         "include_triplets": True,
         "qn_start": 100.0,
         "qn_end": 102.0,
-        "grid_qn": 1.0,
     }
     out = module.build_grid_candidates_qn(cfg)
     assert "straight" in out and "triplet" in out
     assert any(abs(x - 100.25) < 1e-9 for x in out["straight"])
     assert any(abs(x - (100.0 + 1.0 / 3.0)) < 1e-9 for x in out["triplet"])
 
-    # triplets off -> empty triplet family
     cfg_no_trip = dict(cfg, include_triplets=False)
     assert module.build_grid_candidates_qn(cfg_no_trip)["triplet"] == []
+
+    # 1/8 choice -> straight spacing 0.5; no 100.25 sixteenth line present
+    eighth = module.build_grid_candidates_qn(
+        {"fine_qn": 0.5, "include_triplets": False,
+         "qn_start": 100.0, "qn_end": 102.0})
+    assert any(abs(x - 100.5) < 1e-9 for x in eighth["straight"])
+    assert not any(abs(x - 100.25) < 1e-9 for x in eighth["straight"])
 
 
 def test_group_family() -> None:
@@ -206,7 +214,7 @@ def test_report_schema_headless() -> None:
         "grid_threshold_ms": 15.0,
         "mode": "snap",
         "transient_source": "auto",
-        "allow_sixteenth": True,
+        "grid_choice": "1/16",
         "include_triplets": False,
     })
     for key in ("edited_segments", "skipped", "neighbor_touched", "crossed_time_selection"):
@@ -279,29 +287,115 @@ def test_docs_present() -> None:
     assert os.path.exists("docs/superpowers/specs/fixtures/grid-align-manual-test-checklist.md")
 
 
+def test_resolve_fine_qn() -> None:
+    module = load_module(SCRIPT_PATH)
+    f = module.resolve_fine_qn
+    assert f("1/8", 1.0) == 0.5
+    assert f("1/16", 1.0) == 0.25
+    assert f("1/32", 1.0) == 0.125
+    assert f("project", 1.0) == 1.0
+    assert f("project", 0.5) == 0.5
+    assert f("bogus", 0.75) == 0.75   # unknown choice -> project grid
+
+
 def test_entrypoint_no_systemexit() -> None:
     """Running the file as __main__ must NOT raise SystemExit.
 
-    REAPER runs a ReaScript in an embedded interpreter; a SystemExit there routes
-    to Py_Exit -> C exit() and kills the whole REAPER process. Simulate the
-    __main__ run with a cancelled GetUserInputs dialog and assert it returns
-    cleanly. (Regression guard for the `raise SystemExit(main())` crash.)
+    REAPER runs a ReaScript in an embedded interpreter; SystemExit there routes to
+    Py_Exit -> C exit() and kills REAPER. In plain Python the ReaImGui import path
+    cannot resolve, so the interactive dialog returns None cleanly. Guard that the
+    entry returns without SystemExit. (Regression guard for the crash law.)
     """
     import runpy
-    calls = {"dialog": 0}
-
-    def fake_dialog(*a):
-        calls["dialog"] += 1
-        return (0,) + tuple(a)  # retval 0 -> dialog cancel -> run_grid_align returns None
-
-    mocks = {"RPR_GetUserInputs": fake_dialog, "RPR_ShowMessageBox": lambda *a: 0}
+    mocks = {
+        "RPR_ShowMessageBox": lambda *a: 0,
+        "RPR_GetResourcePath": lambda *a: "/nonexistent",
+    }
     try:
         runpy.run_path(str(SCRIPT_PATH), init_globals=mocks, run_name="__main__")
     except SystemExit as exc:  # pragma: no cover - this is the bug we guard against
         raise AssertionError(
             "ReaScript __main__ raised SystemExit -> would terminate REAPER"
         ) from exc
-    assert calls["dialog"] == 1, "entry point did not reach run_grid_align (guard is moot)"
+
+
+def test_ext_state_defaults() -> None:
+    module = load_module(SCRIPT_PATH)
+    store = {}
+    module.RPR_GetExtState = lambda sect, key: store.get((sect, key), "")
+    module.RPR_SetExtState = lambda sect, key, val, persist: store.__setitem__((sect, key), val)
+
+    # empty store -> V1 defaults
+    assert module._load_defaults() == {
+        "threshold_ms": 15, "source": "auto", "mode": "snap",
+        "grid": "1/16", "triplets": False}
+
+    # round-trip
+    module._save_defaults({"threshold_ms": 22, "source": "splits",
+                           "mode": "adaptive", "grid": "1/32", "triplets": True})
+    assert module._load_defaults() == {
+        "threshold_ms": 22, "source": "splits", "mode": "adaptive",
+        "grid": "1/32", "triplets": True}
+
+    # invalid stored values fall back to defaults
+    store[("GridAlignTransients", "source")] = "garbage"
+    store[("GridAlignTransients", "grid")] = "1/3"
+    d = module._load_defaults()
+    assert d["source"] == "auto" and d["grid"] == "1/16"
+
+
+def test_dialog_apply_mapping() -> None:
+    module = load_module(SCRIPT_PATH)
+    from _reaper_fakes import FakeImGui
+    calls = {"run": [], "defer": 0, "saved": None}
+    module._run_in_reaper = lambda cfg, show_report=False: calls["run"].append((cfg, show_report))
+    module.RPR_defer = lambda s: calls.__setitem__("defer", calls["defer"] + 1)
+    module._save_defaults = lambda st: calls.__setitem__("saved", st)
+
+    fake = FakeImGui(apply=True)
+    module._GA = {"imgui": fake, "ctx": object(),
+                  "ui": {"thr": 22, "src": 1, "mode": 1, "grid": 3, "trip": True}}
+    module._ga_frame()
+
+    assert module._GA is None            # dialog closed on Apply
+    assert calls["defer"] == 0           # not re-deferred
+    assert fake.ended == 1               # End always called
+    assert len(calls["run"]) == 1
+    cfg, show_report = calls["run"][0]
+    assert show_report is True
+    assert cfg == {
+        "grid_threshold_ms": 22.0,
+        "transient_source": "splits",     # src index 1
+        "mode": "adaptive",               # mode index 1
+        "grid_choice": "1/32",            # grid index 3
+        "include_triplets": True,
+    }
+    assert calls["saved"]["mode"] == "adaptive" and calls["saved"]["grid"] == "1/32"
+
+
+def test_dialog_cancel_and_redefer() -> None:
+    module = load_module(SCRIPT_PATH)
+    from _reaper_fakes import FakeImGui
+    calls = {"run": 0, "defer": 0}
+    module._run_in_reaper = lambda cfg, show_report=False: calls.__setitem__("run", calls["run"] + 1)
+    module.RPR_defer = lambda s: calls.__setitem__("defer", calls["defer"] + 1)
+    module._save_defaults = lambda st: None
+    base_ui = {"thr": 15, "src": 0, "mode": 0, "grid": 2, "trip": False}
+
+    # Cancel -> no core call, no redefer, closed
+    module._GA = {"imgui": FakeImGui(cancel=True), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["run"] == 0 and calls["defer"] == 0 and module._GA is None
+
+    # neither clicked, window open -> re-defer, stays open
+    module._GA = {"imgui": FakeImGui(open_=1), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["run"] == 0 and calls["defer"] == 1 and module._GA is not None
+
+    # window closed via X (open_ == 0) -> stop, no further redefer
+    module._GA = {"imgui": FakeImGui(open_=0), "ctx": object(), "ui": dict(base_ui)}
+    module._ga_frame()
+    assert calls["defer"] == 1 and module._GA is None
 
 
 TESTS = [
@@ -320,6 +414,10 @@ TESTS = [
     test_group_transients,
     test_select_family_positions,
     test_entrypoint_no_systemexit,
+    test_resolve_fine_qn,
+    test_ext_state_defaults,
+    test_dialog_apply_mapping,
+    test_dialog_cancel_and_redefer,
 ]
 
 
