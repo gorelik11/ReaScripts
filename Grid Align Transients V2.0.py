@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid Align Transients V1.0 (scaffold)."""
+"""Grid Align Transients V2.0 — adaptive transient quantizer with a ReaImGui dialog."""
 
 from __future__ import annotations
 
@@ -124,12 +124,28 @@ def _frange_qn(q0, q1, step):
     return out
 
 
+def resolve_fine_qn(grid_choice, grid_qn):
+    """Fine straight-grid step (QN) for a Grid dropdown choice.
+
+    'project' (or any unknown value) falls back to the project grid step.
+    """
+    if grid_choice == "1/8":
+        return 0.5
+    if grid_choice == "1/16":
+        return 0.25
+    if grid_choice == "1/32":
+        return 0.125
+    return grid_qn
+
+
 def build_grid_candidates_qn(cfg):
-    """Straight + optional 1/16 + optional triplet candidate families (QN)."""
+    """Straight + optional triplet candidate families (QN).
+
+    cfg["fine_qn"] is the already-resolved straight-grid step (see
+    resolve_fine_qn). Triplets, when enabled, subdivide that step by 3.
+    """
     q0, q1 = cfg["qn_start"], cfg["qn_end"]
-    step_straight = cfg["grid_qn"]
-    if cfg.get("allow_sixteenth"):
-        step_straight = min(step_straight, 0.25)
+    step_straight = cfg["fine_qn"]
     straight = _frange_qn(q0, q1, step_straight)
     triplet = []
     if cfg.get("include_triplets"):
@@ -249,46 +265,39 @@ _SEG_TAIL = 0.030        # how far past the last attack a group segment extends
 _CROSSFADE_MS = 5        # in-item overlap when filling gaps
 _EDGE_EPS = 0.005        # don't split closer than this to an item edge
 
+_EXT_SECT = "GridAlignTransients"
+_SOURCES = ["auto", "splits"]
+_MODES = ["snap", "adaptive"]
+_GRIDS = ["project", "1/8", "1/16", "1/32"]
 
-def _read_user_dialog():
-    """GetUserInputs (5 fields). Returns a config dict or None on cancel."""
-    result = RPR_GetUserInputs(  # noqa: F821
-        "Grid Align Transients V1.0",
-        5,
-        ("Grid threshold (ms),Transient source (auto/splits),"
-         "Correction mode (snap/adaptive),Allow 1/16 (0/1),Include triplets (0/1)"),
-        "15,auto,snap,1,0",
-        512,
-    )
-    if not isinstance(result, tuple) or not result[0]:
-        return None
-    csv = None
-    for i in range(len(result) - 1, -1, -1):
-        if isinstance(result[i], str) and "," in result[i]:
-            csv = result[i]
-            break
-    if csv is None:
-        return None
-    parts = [p.strip() for p in csv.split(",")]
-    if len(parts) != 5:
-        return None
+
+def _load_defaults():
+    """Read last-used dialog settings from ExtState, with safe fallbacks."""
+    def g(key, default):
+        v = RPR_GetExtState(_EXT_SECT, key)  # noqa: F821
+        return v if v else default
     try:
-        threshold_ms = float(parts[0])
+        thr = int(float(g("threshold_ms", "15")))
     except ValueError:
-        RPR_ShowMessageBox("Invalid threshold value.", "Error", 0)  # noqa: F821
-        return None
-    src = parts[1].lower()
-    transient_source = "splits" if src.startswith("s") else "auto"
-    mode = "adaptive" if parts[2].lower().startswith("a") else "snap"
-    allow_sixteenth = parts[3] not in ("0", "", "off", "no")
-    include_triplets = parts[4] not in ("0", "", "off", "no")
+        thr = 15
+    src = g("source", "auto")
+    mode = g("mode", "snap")
+    grid = g("grid", "1/16")
     return {
-        "grid_threshold_ms": threshold_ms,
-        "transient_source": transient_source,
-        "mode": mode,
-        "allow_sixteenth": allow_sixteenth,
-        "include_triplets": include_triplets,
+        "threshold_ms": thr,
+        "source": src if src in _SOURCES else "auto",
+        "mode": mode if mode in _MODES else "snap",
+        "grid": grid if grid in _GRIDS else "1/16",
+        "triplets": g("triplets", "0") not in ("0", "", "off", "no"),
     }
+
+
+def _save_defaults(st):
+    RPR_SetExtState(_EXT_SECT, "threshold_ms", str(st["threshold_ms"]), True)  # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "source", st["source"], True)                   # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "mode", st["mode"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "grid", st["grid"], True)                       # noqa: F821
+    RPR_SetExtState(_EXT_SECT, "triplets", "1" if st["triplets"] else "0", True)  # noqa: F821
 
 
 def _get_time_selection():
@@ -527,6 +536,111 @@ def _fill_gaps(track_id, moved_ids, crossfade_ms=_CROSSFADE_MS):
     return filled
 
 
+_SOURCE_LABELS = ["Auto (detect)", "Existing splits"]
+_MODE_LABELS = ["Snap to grid", "Adaptive (groove)"]
+_GRID_LABELS = ["Project grid", "1/8", "1/16", "1/32"]
+# labels are index-aligned with the value lists (_SOURCES/_MODES/_GRIDS); a Combo
+# returns the chosen index, so a length mismatch would silently mis-map a dropdown.
+assert (len(_SOURCE_LABELS) == len(_SOURCES)
+        and len(_MODE_LABELS) == len(_MODES)
+        and len(_GRID_LABELS) == len(_GRIDS))
+
+_GA = None  # holds {"imgui", "ctx", "ui"} while the dialog is open
+
+
+def _items(labels):
+    """ReaImGui Combo expects null-terminated, null-separated items."""
+    return "\0".join(labels) + "\0"
+
+
+def _open_dialog():
+    """Open the ReaImGui settings window; on Apply, run the core once.
+
+    Returns None immediately (the window runs on a defer loop). Any failure to load
+    ReaImGui returns None without crashing the host.
+    """
+    global _GA
+    try:
+        import os
+        import sys
+        api = os.path.join(RPR_GetResourcePath(),  # noqa: F821
+                           "Scripts", "ReaTeam Extensions", "API")
+        if api not in sys.path:
+            sys.path.insert(0, api)
+        import imgui as _ImGui
+    except Exception:
+        try:
+            RPR_ShowMessageBox(  # noqa: F821
+                "ReaImGui is required for the Grid Align dialog.\n\n"
+                "Install it via ReaPack:\n"
+                "Extensions > ReaPack > Browse packages > search 'ReaImGui'.",
+                "Grid Align Transients V2", 0)
+        except Exception:
+            pass
+        return None
+
+    try:
+        st = _load_defaults()
+        ctx = _ImGui.CreateContext("Grid Align Transients V2")
+        _GA = {
+            "imgui": _ImGui,
+            "ctx": ctx,
+            "ui": {
+                "thr": st["threshold_ms"],
+                "src": _SOURCES.index(st["source"]),
+                "mode": _MODES.index(st["mode"]),
+                "grid": _GRIDS.index(st["grid"]),
+                "trip": st["triplets"],
+            },
+        }
+        RPR_defer("_ga_frame()")  # noqa: F821
+    except Exception:
+        _GA = None
+    return None
+
+
+def _ga_frame():
+    """One ReaImGui frame. Re-defers itself until Apply / Cancel / window close."""
+    global _GA
+    g = _GA
+    if g is None:
+        return
+    ImGui = g["imgui"]
+    ctx = g["ctx"]
+    ui = g["ui"]
+
+    visible, open_ = ImGui.Begin(ctx, "Grid Align Transients V2", True)
+    apply_clicked = False
+    cancel_clicked = False
+    if visible:
+        _, ui["thr"] = ImGui.InputInt(ctx, "Threshold (ms)", ui["thr"])
+        _, ui["src"] = ImGui.Combo(ctx, "Source", ui["src"], _items(_SOURCE_LABELS))
+        _, ui["mode"] = ImGui.Combo(ctx, "Mode", ui["mode"], _items(_MODE_LABELS))
+        _, ui["grid"] = ImGui.Combo(ctx, "Grid", ui["grid"], _items(_GRID_LABELS))
+        _, ui["trip"] = ImGui.Checkbox(ctx, "Include triplet grid", ui["trip"])
+        apply_clicked = ImGui.Button(ctx, "Apply")
+        ImGui.SameLine(ctx)
+        cancel_clicked = ImGui.Button(ctx, "Cancel")
+    ImGui.End(ctx)  # ImGui requires End even when Begin returns not-visible
+
+    if apply_clicked:
+        thr = int(ui["thr"]) if ui["thr"] and ui["thr"] > 0 else 15
+        st = {"threshold_ms": thr, "source": _SOURCES[ui["src"]],
+              "mode": _MODES[ui["mode"]], "grid": _GRIDS[ui["grid"]],
+              "triplets": bool(ui["trip"])}
+        _save_defaults(st)
+        cfg = {"grid_threshold_ms": float(thr),
+               "transient_source": st["source"], "mode": st["mode"],
+               "grid_choice": st["grid"], "include_triplets": st["triplets"]}
+        _GA = None
+        _run_in_reaper(cfg, show_report=True)
+        return
+    if cancel_clicked or open_ == 0:
+        _GA = None
+        return
+    RPR_defer("_ga_frame()")  # noqa: F821
+
+
 def run_grid_align(config=None):
     config = config or {}
     if config.get("headless"):
@@ -536,7 +650,9 @@ def run_grid_align(config=None):
             "neighbor_touched": False,
             "crossed_time_selection": False,
         }
-    return _run_in_reaper(config)
+    if config.get("grid_threshold_ms") is not None:
+        return _run_in_reaper(config)   # explicit config (automation / live tests)
+    return _open_dialog()               # interactive: ReaImGui defer loop
 
 
 def _plan_item_segments(m, time_sel, families_for, grid_step_for, gap_for,
@@ -596,32 +712,26 @@ def _plan_item_segments(m, time_sel, families_for, grid_step_for, gap_for,
     return planned, prev_lag
 
 
-def _run_in_reaper(config):
-    from_dialog = config.get("grid_threshold_ms") is None
-    cfg = _read_user_dialog() if from_dialog else config
-    if cfg is None:
-        return None  # user cancelled
-
+def _run_in_reaper(config, show_report=False):
+    cfg = config
     threshold_s = cfg["grid_threshold_ms"] / 1000.0
     mode = cfg["mode"]
     source_mode = cfg["transient_source"]
     grid_qn = _project_grid_qn()
-    fine_qn = grid_qn
-    if cfg["allow_sixteenth"]:
-        fine_qn = min(fine_qn, 0.25)
-    if cfg["include_triplets"]:
-        fine_qn = fine_qn / 3.0
+    straight_qn = resolve_fine_qn(cfg["grid_choice"], grid_qn)  # straight family step
+    # smallest candidate spacing drives the max-move guard step
+    fine_qn = straight_qn / 3.0 if cfg["include_triplets"] else straight_qn
 
     qn_of_time = lambda t: RPR_TimeMap2_timeToQN(0, t)            # noqa: F821,E731
     time_of_qn = lambda q: RPR_TimeMap2_QNToTime(0, q)           # noqa: F821,E731
 
     def families_for(win):
         qn_lo = qn_of_time(win["proj_start"])
-        q0 = math.floor(qn_lo / grid_qn) * grid_qn
-        cfg_w = {"allow_sixteenth": cfg["allow_sixteenth"],
+        q0 = math.floor(qn_lo / straight_qn) * straight_qn  # align to chosen fine grid
+        cfg_w = {"fine_qn": straight_qn,
                  "include_triplets": cfg["include_triplets"],
-                 "grid_qn": grid_qn, "qn_start": q0,
-                 "qn_end": qn_of_time(win["proj_end"]) + grid_qn}
+                 "qn_start": q0,
+                 "qn_end": qn_of_time(win["proj_end"]) + straight_qn}
         return build_grid_candidates_qn(cfg_w), q0
 
     grid_step_for = lambda q0: time_of_qn(q0 + fine_qn) - time_of_qn(q0)  # noqa: E731
@@ -630,13 +740,13 @@ def _run_in_reaper(config):
     time_sel = _get_time_selection()
     scope_items = _collect_scope_items(time_sel)
     if not scope_items:
-        if from_dialog:
+        if show_report:
             RPR_ShowMessageBox(  # noqa: F821
                 "Nothing to process.\n\n"
                 "Select the item(s) to align. With 2+ items selected, also make a "
                 "time selection to bound the edit. A single selected item is "
                 "processed whole when there is no time selection.",
-                "Grid Align Transients V1.0", 0)
+                "Grid Align Transients V2.0", 0)
         return {"edited_segments": 0, "skipped": 0,
                 "neighbor_touched": False, "crossed_time_selection": False}
     metas = []
@@ -708,16 +818,16 @@ def _run_in_reaper(config):
     finally:
         RPR_PreventUIRefresh(-1)   # noqa: F821
         RPR_UpdateArrange()        # noqa: F821
-        RPR_Undo_EndBlock("Grid Align Transients V1.0", -1)  # noqa: F821
+        RPR_Undo_EndBlock("Grid Align Transients V2.0", -1)  # noqa: F821
 
     report = {"edited_segments": edited, "skipped": skipped,
               "neighbor_touched": False, "crossed_time_selection": False}
-    if from_dialog:
+    if show_report:
         RPR_ShowMessageBox(  # noqa: F821
-            "Grid Align Transients V1.0\n\n"
+            "Grid Align Transients V2.0\n\n"
             "Segments corrected: {}\nItems skipped (playrate/reverse/section): {}\n"
             "Mode: {} / source: {}".format(edited, skipped, mode, source_mode),
-            "Grid Align Transients V1.0", 0)
+            "Grid Align Transients V2.0", 0)
     return report
 
 
