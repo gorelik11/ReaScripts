@@ -337,3 +337,36 @@ constant differs. This fallback decision is explicit, not implicit.
   IIR in the deepest stopband (−37 dB vs −96 dB at 10 Hz with the production builder). **Min
   phase remains the tool for absolute sub-bass surgery**; hi-res narrows the gap substantially
   rather than closing it. At 192 kHz the gap is wider still (§1).
+
+## 10. As-shipped outcome (2026-07-29, tagged `rcbitnova-v0.7`)
+
+**Shipped as specified, with `BD_HIGH = 32768`** (the §8.1 gate passed, so the 16384 fallback
+was never needed). Fable final review: **bit-accuracy INTACT, no P0/P1, READY TO TAG**.
+
+**Live-verified with the owner:**
+- Phase = Min unchanged; Linear at Normal/Normal identical to V0.6 (the Task-5 refactor was
+  behaviour-neutral, verified before High was enabled).
+- **Deep low-cut works** — the point of the release. Hi-res is visible on FIR Brick too: the
+  same brick at High is a noticeably steeper, squarer wall than at Normal.
+- **The P0 dry-ring path is clean**: HP = High with Placement Mid *and* Side on stereo material
+  shows no comb / phasing / flanging, i.e. the per-engine `dryN` (32768 at High) genuinely
+  fixes what would otherwise have been silent corruption of the untouched channel. Neither a
+  `Both`-only test nor a mono-impulse analyzer can exercise this path — it needed stereo audio.
+
+**Measurement gotcha worth remembering:** HP/LP on **Mid or Side placement is invisible on a
+mono-impulse analyzer** (a mono impulse has zero side content, so a Side filter has nothing to
+act on and the curve stays flat). This produced one false "the high-pass doesn't work" report
+during verification. Use `Both` for analyzer checks and stereo material for Mid/Side checks.
+
+**FIR Brick's square shape is by design** — the kernel comes from a magnitude *step*, not a
+slope, so the transition is near-vertical with sharp corners (the ReaFIR look). Not a defect.
+
+**Deferred to V0.8** (unchanged from §2, plus two P2s Fable raised):
+- Click-safe dual-kernel **crossfade** on Freq/Resonance/Slope sweep in Linear.
+- **Lane-B skip** in selective placement (Mid/Side/Left/Right run lane B on a zero input, so
+  half the convolution work is wasted — halving it is attractive now that High costs 2×KMAX).
+- P2: kernel rebuilds still fire while `Phase = Min` (inherited from V0.6; harmless because the
+  active geometry in Min is always Normal, so those rebuilds are the cheap kind).
+- P2: a Resolution change on **one** engine re-lays-out and re-dirties **both** — a correct and
+  intended consequence of packing engine 1 after engine 0, recorded here so a future reader does
+  not mistake it for a bug.
