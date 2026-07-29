@@ -500,9 +500,16 @@ lp_relayout(8192, 8192);                          // Task 5: both engines Normal
 lp_win_build(0); lp_win_build(1);
 lp_rt_reset(0);  lp_rt_reset(1);
 hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
-// FIR ring-out: two serial BD-tap kernels -> keep processing after input silence so
-// offline renders capture the full linear-phase tail. Harmless in Min (IIR, no FIR tail).
-ext_tail_size = 2 * 8192;
+// Hi-res geometry. 32768 is fully supported by JSFX fft() but a 32768-pt complex FFT spans
+// exactly one 65536 page, so its buffer MUST start on a page boundary - lp_layout guarantees
+// that. (Live gate 2026-07-25: aligned |X[k]|=1.0 everywhere + exact ifft round trip;
+// misaligned min=0.0, i.e. SILENT corruption - the reason 32768 is widely thought unusable.)
+BD_HIGH = 32768;
+// Rebuild coalescing: a BD=32768 kernel rebuild is ~4x a BD=8192 one and runs in @block, so
+// rate-limit to <=1 per 100 ms per engine. The dirty flag persists, so the final knob
+// position always gets built.
+hp_dirty = 1; lp_dirty = 1; hp_built = 0; lp_built = 0; hp_tbuild = 0; lp_tbuild = 0;
+// (ext_tail_size is derived from the active geometry in @slider - see the PDC block.)
 
 // Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
 // Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
@@ -566,13 +573,8 @@ loop(N_BANDS,
   (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
   b += 1;
 );
-// PDC policy (c): Min = zero-latency (V0.5); Linear = constant two-engine latency (both
-// engines always run, even at Slope=Off, so it never varies with filter settings). Only the
-// deliberate Min<->Linear switch changes latency (no seamless live switch needed - Dima).
-// Mode-B adds its lookahead Lk on top (linear delay is applied ONCE by the engines).
-lin_lat = slider140 == 1 ? (lp_geo[2] + lp_geo[6]) : 0;   // engine0 lat + engine1 lat
-pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
-pdc_bot_ch = 0; pdc_top_ch = 2;
+// (PDC is computed further down, AFTER the linear-engine geometry reconcile, so a Resolution
+//  change is reflected in the same @slider pass that applies it.)
 
 // ===== V0.5 HP/LP: staggered-Butterworth sections + resonance bell + reset =====
 hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;   // FIR Brick (6) -> Off in min-phase path
@@ -595,19 +597,55 @@ lp_nsec > 0 ? (
   memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
 );
 
-// ===== V0.6 linear-phase kernels: rebuild when slope/freq/resonance changes =====
-// (placement is routing, not magnitude -> excluded from the signature)
-hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
-hp_sig != hp_sig_prev ? (
-  hp_sig_prev = hp_sig;
-  lpk_build(0, 3, slider132, slider133,
-    (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
+// ===== V0.7 linear engines: selected geometry, reconcile, rebuild signatures, PDC =====
+// SELECTED resolution (slider) vs ACTIVE geometry (lp_geo). While Phase=Min nothing is
+// configured and no hi-res memory is touched, so choosing High in Min costs nothing; the
+// Min->Linear transition is covered by the same geometry compare.
+sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
+sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
+(slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
+  lp_relayout(sel_bd0, sel_bd1);    // re-lays out BOTH engines (engine 1 is packed after 0)
+  lp_win_build(0); lp_win_build(1);
+  lp_rt_reset(0);  lp_rt_reset(1);
+  hp_dirty = 1; lp_dirty = 1; hp_built = 0; lp_built = 0;
 );
+
+// Rebuild signature per engine: slope, freq, resonance (placement is routing, not magnitude).
+hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
+hp_sig != hp_sig_prev ? ( hp_sig_prev = hp_sig; hp_dirty = 1; );
 lp_sig = slider135 + slider136 * 100003 + slider137 * 1009;
-lp_sig != lp_sig_prev ? (
-  lp_sig_prev = lp_sig;
-  lpk_build(1, 4, slider136, slider137,
-    (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
+lp_sig != lp_sig_prev ? ( lp_sig_prev = lp_sig; lp_dirty = 1; );
+
+// PDC policy (c): Min = zero-latency (V0.5); Linear = the sum of the two engines' latencies
+// (both engines always run, even at Slope=Off, so it never varies with filter settings).
+// Only a deliberate Phase or Resolution change moves it. Mode-B adds its lookahead Lk on top
+// (the linear delay is applied ONCE, by the engines).
+lin_lat = slider140 == 1 ? (lp_geo[2] + lp_geo[6]) : 0;   // engine0 lat + engine1 lat
+pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
+pdc_bot_ch = 0; pdc_top_ch = 2;
+
+// FIR ring-out: the last possibly-nonzero output after the final input is
+// 2*P + BD_hp + BD_lp - 2 + Lk; add margin. Small when Linear is off (IIR has no FIR tail).
+ext_tail_size = slider140 == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
+
+@block
+
+// Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
+// knob sweep must not rebuild every block. The dirty flag persists, so the final knob
+// position is always built; the first build after a geometry change is never delayed.
+hp_dirty ? (
+  (hp_built == 0 || (time_precise() - hp_tbuild) >= 0.1) ? (
+    lpk_build(0, 3, slider132, slider133,
+      (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
+    hp_dirty = 0; hp_built = 1; hp_tbuild = time_precise();
+  );
+);
+lp_dirty ? (
+  (lp_built == 0 || (time_precise() - lp_tbuild) >= 0.1) ? (
+    lpk_build(1, 4, slider136, slider137,
+      (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
+    lp_dirty = 0; lp_built = 1; lp_tbuild = time_precise();
+  );
 );
 
 @sample
