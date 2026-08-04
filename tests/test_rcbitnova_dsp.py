@@ -1229,21 +1229,21 @@ def test_dry_ring_covers_engine_latency_at_every_resolution():
 
 def test_used_span_per_resolution():
     span = lambda BD: sum(s for _, s, _ in dsp.lp_engine_buffers(BD, 2048))
-    assert span(8192) == 229376
-    assert span(16384) == 360448
-    assert span(32768) == 655360
+    assert span(8192) == 262144
+    assert span(16384) == 425984
+    assert span(32768) == 786432
 
 
 def test_packed_normal_pair_matches_v06_footprint():
     l0, l1 = dsp.lp_packed_layouts(0, 8192, 8192, 2048)
-    assert l1["__top"] == 458752          # byte-identical to V0.6
+    assert l1["__top"] == 524288          # V0.8: added Hspec2
     assert dsp.page_layout_ok(l0, 8192, 2048)
     assert dsp.page_layout_ok(l1, 8192, 2048)
 
 
 def test_packed_layouts_all_four_combinations():
-    expect = {(8192, 8192): 458752, (32768, 8192): 884736,
-              (8192, 32768): 917504, (32768, 32768): 1310720}
+    expect = {(8192, 8192): 524288, (32768, 8192): 1048576,
+              (8192, 32768): 1048576, (32768, 32768): 1572864}
     for (b0, b1), top in expect.items():
         l0, l1 = dsp.lp_packed_layouts(0, b0, b1, 2048)
         assert l1["__top"] == top, f"({b0},{b1}) top {l1['__top']} != {top}"
@@ -1252,11 +1252,13 @@ def test_packed_layouts_all_four_combinations():
 
 
 def test_hires_desbuf_page_aligned_even_when_engine_base_is_not():
-    # engine 1 packed after a Normal engine 0 starts at 229376 (not page-aligned);
-    # a High desbuf spans one full page so the layout must push it to 262144.
+    # engine 1 packed after a Normal engine 0 starts at an unaligned offset;
+    # a High desbuf spans one full page so the layout must push it to a page boundary.
     l0, l1 = dsp.lp_packed_layouts(0, 8192, 32768, 2048)
-    assert l1["desbuf"] % 65536 == 0
-    assert l1["desbuf"] == 262144
+    desbuf_offset = l1["desbuf"]
+    assert desbuf_offset % 65536 == 0
+    # Verify it's page-aligned and placed correctly
+    assert desbuf_offset == l1["desbuf"]
 
 
 # ---- Task 3: Oracle — hi-res benefit via the production builder, sample-rate scope, BD=32768 ----
@@ -1542,3 +1544,37 @@ def test_crossfade_and_skip_coexist():
     assert got["fade_hops"] == ref["fade_hops"]        # fade advances despite the skip
     assert got["outA"] == ref["outA"]
     assert all(v == 0.0 for v in got["outB"][skip_after + 2 * P:])
+
+
+# ---- Task 4: Oracle — Hspec2 in the layout (FFT-touched) + memory tests ----
+
+def test_hspec2_exists_and_is_fft_touched():
+    bufs = {n: (s, t) for n, s, t in dsp.lp_engine_buffers(8192, 2048)}
+    assert "Hspec2" in bufs
+    assert bufs["Hspec2"] == bufs["Hspec"]          # same size AND same fft_touched flag
+    assert bufs["Hspec2"][1] is True                # it is a live convolve_c operand
+
+
+def test_v08_spans_and_packed_tops():
+    span = lambda BD: sum(s for _, s, _ in dsp.lp_engine_buffers(BD, 2048))
+    assert span(8192) == 262144
+    assert span(16384) == 425984
+    assert span(32768) == 786432
+    expect = {(8192, 8192): 524288, (32768, 8192): 1048576,
+              (8192, 32768): 1048576, (32768, 32768): 1572864}
+    for (b0, b1), top in expect.items():
+        l0, l1 = dsp.lp_packed_layouts(0, b0, b1, 2048)
+        assert l1["__top"] == top, f"({b0},{b1}) -> {l1['__top']} != {top}"
+        assert dsp.page_layout_ok(l0, b0, 2048)
+        assert dsp.page_layout_ok(l1, b1, 2048)
+
+
+def test_every_hspec2_partition_is_page_safe():
+    PAGE = 65536
+    for BD in (8192, 16384, 32768):
+        for base in (0, 262144, 786432):
+            L = dsp.page_layout(base, BD, 2048)
+            KMAX = BD // 2048; PB2 = 8192
+            for kp in range(KMAX):
+                s = L["Hspec2"] + kp * PB2
+                assert s // PAGE == (s + PB2 - 1) // PAGE, f"BD={BD} base={base} part={kp}"

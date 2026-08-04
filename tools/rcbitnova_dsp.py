@@ -1168,6 +1168,9 @@ def lp_engine_buffers(BD, P):
         ("ktime",  BD,     False),         # real kernel (scratch)
         ("win_k",  BD,     False),
         ("Hspec",  KMAX * PB2, True),      # partitions, each span PB2 convolve_c'd
+        ("Hspec2", KMAX * PB2, True),      # V0.8 crossfade target - ALSO a live convolve_c
+                                           # operand during a fade, so it is FFT-touched and
+                                           # must obey the same PB2 / no-page-crossing rule
         ("fdlA",   KMAX * PB2, True),
         ("fdlB",   KMAX * PB2, True),
         ("fftw",   PB2, True),
@@ -1186,7 +1189,7 @@ def page_layout(base, BD, P):
     """Assign offsets so every FFT-touched buffer's whole span lies in one 65536 page.
     Strategy: place each FFT-touched block on a boundary that is a multiple of its own
     span (span <= 16384 <= page, so alignment guarantees no page crossing); pack non-FFT
-    ring buffers afterwards. Partitioned buffers (Hspec/fdlA/fdlB) are page-safe per
+    ring buffers afterwards. Partitioned buffers (Hspec/Hspec2/fdlA/fdlB) are page-safe per
     PARTITION: each partition span is PB2; alignment requires that PB2 divides the page
     (a precondition holding for RCBitNova's power-of-two engine sizes)."""
     B = 2 * P; PB2 = B * 2
@@ -1194,7 +1197,7 @@ def page_layout(base, BD, P):
     ptr = base
     for name, size, touched in lp_engine_buffers(BD, P):
         if touched:
-            unit = PB2 if name in ("Hspec", "fdlA", "fdlB") else size
+            unit = PB2 if name in ("Hspec", "Hspec2", "fdlA", "fdlB") else size
             assert _LP_PAGE % min(unit, _LP_PAGE) == 0, f"page_layout: alignment unit {unit} must divide page {_LP_PAGE}"
             # align so the (sub)block never straddles a page; unit divides the page
             ptr = _round_up(ptr, min(unit, _LP_PAGE))
@@ -1211,7 +1214,7 @@ def page_layout_ok(layout, BD, P):
         if not touched:
             continue
         start = layout[name]
-        if name in ("Hspec", "fdlA", "fdlB"):
+        if name in ("Hspec", "Hspec2", "fdlA", "fdlB"):
             spans = [(start + kp * PB2, PB2) for kp in range(KMAX)]   # per-partition
         else:
             spans = [(start, size)]
