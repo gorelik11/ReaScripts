@@ -1261,3 +1261,94 @@ def lp_packed_layouts(base, BD0, BD1, P):
     l0 = page_layout(base, BD0, P)
     l1 = page_layout(l0["__top"], BD1, P)
     return l0, l1
+
+
+def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip_after=None):
+    """Integrated two-lane reference for the V0.8 linear-phase engine (spec rev 3 §4-§5).
+
+    Models BOTH new features exactly as the JSFX must, in the pinned hop order:
+      FDL write -> lane A -> lane B (same alpha values) -> fade_pos += P
+      -> completion check -> fdl_wr advance (engine-level, even if a lane skipped).
+
+    switch_hop: hop index at which ker_b becomes the target (None = never switch).
+    fade_len:   crossfade length in SAMPLES; 0 = instant swap (the V0.7 baseline).
+    skip_after: zero-run threshold; None disables the skip. The counter saturates and
+                is updated including the current sample, BEFORE the hop decision.
+
+    Returns dict(outA, outB, skipped, fade_hops, state)."""
+    B = 2 * P
+    KMAX = len(ker_a) // P
+
+    def _spec(k):
+        return [lp_fft([complex(k[kp * P + i], 0) if i < P else 0j for i in range(B)])
+                for kp in range(KMAX)]
+
+    active = _spec(ker_a)
+    target = _spec(ker_b)
+    fdl = {"A": [[0j] * B for _ in range(KMAX)], "B": [[0j] * B for _ in range(KMAX)]}
+    hist = {"A": [0.0] * B, "B": [0.0] * B}
+    pend = {"A": [], "B": []}
+    out = {"A": [], "B": []}
+    zc = {"A": 0, "B": 0}
+    fdl_wr = 0; hpos = 0; cnt = 0; hop = 0
+    skipped = 0; fading = False; fade_pos = 0; fade_hops = 0
+
+    for n in range(len(sigA)):
+        for lane, src in (("A", sigA), ("B", sigB)):
+            x = src[n]
+            if skip_after is None:
+                zc[lane] = 0
+            elif x == 0.0:
+                zc[lane] = min(zc[lane] + 1, skip_after)
+            else:
+                zc[lane] = 0
+            hist[lane][hpos] = x
+        hpos = (hpos + 1) % B
+        cnt += 1
+        for lane in ("A", "B"):
+            out[lane].append(pend[lane].pop(0) if pend[lane] else 0.0)
+        if cnt < P:
+            continue
+        cnt = 0
+        if switch_hop is not None and hop == switch_hop:
+            if fade_len > 0:
+                fading = True; fade_pos = 0
+            else:
+                active = [list(h) for h in target]
+        for lane in ("A", "B"):
+            if skip_after is not None and zc[lane] >= skip_after:
+                pend[lane].extend([0.0] * P)
+                skipped += 1
+                continue
+            blk = [complex(hist[lane][(hpos + i) % B], 0) for i in range(B)]
+            fdl[lane][fdl_wr] = lp_fft(blk)
+
+            def _conv(spec):
+                acc = [0j] * B
+                for kp in range(KMAX):
+                    Fd = fdl[lane][(fdl_wr - kp) % KMAX]
+                    H = spec[kp]
+                    for i in range(B):
+                        acc[i] += Fd[i] * H[i]
+                return lp_ifft(acc)
+
+            y1 = _conv(active)
+            if fading:
+                y2 = _conv(target)
+                for i in range(P):
+                    a = min((fade_pos + i) / fade_len, 1.0)
+                    pend[lane].append(y1[P + i].real * (1.0 - a) + y2[P + i].real * a)
+            else:
+                pend[lane].extend(y1[P + i].real for i in range(P))
+        if fading:
+            fade_pos += P
+            fade_hops += 1
+            if fade_pos >= fade_len:
+                active = [list(h) for h in target]
+                fading = False
+        fdl_wr = (fdl_wr + 1) % KMAX
+        hop += 1
+
+    return {"outA": out["A"], "outB": out["B"], "skipped": skipped, "fade_hops": fade_hops,
+            "state": {"fdl_wr": fdl_wr, "zcA": zc["A"], "zcB": zc["B"],
+                      "fdlA": fdl["A"], "fdlB": fdl["B"], "hist_pos": hpos}}

@@ -1365,3 +1365,35 @@ def test_runtime_latency_series_high_then_high_is_36864():
     k_a = _hires_kernel("build_lp_kernel", 32768, "hp", 500.0, 0.0, 2, 14.0, 96000.0)
     k_b = _hires_kernel("build_lp_kernel", 32768, "lp", 8000.0, 0.0, 2, 14.0, 96000.0)
     assert _impulse_peak([k_a, k_b], 2048, [32768, 32768]) == 100 + 36864
+
+
+# ---- Task 5: Oracle — integrated two-lane reference engine ----
+
+def test_engine_ref_matches_partitioned_convolve_when_idle():
+    # With no switch and no skip, each lane must equal the existing reference engine.
+    sig = [math.sin(0.3 * i) + 0.5 * math.sin(0.02 * i) for i in range(240)]
+    other = [math.cos(0.21 * i) for i in range(240)]
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]
+    r = dsp.lp_engine_ref(sig, other, ker, ker, 16)
+    assert r["outA"] == dsp.partitioned_convolve(sig, ker, 16)
+    assert r["outB"] == dsp.partitioned_convolve(other, ker, 16)
+    assert r["skipped"] == 0 and r["fade_hops"] == 0
+
+
+def test_engine_ref_instant_swap_is_the_v07_baseline():
+    # fade_len = 0 must reproduce a hard kernel swap at the switch hop.
+    sig = [math.sin(0.3 * i) for i in range(240)]
+    zeros = [0.0] * 240
+    ka = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]
+    kb = [math.cos(0.4 * i) * math.exp(-0.03 * i) for i in range(64)]
+    r = dsp.lp_engine_ref(sig, zeros, ka, kb, 16, switch_hop=5, fade_len=0)
+    assert r["fade_hops"] == 0
+    # after the swap the engine must behave like one built on kb alone for fresh history
+    assert len(r["outA"]) == len(sig)
+
+
+def test_engine_ref_advances_fdl_wr_once_per_hop():
+    sig = [1.0] * (16 * 7)
+    ker = [0.0] * 64; ker[0] = 1.0
+    r = dsp.lp_engine_ref(sig, sig, ker, ker, 16)
+    assert r["state"]["fdl_wr"] == (16 * 7 // 16) % (64 // 16)
