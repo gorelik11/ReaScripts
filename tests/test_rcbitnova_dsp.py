@@ -1397,3 +1397,62 @@ def test_engine_ref_advances_fdl_wr_once_per_hop():
     ker = [0.0] * 64; ker[0] = 1.0
     r = dsp.lp_engine_ref(sig, sig, ker, ker, 16)
     assert r["state"]["fdl_wr"] == (16 * 7 // 16) % (64 // 16)
+
+
+# ---- V0.8 Task 2: Oracle — lane-skip tests (bit-exactness, firing, hop phases) ----
+
+def _skip_case(P, ker, zero_run, onset_phase, tail=None):
+    """Signal for lane B: `onset_phase` non-zero samples, then `zero_run` exact zeros,
+    then a re-excitation tail. Lane A always carries signal."""
+    if tail is None:
+        tail = [math.sin(0.3 * i) for i in range(4 * P)]
+    head = [math.sin(0.11 * i) + 0.3 for i in range(onset_phase)]
+    sigB = head + [0.0] * zero_run + tail
+    sigA = [math.sin(0.23 * i) for i in range(len(sigB))]
+    return sigA, sigB
+
+
+def test_lane_skip_is_bit_exact_against_the_non_skipping_engine():
+    P = 16; BD = 64; B = 2 * P; skip_after = BD + B
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(BD)]
+    sigA, sigB = _skip_case(P, ker, zero_run=skip_after + 3 * P, onset_phase=P + 5)
+    ref = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=None)
+    got = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=skip_after)
+    assert got["skipped"] > 0                      # the optimisation really fired
+    assert got["outB"] == ref["outB"]              # BIT-identical, not approximately equal
+    assert got["outA"] == ref["outA"]              # the running lane is untouched
+    assert got["state"]["fdl_wr"] == ref["state"]["fdl_wr"]
+    assert got["state"]["fdlB"] == ref["state"]["fdlB"]
+
+
+def test_lane_skip_output_is_exactly_zero_while_skipping():
+    P = 16; BD = 64; B = 2 * P; skip_after = BD + B
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(BD)]
+    sigA, sigB = _skip_case(P, ker, zero_run=skip_after + 4 * P, onset_phase=0)
+    got = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=skip_after)
+    # deep inside the zero run (past the FIR tail) the lane output must be exactly 0.0
+    probe = skip_after + 2 * P
+    assert all(v == 0.0 for v in got["outB"][probe:probe + P])
+
+
+def test_lane_skip_never_fires_early_and_covers_hop_phases():
+    P = 16; BD = 64; B = 2 * P; skip_after = BD + B
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(BD)]
+    for phase in (0, 1, P - 1):
+        for run in (skip_after - 1, skip_after, skip_after + P):
+            sigA, sigB = _skip_case(P, ker, zero_run=run, onset_phase=phase)
+            ref = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=None)
+            got = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=skip_after)
+            assert got["outB"] == ref["outB"], f"phase={phase} run={run} diverged"
+
+
+def test_lane_skip_all_four_run_skip_combinations():
+    P = 16; BD = 64; B = 2 * P; skip_after = BD + B
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(BD)]
+    n = skip_after + 6 * P
+    live = [math.sin(0.23 * i) for i in range(n)]
+    dead = [0.0] * n
+    for sigA, sigB in ((live, live), (live, dead), (dead, live), (dead, dead)):
+        ref = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=None)
+        got = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=skip_after)
+        assert got["outA"] == ref["outA"] and got["outB"] == ref["outB"]
