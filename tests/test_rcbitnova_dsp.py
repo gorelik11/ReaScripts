@@ -1456,3 +1456,89 @@ def test_lane_skip_all_four_run_skip_combinations():
         ref = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=None)
         got = dsp.lp_engine_ref(sigA, sigB, ker, ker, P, skip_after=skip_after)
         assert got["outA"] == ref["outA"] and got["outB"] == ref["outB"]
+
+
+# ---- V0.8 Task 3: Oracle — crossfade tests (artefact killed, exact landing, endpoint ordering) ----
+
+def _curvature_anomaly_db(y, s0, s1, ref_lo, ref_hi, peak):
+    """Worst second-difference spike in [s0,s1) above the steady-state baseline, in dB
+    relative to peak. A waveform step shows up as a large curvature spike."""
+    base = max(abs(y[n + 1] - 2 * y[n] + y[n - 1]) for n in range(ref_lo, ref_hi))
+    worst = max(abs(y[n + 1] - 2 * y[n] + y[n - 1]) for n in range(s0, s1))
+    return 20 * math.log10(max(worst - base, 1e-14) / peak)
+
+
+def test_crossfade_removes_the_step_that_an_instant_swap_creates():
+    # The measured worst case from the spec: Slope 24 -> 48 dB/oct under audio.
+    sr = 96000.0; BD = 8192; P = 2048
+    ka = dsp.impulse_fft_kernel(BD, "hp", 100.0, 0.0, 2, 14.0, sr)
+    kb = dsp.impulse_fft_kernel(BD, "hp", 100.0, 0.0, 4, 14.0, sr)
+    n = P * 22
+    sig = [math.sin(2 * math.pi * 60.0 * i / sr) for i in range(n)]   # below cutoff: kernels differ
+    zeros = [0.0] * n
+    sw = 8
+    inst = dsp.lp_engine_ref(sig, zeros, ka, kb, P, switch_hop=sw, fade_len=0)
+    fade = dsp.lp_engine_ref(sig, zeros, ka, kb, P, switch_hop=sw, fade_len=int(0.05 * sr))
+    s0, s1 = sw * P - P, sw * P + 6 * P
+    peak = max(abs(v) for v in inst["outA"][s1:]) or 1e-9
+    a_inst = _curvature_anomaly_db(inst["outA"], s0, s1, s1 + P, len(sig) - 1, peak)
+    a_fade = _curvature_anomaly_db(fade["outA"], s0, s1, s1 + P, len(sig) - 1, peak)
+    assert a_inst > -20.0        # the baseline really is broken (guards a vacuous test)
+    assert a_fade < -60.0        # and the crossfade really fixes it
+    assert a_fade < a_inst - 30.0
+
+
+def test_crossfade_steady_state_is_bit_exact():
+    # No switch in flight -> byte-identical to the plain engine (Arthur's discipline).
+    sig = [math.sin(0.3 * i) + 0.4 * math.sin(0.017 * i) for i in range(240)]
+    zeros = [0.0] * 240
+    ker = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]
+    r = dsp.lp_engine_ref(sig, zeros, ker, ker, 16, switch_hop=None, fade_len=800)
+    assert r["outA"] == dsp.partitioned_convolve(sig, ker, 16)
+    assert r["fade_hops"] == 0
+
+
+def test_crossfade_lands_exactly_and_then_stops_fading():
+    P = 16; n = P * 30
+    sig = [math.sin(0.3 * i) for i in range(n)]
+    zeros = [0.0] * n
+    ka = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]
+    kb = [math.cos(0.4 * i) * math.exp(-0.03 * i) for i in range(64)]
+    fade_len = 3 * P
+    r = dsp.lp_engine_ref(sig, zeros, ka, kb, P, switch_hop=5, fade_len=fade_len)
+    assert r["fade_hops"] == 3          # ceil(fade_len / P) hops carried a fade
+    # after the fade, output must match an engine that used kb from the same hop onward
+    ref = dsp.lp_engine_ref(sig, zeros, ka, kb, P, switch_hop=5, fade_len=0)
+    tail = slice(5 * P + fade_len + 4 * P, n)
+    assert r["outA"][tail] == pytest.approx(ref["outA"][tail], abs=1e-9)
+
+
+def test_crossfade_endpoint_ordering_over_awkward_fade_lengths():
+    # fade_len is not a multiple of P in practice (2400 @48k, 2205 @44.1k).
+    P = 16; n = P * 30
+    sig = [math.sin(0.3 * i) for i in range(n)]
+    zeros = [0.0] * n
+    ka = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(64)]
+    kb = [math.cos(0.4 * i) * math.exp(-0.03 * i) for i in range(64)]
+    for fade_len in (P - 1, P, P + 1, 2 * P + 5):
+        r = dsp.lp_engine_ref(sig, zeros, ka, kb, P, switch_hop=5, fade_len=fade_len)
+        assert r["fade_hops"] == -(-fade_len // P)     # ceil, no off-by-one hop
+        assert len(r["outA"]) == n
+
+
+def test_crossfade_and_skip_coexist():
+    # A fade in progress while lane B is skipped: fade still advances, B stays silent,
+    # and lane A matches the non-skipping engine bit-for-bit.
+    P = 16; BD = 64; B = 2 * P; skip_after = BD + B
+    n = skip_after + 10 * P
+    sigA = [math.sin(0.23 * i) for i in range(n)]
+    sigB = [0.0] * n
+    ka = [math.sin(0.7 * i) * math.exp(-0.05 * i) for i in range(BD)]
+    kb = [math.cos(0.4 * i) * math.exp(-0.03 * i) for i in range(BD)]
+    sw = (skip_after // P) + 2
+    ref = dsp.lp_engine_ref(sigA, sigB, ka, kb, P, switch_hop=sw, fade_len=2 * P, skip_after=None)
+    got = dsp.lp_engine_ref(sigA, sigB, ka, kb, P, switch_hop=sw, fade_len=2 * P, skip_after=skip_after)
+    assert got["skipped"] > 0
+    assert got["fade_hops"] == ref["fade_hops"]        # fade advances despite the skip
+    assert got["outA"] == ref["outA"]
+    assert all(v == 0.0 for v in got["outB"][skip_after + 2 * P:])
