@@ -1252,13 +1252,21 @@ def test_packed_layouts_all_four_combinations():
 
 
 def test_hires_desbuf_page_aligned_even_when_engine_base_is_not():
-    # engine 1 packed after a Normal engine 0 starts at an unaligned offset;
-    # a High desbuf spans one full page so the layout must push it to a page boundary.
-    l0, l1 = dsp.lp_packed_layouts(0, 8192, 32768, 2048)
-    desbuf_offset = l1["desbuf"]
-    assert desbuf_offset % 65536 == 0
-    # Verify it's page-aligned and placed correctly
-    assert desbuf_offset == l1["desbuf"]
+    # A High desbuf spans exactly one 65536 page, so it MUST start on a page boundary or
+    # JSFX corrupts it silently. When engine 1 is packed after an engine whose span is not
+    # a whole number of pages, the layout has to PUSH desbuf up to the next boundary.
+    # (V0.8 spans: Normal 262144 = 4 pages and High 786432 = 12 pages are both already
+    # aligned, so the fallback-16384 span 425984 = 6.5 pages is what exercises the push.)
+    l0, l1 = dsp.lp_packed_layouts(0, 16384, 32768, 2048)
+    base = l0["__top"]
+    assert base == 425984 and base % 65536 != 0          # the base really is unaligned
+    assert l1["desbuf"] == 458752                        # pushed up to the next page
+    assert l1["desbuf"] % 65536 == 0
+    assert dsp.page_layout_ok(l1, 32768, 2048)
+
+    # and in the aligned case no padding is wasted
+    m0, m1 = dsp.lp_packed_layouts(0, 8192, 32768, 2048)
+    assert m1["desbuf"] == m0["__top"] == 262144
 
 
 # ---- Task 3: Oracle — hi-res benefit via the production builder, sample-rate scope, BD=32768 ----
