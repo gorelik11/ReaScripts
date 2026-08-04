@@ -1367,7 +1367,7 @@ def test_runtime_latency_series_high_then_high_is_36864():
     assert _impulse_peak([k_a, k_b], 2048, [32768, 32768]) == 100 + 36864
 
 
-# ---- Task 5: Oracle — integrated two-lane reference engine ----
+# ---- V0.8 Task 1: integrated two-lane reference engine ----
 
 def test_engine_ref_matches_partitioned_convolve_when_idle():
     # With no switch and no skip, each lane must equal the existing reference engine.
