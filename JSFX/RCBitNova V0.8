@@ -1,0 +1,994 @@
+desc: RCBitNova V0.8 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A+B + proportional-Q bells + min-phase HP/LP + linear-phase HP/LP + FIR Brick + per-filter hi-res + click-safe kernel crossfade + lane skip)
+
+// License: GPL - http://www.gnu.org/licenses/gpl.html
+// Author: Dima Gorelik (design with Claude)
+// Bit logic: 1 bit = 6.0206 dB; gain_lin = 2^((macro + micro/100) * bitratio).
+// Filters: TPT state-variable (Andy Simper / Cytomic). All state instance-local
+// (NOT gmem) - fixes the cross-instance bug of the gmem-based bit EQ.
+// Phase 1: static engine, zero-latency, 4 slider bands, no dynamics/GUI.
+// Shelf dynamics: Shelf ceiling = peak of the shelf-region detector
+// (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
+// -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
+// at DC by design (rumble/boom tamer) - it reacts to DC offset.
+// Shelf Mode B (split limiter): extracts the shelf region (HP branch for High
+// Shelf, LP branch for Low Shelf) via the fixed-Q 0.7071 SVF, brick-limits that
+// branch to the ceiling, and passes the remainder untouched (perfect
+// reconstruction). The guarantee bounds the extracted region contribution, not
+// the summed output. The band Q shapes only the Mode A cut, never the Mode B split.
+// HP/LP section (V0.5): staggered-Butterworth SVF cascade (12/24/36/48/96 dB/oct),
+// section Q set per Butterworth pole angle (maximally-flat slope, no ripple), plus a
+// separate always-ticking resonance bell (fixed Q=2, decoupled from slope) at the same
+// effective cutoff; Resonance 0 = identity (bit-exact bypass of the bell). Per-filter
+// Placement Both/Mid/Side/Left/Right. Zero latency; runs before the EQ bands.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:0<0,1,1{Off,On}>-Bypass
+slider2:0<-16,16,1>-Output Macro (bits)
+slider3:0<-100,100,0.1>-Output Micro (% bit)
+slider4:2<0.1,10,0.1>-Lookahead (ms, Mode B)
+
+slider11:1<0,1,1{Off,On}>B1 Enable
+slider12:0<0,2,1{Bell,Low Shelf,High Shelf}>B1 Type
+slider13:100<20,20000,1>B1 Freq
+slider14:0.707<0.1,10,0.001>B1 Q
+slider15:0<-16,16,1>B1 Macro (bits)
+slider16:0<-100,100,0.1>B1 Micro (% bit)
+slider17:1<0,3,0.1>B1 Bit Ratio
+slider18:0<0,4,1{Both,Mid,Side,Left,Right}>B1 Placement
+slider19:0<0,1,0.001>B1 Q Character (0 Constant .. 1 Proportional)
+
+slider21:0<0,1,1{Off,On}>B2 Enable
+slider22:0<0,2,1{Bell,Low Shelf,High Shelf}>B2 Type
+slider23:1000<20,20000,1>B2 Freq
+slider24:0.707<0.1,10,0.001>B2 Q
+slider25:0<-16,16,1>B2 Macro (bits)
+slider26:0<-100,100,0.1>B2 Micro (% bit)
+slider27:1<0,3,0.1>B2 Bit Ratio
+slider28:0<0,4,1{Both,Mid,Side,Left,Right}>B2 Placement
+slider29:0<0,1,0.001>B2 Q Character (0 Constant .. 1 Proportional)
+
+slider31:0<0,1,1{Off,On}>B3 Enable
+slider32:0<0,2,1{Bell,Low Shelf,High Shelf}>B3 Type
+slider33:3000<20,20000,1>B3 Freq
+slider34:0.707<0.1,10,0.001>B3 Q
+slider35:0<-16,16,1>B3 Macro (bits)
+slider36:0<-100,100,0.1>B3 Micro (% bit)
+slider37:1<0,3,0.1>B3 Bit Ratio
+slider38:0<0,4,1{Both,Mid,Side,Left,Right}>B3 Placement
+slider39:0<0,1,0.001>B3 Q Character (0 Constant .. 1 Proportional)
+
+slider41:0<0,1,1{Off,On}>B4 Enable
+slider42:0<0,2,1{Bell,Low Shelf,High Shelf}>B4 Type
+slider43:10000<20,20000,1>B4 Freq
+slider44:0.707<0.1,10,0.001>B4 Q
+slider45:0<-16,16,1>B4 Macro (bits)
+slider46:0<-100,100,0.1>B4 Micro (% bit)
+slider47:1<0,3,0.1>B4 Bit Ratio
+slider48:0<0,4,1{Both,Mid,Side,Left,Right}>B4 Placement
+slider49:0<0,1,0.001>B4 Q Character (0 Constant .. 1 Proportional)
+
+slider51:0<0,1,1{Off,On}>B1 Dyn
+slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>B1 Dyn Stereo (Both only)
+slider53:1<0,16,1>B1 Soft Ceiling Macro (bits below 0)
+slider54:0<-100,100,0.1>B1 Soft Ceiling Micro (% bit)
+slider55:1<0.05,50,0.01>B1 Attack (ms)
+slider56:80<1,500,1>B1 Release (ms)
+slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>B1 Dyn Mode
+slider58:1<0,1,1{Off,On}>B1 Soft
+
+slider61:0<0,1,1{Off,On}>B2 Dyn
+slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
+slider63:1<0,16,1>B2 Soft Ceiling Macro (bits below 0)
+slider64:0<-100,100,0.1>B2 Soft Ceiling Micro (% bit)
+slider65:1<0.05,50,0.01>B2 Attack (ms)
+slider66:80<1,500,1>B2 Release (ms)
+slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>B2 Dyn Mode
+slider68:1<0,1,1{Off,On}>B2 Soft
+
+slider71:0<0,1,1{Off,On}>B3 Dyn
+slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
+slider73:1<0,16,1>B3 Soft Ceiling Macro (bits below 0)
+slider74:0<-100,100,0.1>B3 Soft Ceiling Micro (% bit)
+slider75:1<0.05,50,0.01>B3 Attack (ms)
+slider76:80<1,500,1>B3 Release (ms)
+slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>B3 Dyn Mode
+slider78:1<0,1,1{Off,On}>B3 Soft
+
+slider81:0<0,1,1{Off,On}>B4 Dyn
+slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
+slider83:1<0,16,1>B4 Soft Ceiling Macro (bits below 0)
+slider84:0<-100,100,0.1>B4 Soft Ceiling Micro (% bit)
+slider85:1<0.05,50,0.01>B4 Attack (ms)
+slider86:80<1,500,1>B4 Release (ms)
+slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
+slider88:1<0,1,1{Off,On}>B4 Soft
+
+slider91:0<0,1,1{Off,On}>B1 Hard
+slider92:0<0,16,1>B1 Hard Ceiling Macro (bits below 0)
+slider93:0<-100,100,0.1>B1 Hard Ceiling Micro (% bit)
+slider101:0<0,1,1{Off,On}>B2 Hard
+slider102:0<0,16,1>B2 Hard Ceiling Macro (bits below 0)
+slider103:0<-100,100,0.1>B2 Hard Ceiling Micro (% bit)
+slider111:0<0,1,1{Off,On}>B3 Hard
+slider112:0<0,16,1>B3 Hard Ceiling Macro (bits below 0)
+slider113:0<-100,100,0.1>B3 Hard Ceiling Micro (% bit)
+slider121:0<0,1,1{Off,On}>B4 Hard
+slider122:0<0,16,1>B4 Hard Ceiling Macro (bits below 0)
+slider123:0<-100,100,0.1>B4 Hard Ceiling Micro (% bit)
+
+slider131:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>HP Slope (dB/oct)
+slider132:20<20,20000,1>HP Freq (Hz)
+slider133:0<0,1,0.001>HP Resonance
+slider134:0<0,4,1{Both,Mid,Side,Left,Right}>HP Placement
+slider135:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>LP Slope (dB/oct)
+slider136:20000<20,20000,1>LP Freq (Hz)
+slider137:0<0,1,0.001>LP Resonance
+slider138:0<0,4,1{Both,Mid,Side,Left,Right}>LP Placement
+slider140:0<0,1,1{Min,Linear}>Phase
+slider141:0<0,1,1{Normal,High}>HP Resolution (Linear only)
+slider142:0<0,1,1{Normal,High}>LP Resolution (Linear only)
+
+@init
+
+N_BANDS = 4;
+cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
+st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
+memset(st, 0, N_BANDS * 4);
+
+// Dynamics (Phase 2b) instance-local memory
+det = 96;   // detector bandpass coeffs: 4/band (a1,a2,a3,k)
+dst = 128;  // detector state: 4/band (chA ic1,ic2 ; chB ic1,ic2)
+cst = 160;  // cut SVF state:  4/band (chA ic1,ic2 ; chB ic1,ic2)
+dp  = 192;  // dyn params: 4/band (ceil_lin, atk, rel, dynOn)
+dm  = 208;  // dyn stereo mode: 1/band (0 Linked,1 Dual L/R,2 Dual M/S)
+bp  = 216;  // band params: 3/band (fc, q, cg)
+eg  = 256;  // env_gain: 2/band (chA, chB)
+memset(dst, 0, N_BANDS * 4);
+memset(cst, 0, N_BANDS * 4);
+i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
+anti = pow(2, -100);  // anti-denormal toggle (~8e-31; EEL2 rejects 1e-30 literal)
+
+// Mode B (Phase 3a) instance-local memory
+MAX_LOOK = 2048;   // covers the 10 ms slider max up to 192 kHz (1920 samples)
+mb_band = 1024;    // band ring: per (band,channel) MAX_LOOK each (cs = b*2+c)
+mb_peak = mb_band + N_BANDS * 2 * MAX_LOOK;
+mb_end  = mb_peak + N_BANDS * 2 * MAX_LOOK;
+memset(mb_band, 0, mb_end - mb_band);
+mbenv  = mb_end;               // Mode-B env per (band,channel): 2/band
+mbmode = mbenv + N_BANDS * 2;  // Dyn Mode per band (0 A, 1 B)
+mbwpos = mbmode + N_BANDS;     // Mode-B write pos per band
+bus_dry = mbwpos + N_BANDS;    // shared stereo dry delay (L at [0..], R at [MAX_LOOK..])
+bus_wp = 0;
+memset(bus_dry, 0, MAX_LOOK * 2);
+i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
+memset(mbwpos, 0, N_BANDS);
+GSMOOTH = 400; inv_gsmooth = 1 / (GSMOOTH + 1);   // PurestGain (Mode-B Soft)
+mbgc = bus_dry + MAX_LOOK * 2;                     // PurestGain gain state: 2/band
+i = 0; loop(N_BANDS * 2, mbgc[i] = 1; i += 1;);
+mbeh = mbgc + N_BANDS * 2;   // Mode-B hard env per (band,channel): 2/band
+hc   = mbeh + N_BANDS * 2;   // hard ceiling (linear) per band: 1/band
+i = 0; loop(N_BANDS * 2, mbeh[i] = 1; i += 1;);
+egh = hc + N_BANDS;          // Mode-A hard env per (band,channel): 2/band
+i = 0; loop(N_BANDS * 2, egh[i] = 1; i += 1;);
+
+// ===== V0.5 HP/LP section memory + coeffs =====
+// hplp_state: 2 filters * (8 Butterworth sections + 1 resonance bell) * 2 channels
+//   * 2 integrators = 72 slots. Per filter base = fi*36; stage s (0..7 sections,
+//   8 = bell), chA = base+s*4 (+0 ic1,+1 ic2), chB = base+s*4+2 (bell state at 32..35).
+// hplp_cf: 2 filters * (8 section sets + 1 bell set) * 7 = 126 slots. Per filter base
+//   = fi*63; section k set = base+k*7 (k 0..7); bell set = base+56.
+hplp_state = egh + N_BANDS * 2;   // V0.5: 2 filters * (8 sec + 1 bell) * 2 ch * 2 = 72
+memset(hplp_state, 0, 72);
+hplp_cf = hplp_state + 72;         // V0.5: 2 filters * (8 sec + 1 bell) * 7 = 126
+prev_hp_slope = -1; prev_hp_pl = -1;
+prev_lp_slope = -1; prev_lp_pl = -1;
+hp_nsec = 0; lp_nsec = 0;
+
+// TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
+// Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
+function svf_set(base, ftype, fc, q, glin)
+  local(A, g, k, m0, m1, m2, a1, a2, a3)
+(
+  A = sqrt(glin);
+  ftype == 0 ? (                 // Bell
+    g = tan($pi * fc / srate); k = 1 / (q * A);
+    m0 = 1; m1 = k * (A * A - 1); m2 = 0;
+  ) : ftype == 1 ? (             // Low Shelf
+    g = tan($pi * fc / srate) / sqrt(A); k = 1 / q;
+    m0 = 1; m1 = k * (A - 1); m2 = A * A - 1;
+  ) : (                          // High Shelf
+    g = tan($pi * fc / srate) * sqrt(A); k = 1 / q;
+    m0 = A * A; m1 = k * (1 - A) * A; m2 = 1 - A * A;
+  );
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  cf[base]   = a1; cf[base+1] = a2; cf[base+2] = a3; cf[base+3] = k;
+  cf[base+4] = m0; cf[base+5] = m1; cf[base+6] = m2;
+);
+
+// write one HP/LP cascade-section's coeffs (no gain). ftype 3=HP, 4=LP. dst[0..6].
+// V0.5: called per staggered-Butterworth section with q = butter_q(k, N).
+function hplp_coef(dst, ftype, fc, q) local(g, k, a1, a2, a3) (
+  g = tan($pi * fc / srate); k = 1 / q;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = k;
+  ftype == 3 ? ( dst[4] = 1; dst[5] = -k; dst[6] = -1; )
+             : ( dst[4] = 0; dst[5] = 0;  dst[6] = 1;  );
+);
+
+// V0.5: staggered-Butterworth section Q for a 2N-th order cascade.
+function butter_q(kk, nn) ( 1 / (2 * cos($pi * (2*kk + 1) / (4*nn))) );
+
+// V0.5: resonance bell coeffs (fixed Q=2), glin = 1 + Resonance*5. glin=1 -> identity.
+function hplp_bell(dst, fc, glin) local(A, g, bk, a1, a2, a3) (
+  A = sqrt(glin); g = tan($pi * fc / srate); bk = 1 / (2 * A);
+  a1 = 1 / (1 + g * (g + bk)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = bk;
+  dst[4] = 1; dst[5] = bk * (A * A - 1); dst[6] = 0;
+);
+
+// V0.5: run one HP/LP filter (fi 0=HP,1=LP): N Butterworth sections + always-tick bell.
+function hplp_run(fi, nsec, pl)
+  local(cfb, stb, chA, chB, mid, sid, do_b, s, kk, cs, ic1, ic2, v1, v2, v3, a1, a2, a3, m0, m1, m2) (
+  cfb = hplp_cf + fi*63; stb = hplp_state + fi*36;
+  pl == 0 ? ( chA = spl0; chB = spl1; do_b = 1; ) :
+  pl == 3 ? ( chA = spl0; do_b = 0; ) :
+  pl == 4 ? ( chA = spl1; do_b = 0; ) : (
+    mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+    pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+    do_b = 0;
+  );
+  s = chA; kk = 0;
+  loop(nsec,
+    cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[kk*4]; ic2 = stb[kk*4+1];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[kk*4] = 2*v1 - ic1; stb[kk*4+1] = 2*v2 - ic2;
+    s = m0*s + m1*v1 + m2*v2; kk += 1;
+  );
+  cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];  // bell, fixed slot 8
+  ic1 = stb[32]; ic2 = stb[33];
+  v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+  stb[32] = 2*v1 - ic1; stb[33] = 2*v2 - ic2;
+  chA = m0*s + m1*v1 + m2*v2;
+  do_b ? (
+    s = chB; kk = 0;
+    loop(nsec,
+      cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+      ic1 = stb[kk*4+2]; ic2 = stb[kk*4+3];
+      v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      stb[kk*4+2] = 2*v1 - ic1; stb[kk*4+3] = 2*v2 - ic2;
+      s = m0*s + m1*v1 + m2*v2; kk += 1;
+    );
+    cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[34]; ic2 = stb[35];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[34] = 2*v1 - ic1; stb[35] = 2*v2 - ic2;
+    chB = m0*s + m1*v1 + m2*v2;
+  );
+  pl == 0 ? ( spl0 = chA; spl1 = chB; ) :
+  pl == 3 ? ( spl0 = chA; ) :
+  pl == 4 ? ( spl1 = chA; ) :
+  pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :
+            ( spl0 = mid + chA; spl1 = mid - chA; );
+);
+
+// ============ V0.6 linear-phase HP/LP: partitioned-convolution engines ============
+// Two independent engines (0=HP, 1=LP), Arthur-style partitioned overlap-save
+// (P=2048, B=4096, BD=8192, KMAX=4). Kernel magnitude = FFT of the ACTUAL min-phase
+// cascade's impulse response (reuses hplp_coef/hplp_bell) -> Linear magnitude == Min
+// magnitude by construction. Zero-phase kernel -> integer group delay BD/2; +P from the
+// runtime hop -> 6144 samples/engine. Page-safe layout (every FFT/convolve span within
+// one 65536 page); offsets from tools page_layout. Task 8 = Both placement only.
+// P/B/PB2 are global (the runtime hop is identical at every resolution); BD and KMAX are
+// PER ENGINE from V0.7 on and live in lp_geo (a global lpBD would now be misleading).
+lpP = 2048; lpB = 4096; lpPB2 = lpB * 2;
+
+// modified Bessel I0 (matches Arthur's kaiser_i0 / Python _kaiser_i0, 40 terms)
+function lp_i0(x) local(s, t, kk, xh) (
+  s = 1; t = 1; kk = 1; xh = x * 0.5;
+  while (kk < 40) ( t *= (xh / kk) * (xh / kk); s += t; kk += 1; );
+  s;
+);
+
+// ---- V0.7: per-engine geometry + page-safe layout tables ----
+// lp_geo + eng*4:  0 BD, 1 KMAX, 2 lat (BD/2+P), 3 dryN
+// lp_off + eng*16: absolute addresses, inventory order:
+//   0 desbuf, 1 ktime, 2 win_k, 3 Hspec, 4 fdlA, 5 fdlB, 6 fftw, 7 yacc, 8 tmpc,
+//   9 inA, 10 inB, 11 outA, 12 outB, 13 dryA, 14 dryB
+// Mirrors tools/rcbitnova_dsp.py page_layout(): every FFT-touched buffer is aligned to
+// min(its span, 65536) so no fft/ifft/convolve_c span ever crosses a 65536-word page.
+// This is what makes BD=32768 legal at all: a 32768-pt complex FFT spans exactly one full
+// page, so it must START on a page boundary - misaligned, JSFX corrupts it SILENTLY
+// (live-verified 2026-07-25: aligned |X[k]|=1.0 everywhere, misaligned min=0.0).
+function lp_align(p, u) local(uu) ( uu = min(u, 65536); ceil(p / uu) * uu; );
+
+function lp_layout(eng, base, BD) local(ob, gb, KM, dry, p) (
+  ob = lp_off + eng*16; gb = lp_geo + eng*4;
+  KM = BD / lpP; dry = BD >= 32768 ? 32768 : 16384;
+  p = base;
+  p = lp_align(p, BD*2);   ob[0]  = p; p += BD*2;        // desbuf (FFT, span BD*2)
+                           ob[1]  = p; p += BD;          // ktime
+                           ob[2]  = p; p += BD;          // win_k
+  p = lp_align(p, lpPB2);  ob[3]  = p; p += KM*lpPB2;    // Hspec (per-partition PB2)
+  p = lp_align(p, lpPB2);  ob[15] = p; p += KM*lpPB2;    // Hspec2: V0.8 crossfade target.
+                                                          // ALSO a live convolve_c operand
+                                                          // while fading -> same PB2 / no-
+                                                          // page-crossing rule as Hspec.
+  p = lp_align(p, lpPB2);  ob[4]  = p; p += KM*lpPB2;    // fdlA
+  p = lp_align(p, lpPB2);  ob[5]  = p; p += KM*lpPB2;    // fdlB
+  p = lp_align(p, lpPB2);  ob[6]  = p; p += lpPB2;       // fftw
+  p = lp_align(p, lpPB2);  ob[7]  = p; p += lpPB2;       // yacc
+  p = lp_align(p, lpPB2);  ob[8]  = p; p += lpPB2;       // tmpc
+                           ob[9]  = p; p += lpB;         // inA
+                           ob[10] = p; p += lpB;         // inB
+                           ob[11] = p; p += 16384;       // outA (FIFO, only needs > P)
+                           ob[12] = p; p += 16384;       // outB
+                           ob[13] = p; p += dry;         // dryA (must exceed lat)
+                           ob[14] = p; p += dry;         // dryB
+  gb[0] = BD; gb[1] = KM; gb[2] = BD/2 + lpP; gb[3] = dry;
+  p;
+);
+
+// Lay out BOTH engines with engine 1 packed right after engine 0, then clear exactly the
+// used span (never touch hi-res address space while Normal is active) and hint the top.
+// Packing is what keeps a Normal+Normal pair at the V0.6 footprint (458752 words).
+function lp_relayout(bd0, bd1) local(t0, t1) (
+  t0 = lp_layout(0, lp_base, bd0);
+  t1 = lp_layout(1, t0, bd1);
+  memset(lp_base, 0, t1 - lp_base);
+  lp_top = t1;
+  freembuf(lp_top + 1);
+);
+
+// Per-engine Kaiser window (beta 14) at that engine's own BD, into its win_k slot.
+function lp_win_build(eng) local(ob, BD, wk, iv, nf, i, a) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4]; wk = ob[2];
+  iv = 1.0 / lp_i0(14); nf = BD - 1;
+  i = 0;
+  loop(BD,
+    a = 2.0 * i / nf - 1.0; a = max(1.0 - a * a, 0);
+    wk[i] = lp_i0(14 * sqrt(a)) * iv;
+    i += 1;
+  );
+);
+
+// V0.8 fade state: lp_fs + eng*4 = 0 fading, 1 fade_pos, 2 fade_len, 3 valid.
+// fade_len is defined in TIME (50 ms) so it is sample-rate independent, and is shorter
+// than the 100 ms rebuild limiter; rebuilds are additionally QUEUED while fading, so an
+// instantaneous kernel switch is structurally impossible.
+function lp_fs_reset(eng) local(fs) (
+  fs = lp_fs + eng*4;
+  fs[0] = 0; fs[1] = 0; fs[2] = floor(srate * 0.05); fs[3] = 0;
+);
+
+function lp_rt_reset(eng) local(rt) (
+  rt = lp_rt + eng*8;
+  rt[0] = 0; rt[1] = 0; rt[2] = 0; rt[3] = lpP; rt[4] = 0; rt[5] = 0;
+  rt[6] = 0; rt[7] = 0;        // V0.8 lane zero-run counters
+  lp_fs_reset(eng);            // a fade must never point into moved or cleared memory
+);
+
+// Commit the freshly built target as the active kernel (exact copy, no residual drift).
+function lpk_commit(eng) local(ob, KM) (
+  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
+  memcpy(ob[3], ob[15], KM * lpPB2);
+  lp_fs[eng*4] = 0;
+);
+
+// Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
+// brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
+function lpk_build(eng, ftype, freq, res, nsec, brick)
+  local(ob, BD, KM, wink, desbuf, ktime, hspec, fftw, fe, i, kk, n, s, st, c,
+        a1, a2, a3, m0, m1, m2, ic1, ic2, v1, v2, v3, f, m, re, im, src, half, inv, k, base) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4]; KM = lp_geo[eng*4+1];
+  desbuf = ob[0]; ktime = ob[1]; wink = ob[2]; hspec = ob[15]; fftw = ob[6];   // build into Hspec2
+  fe = min(freq, srate * 0.49);
+  brick ? (
+    i = 0; loop(BD,
+      kk = i <= BD * 0.5 ? i : BD - i; f = max(kk * srate / BD, 0.001);
+      m = ftype == 3 ? (f >= fe ? 1 : 0) : (f <= fe ? 1 : 0);
+      desbuf[i*2] = m; desbuf[i*2+1] = 0; i += 1;
+    );
+  ) : nsec <= 0 ? (
+    i = 0; loop(BD, desbuf[i*2] = 1; desbuf[i*2+1] = 0; i += 1;);
+  ) : (
+    // min-phase impulse response -> FFT -> magnitude (exact digital, reuses V0.5 coeffs)
+    kk = 0; loop(nsec, hplp_coef(lp_kc + kk*7, ftype, fe, butter_q(kk, nsec)); kk += 1;);
+    hplp_bell(lp_kc + nsec*7, fe, 1 + res * 5);
+    memset(lp_ks, 0, (nsec + 1) * 2);
+    n = 0; loop(BD,
+      s = n == 0 ? 1 : 0;
+      st = 0; loop(nsec + 1,
+        c = lp_kc + st*7; a1 = c[0]; a2 = c[1]; a3 = c[2]; m0 = c[4]; m1 = c[5]; m2 = c[6];
+        ic1 = lp_ks[st*2]; ic2 = lp_ks[st*2+1];
+        v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        lp_ks[st*2] = 2*v1 - ic1; lp_ks[st*2+1] = 2*v2 - ic2;
+        s = m0*s + m1*v1 + m2*v2; st += 1;
+      );
+      desbuf[n*2] = s; desbuf[n*2+1] = 0; n += 1;
+    );
+    fft(desbuf, BD); fft_permute(desbuf, BD);
+    i = 0; loop(BD, re = desbuf[i*2]; im = desbuf[i*2+1];
+      desbuf[i*2] = sqrt(re*re + im*im); desbuf[i*2+1] = 0; i += 1;);
+  );
+  // zero-phase magnitude -> time -> fftshift(BD/2) -> Kaiser window -> partition into Hspec
+  fft_ipermute(desbuf, BD); ifft(desbuf, BD);
+  inv = 1.0 / BD; half = BD * 0.5;
+  i = 0; loop(BD, src = i + half; src >= BD ? src -= BD;
+    ktime[i] = desbuf[src*2] * inv * wink[i]; i += 1;);
+  k = 0; loop(KM,
+    base = k * lpPB2;
+    i = 0; loop(lpP, fftw[i*2] = ktime[k*lpP + i]; fftw[i*2+1] = 0; i += 1;);
+    i = lpP; loop(lpB - lpP, fftw[i*2] = 0; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(hspec + base, fftw, lpB * 2);
+    k += 1;
+  );
+);
+
+// Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
+function lpk_run(eng, iA, iB)
+  local(ob, KM, hspec, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
+        ir, cnt, out_rd, out_wr, fdl_wr, i, si, k, idx, ow, sc) (
+  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
+  hspec = ob[3]; fdlA = ob[4]; fdlB = ob[5];
+  fftw = ob[6]; yacc = ob[7]; tmpc = ob[8];
+  inA = ob[9]; inB = ob[10]; outA = ob[11]; outB = ob[12];
+  rt = lp_rt + eng * 8;
+  ir = rt[0]; cnt = rt[1]; out_rd = rt[2]; out_wr = rt[3]; fdl_wr = rt[4];
+  inA[ir] = iA; inB[ir] = iB; ir += 1; ir >= lpB ? ir = 0; cnt += 1;
+  lp_outA = outA[out_rd]; lp_outB = outB[out_rd];
+  out_rd += 1; out_rd >= 16384 ? out_rd = 0;
+  cnt >= lpP ? (
+    cnt = 0; sc = 1.0 / lpB;
+    // lane A
+    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inA[si]; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(fdlA + fdl_wr * lpPB2, fftw, lpB * 2);
+    memset(yacc, 0, lpB * 2);
+    k = 0; loop(KM,
+      idx = fdl_wr - k; idx < 0 ? idx += KM;
+      memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+      convolve_c(tmpc, hspec + k * lpPB2, lpB);
+      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+      k += 1;
+    );
+    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outA[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+    // lane B
+    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inB[si]; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(fdlB + fdl_wr * lpPB2, fftw, lpB * 2);
+    memset(yacc, 0, lpB * 2);
+    k = 0; loop(KM,
+      idx = fdl_wr - k; idx < 0 ? idx += KM;
+      memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+      convolve_c(tmpc, hspec + k * lpPB2, lpB);
+      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+      k += 1;
+    );
+    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outB[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+    out_wr += lpP; out_wr >= 16384 ? out_wr -= 16384;
+    fdl_wr += 1; fdl_wr >= KM ? fdl_wr = 0;
+  );
+  rt[0] = ir; rt[1] = cnt; rt[2] = out_rd; rt[3] = out_wr; rt[4] = fdl_wr;
+);
+
+// Route L/R through engine eng honoring placement pl (0 Both,1 Mid,2 Side,3 Left,4 Right).
+// Both: filter both lanes. Else: filter the active component (lane A), delay the untouched
+// complementary component by that engine's own latency (lp_geo[eng*4+2]), then recombine.
+// The dry ring is per-engine too (lp_geo[eng*4+3]): a High engine's latency is 18432, which
+// does NOT fit the 16384 ring Normal uses. Writes spl0/spl1.
+function lpk_process(eng, pl)
+  local(l, r, mid, sid, act, comp, dryA, rt, dwp, drd, cd, lat, dryN) (
+  l = spl0; r = spl1;
+  pl == 0 ? (
+    lpk_run(eng, l, r); spl0 = lp_outA; spl1 = lp_outB;
+  ) : (
+    dryA = lp_off[eng*16 + 13]; rt = lp_rt + eng * 8;
+    lat = lp_geo[eng*4+2]; dryN = lp_geo[eng*4+3];
+    pl == 3 ? ( act = l; comp = r; ) :
+    pl == 4 ? ( act = r; comp = l; ) : (
+      mid = (l + r) * 0.5; sid = (l - r) * 0.5;
+      pl == 1 ? ( act = mid; comp = sid; ) : ( act = sid; comp = mid; );
+    );
+    dwp = rt[5]; dryA[dwp] = comp;
+    drd = dwp - lat; drd < 0 ? drd += dryN;
+    cd = dryA[drd];
+    dwp += 1; dwp >= dryN ? dwp = 0; rt[5] = dwp;
+    lpk_run(eng, act, 0);
+    pl == 3 ? ( spl0 = lp_outA; spl1 = cd; ) :
+    pl == 4 ? ( spl0 = cd; spl1 = lp_outA; ) :
+    pl == 1 ? ( spl0 = lp_outA + cd; spl1 = lp_outA - cd; ) :
+              ( spl0 = cd + lp_outA; spl1 = cd - lp_outA; );
+  );
+);
+
+// --- V0.7 linear-engine memory: scratch below lp_base, two PACKED engine layouts above ---
+// Packing engine 1 right after engine 0 keeps a Normal+Normal pair at exactly the V0.6
+// footprint (458752 words), so selecting High costs nothing until it is actually active.
+lp_rt  = hplp_cf + 126;   // 16 words runtime state (2 engines * 8): ir,cnt,out_rd,out_wr,fdl_wr,dry_wp
+lp_kc  = lp_rt + 16;      // 63 words kernel coeff scratch (<=9 sections * 7)
+lp_ks  = lp_kc + 63;      // 18 words kernel state scratch
+lp_geo = lp_ks + 18;      // 8 words  (2 engines * 4: BD, KMAX, lat, dryN)
+lp_off = lp_geo + 8;      // 32 words (2 engines * 16 buffer addresses; 15 = Hspec2)
+lp_fs  = lp_off + 32;     // 8 words  (2 engines * 4: fading, fade_pos, fade_len, valid)
+lp_base = ceil((lp_fs + 8) / 65536) * 65536;     // page-align the engine block start
+lp_relayout(8192, 8192);                          // Task 5: both engines Normal (= V0.6)
+lp_win_build(0); lp_win_build(1);
+lp_rt_reset(0);  lp_rt_reset(1);
+hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
+// Hi-res geometry. 32768 is fully supported by JSFX fft() but a 32768-pt complex FFT spans
+// exactly one 65536 page, so its buffer MUST start on a page boundary - lp_layout guarantees
+// that. (Live gate 2026-07-25: aligned |X[k]|=1.0 everywhere + exact ifft round trip;
+// misaligned min=0.0, i.e. SILENT corruption - the reason 32768 is widely thought unusable.)
+BD_HIGH = 32768;
+// Rebuild coalescing: a BD=32768 kernel rebuild is ~4x a BD=8192 one and runs in @block, so
+// rate-limit to <=1 per 100 ms per engine. The dirty flag persists, so the final knob
+// position always gets built.
+hp_dirty = 1; lp_dirty = 1; hp_tbuild = 0; lp_tbuild = 0;   // validity now lives in lp_fs[3]/[7]
+// (ext_tail_size is derived from the active geometry in @slider - see the PDC block.)
+
+// Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
+// Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
+// (bit-identical to V0.2). Non-Bell and shelf split fixed Q are untouched.
+function band_qeff(b)
+  local(s, ty, qk, qc, gbits, qe)
+(
+  s = 10 * (b + 1);
+  ty = slider(s + 2); qk = slider(s + 4); qc = slider(s + 9);
+  (qc == 0 || ty != 0) ? ( qe = qk; ) : (
+    gbits = (slider(s+5) + slider(s+6) * 0.01) * slider(s+7);
+    qe = qk * (1 + qc * abs(gbits));
+    qe > 16 ? ( qe = 16; ) : ( qe = qe; );
+  );
+  qe;
+);
+
+function setup_band(b)
+  local(s, glin, bty)
+(
+  s = 10 * (b + 1);                                  // slider base: 10,20,30,40
+  glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
+  bty = slider(s+2); (bty > 2 || bty < 0) ? bty = 0;
+  svf_set(b * 8, bty, slider(s+3), band_qeff(b), glin);
+);
+
+function setup_band_dyn(b)
+  local(s, ds, ty, fc, qd, g, k, a1, a2, a3)
+(
+  s = 10 * (b + 1); ds = 50 + 10 * b;
+  ty = slider(s + 2);
+  fc = slider(s + 3);
+  // Bell: bandpass detector at Q_eff (proportional-Q). Shelf: HP/LP-tap detector
+  // at fixed Butterworth Q (monotonic, unity passband, 0.7071 at fc).
+  qd = (ty == 1 || ty == 2) ? 0.7071 : band_qeff(b);
+  g = tan($pi * fc / srate); k = 1 / qd;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  det[b*4] = a1; det[b*4+1] = a2; det[b*4+2] = a3; det[b*4+3] = k;
+  dp[b*4]   = pow(2, -(slider(ds+3) + slider(ds+4) * 0.01));   // ceil_lin
+  dp[b*4+1] = exp(-1 / (slider(ds+5) * 0.001 * srate));        // atk
+  dp[b*4+2] = exp(-1 / (slider(ds+6) * 0.001 * srate));        // rel
+  dp[b*4+3] = slider(ds+1);                                    // dynOn
+  dm[b]     = slider(ds+2);                                    // 0 Linked,1 DualLR,2 DualMS
+  bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
+);
+
+@slider
+
+out_gain = pow(2, slider2 + slider3 * 0.01);
+b = 0;
+loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
+
+// Mode-B global lookahead + PDC
+Lk = floor(slider4 * 0.001 * srate + 0.5);
+Lk = min(max(Lk, 1), MAX_LOOK - 1);
+any_b = 0;
+b = 0;
+loop(N_BANDS,
+  mbmode[b] = slider(50 + 10 * b + 7);                                       // 0 A, 1 B
+  hc[b] = pow(2, -(slider(90 + 10*b + 2) + slider(90 + 10*b + 3) * 0.01));   // hard ceiling
+  (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? any_b = 1;
+  b += 1;
+);
+// (PDC is computed further down, AFTER the linear-engine geometry reconcile, so a Resolution
+//  change is reflected in the same @slider pass that applies it.)
+
+// ===== V0.5 HP/LP: staggered-Butterworth sections + resonance bell + reset =====
+hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;   // FIR Brick (6) -> Off in min-phase path
+hp_fe = min(slider132, srate * 0.49);
+hp_nsec > 0 ? (
+  kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
+);
+(slider131 != prev_hp_slope || slider134 != prev_hp_pl) ? (
+  memset(hplp_state + 0, 0, 36); prev_hp_slope = slider131; prev_hp_pl = slider134;
+);
+
+lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;   // FIR Brick (6) -> Off in min-phase path
+lp_fe = min(slider136, srate * 0.49);
+lp_nsec > 0 ? (
+  kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+);
+(slider135 != prev_lp_slope || slider138 != prev_lp_pl) ? (
+  memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
+);
+
+// ===== V0.7 linear engines: selected geometry, reconcile, rebuild signatures, PDC =====
+// SELECTED resolution (slider) vs ACTIVE geometry (lp_geo). While Phase=Min nothing is
+// configured and no hi-res memory is touched, so choosing High in Min costs nothing; the
+// Min->Linear transition is covered by the same geometry compare.
+sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
+sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
+(slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
+  lp_relayout(sel_bd0, sel_bd1);    // re-lays out BOTH engines (engine 1 is packed after 0)
+  lp_win_build(0); lp_win_build(1);
+  lp_rt_reset(0);  lp_rt_reset(1);
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force a snap-rebuild on both
+);
+
+// Rebuild signature per engine: slope, freq, resonance (placement is routing, not magnitude).
+hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
+hp_sig != hp_sig_prev ? ( hp_sig_prev = hp_sig; hp_dirty = 1; );
+lp_sig = slider135 + slider136 * 100003 + slider137 * 1009;
+lp_sig != lp_sig_prev ? ( lp_sig_prev = lp_sig; lp_dirty = 1; );
+
+// PDC policy (c): Min = zero-latency (V0.5); Linear = the sum of the two engines' latencies
+// (both engines always run, even at Slope=Off, so it never varies with filter settings).
+// Only a deliberate Phase or Resolution change moves it. Mode-B adds its lookahead Lk on top
+// (the linear delay is applied ONCE, by the engines).
+lin_lat = slider140 == 1 ? (lp_geo[2] + lp_geo[6]) : 0;   // engine0 lat + engine1 lat
+pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
+pdc_bot_ch = 0; pdc_top_ch = 2;
+
+// FIR ring-out: the last possibly-nonzero output after the final input is
+// 2*P + BD_hp + BD_lp - 2 + Lk; add margin. Small when Linear is off (IIR has no FIR tail).
+ext_tail_size = slider140 == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
+
+@block
+
+// Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
+// knob sweep must not rebuild every block. The dirty flag persists, so the final knob
+// position is always built; the first build after a geometry change is never delayed.
+// V0.8 Task 5: builds land in Hspec2 and are committed IMMEDIATELY, so output is
+// identical to V0.7. Task 6 replaces the unconditional commit with a fade.
+hp_dirty ? (
+  (lp_fs[3] == 0 || (time_precise() - hp_tbuild) >= 0.1) ? (
+    lpk_build(0, 3, slider132, slider133,
+      (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
+    lpk_commit(0);
+    hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();
+  );
+);
+lp_dirty ? (
+  (lp_fs[7] == 0 || (time_precise() - lp_tbuild) >= 0.1) ? (
+    lpk_build(1, 4, slider136, slider137,
+      (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
+    lpk_commit(1);
+    lp_dirty = 0; lp_fs[7] = 1; lp_tbuild = time_precise();
+  );
+);
+
+@sample
+
+// Running signal stays L/R. Each band derives its working domain by placement.
+// Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
+slider1 != 1 ? (
+  anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
+  // ===== DEDICATED HP/LP FILTER SECTION (Phase Min = cascade / Linear = convolution) =====
+  slider140 == 0 ? (                                    // Min phase (V0.5 path, zero-latency)
+    hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
+    lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
+  ) : (                                                 // Linear phase (convolution engines)
+    lpk_process(0, slider134);                          // HP engine + HP placement
+    lpk_process(1, slider138);                          // LP engine + LP placement (series)
+  );
+  b = 0;
+  loop(N_BANDS,
+    slider(10 * (b + 1) + 1) == 1 ? (         // enable
+      base = b * 8; sb = b * 4;
+      a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
+      m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
+      pl = slider(10 * (b + 1) + 8);          // 0 Both,1 Mid,2 Side,3 Left,4 Right
+      both_ms = 0;
+
+      pl == 0 ? (                             // Both: domain by dyn mode
+        (dp[b*4+3] == 1 && dm[b] == 2) ? (    // dyn on + Dual M/S -> work in M/S
+          mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+          chA = mid; chB = sid; both_ms = 1;
+        ) : (
+          chA = spl0; chB = spl1;
+        );
+        do_b = 1;
+      ) : pl == 3 ? (                         // Left -> L only
+        chA = spl0; do_b = 0;
+      ) : pl == 4 ? (                         // Right -> R only
+        chA = spl1; do_b = 0;
+      ) : (                                   // Mid/Side -> M/S
+        mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+        pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+        do_b = 0;
+      );
+
+      // Filter channel A (slot A state)
+      ic1 = st[sb]; ic2 = st[sb+1];
+      v3 = chA - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      st[sb] = 2*v1 - ic1; st[sb+1] = 2*v2 - ic2;
+      chA = m0*chA + m1*v1 + m2*v2;
+
+      // Filter channel B if needed (Both; slot B state)
+      do_b ? (
+        ic1 = st[sb+2]; ic2 = st[sb+3];
+        v3 = chB - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        st[sb+2] = 2*v1 - ic1; st[sb+3] = 2*v2 - ic2;
+        chB = m0*chB + m1*v1 + m2*v2;
+      );
+
+      // ----- Dynamics (Mode A Soft): Bell type only, Dyn on, Dyn Mode A -----
+      (dp[b*4+3] == 1 && slider(10*(b+1)+2) == 0 && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = abs(dk * v1);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = abs(dk * v1);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant)
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        A = sqrt(gA); ck = 1 / (qb * A);
+        ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = chA + cm1 * v1;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); ck = 1 / (qb * A);
+          ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = chB + cm1 * v1;
+        );
+      );
+
+      // ----- Dynamics (Mode A shelf): Low/High Shelf, Dyn on, Dyn Mode A -----
+      // Additive sibling of the Bell block above (types are mutually exclusive,
+      // so dst/cst/eg/egh slots are shared safely). Transcribed line-by-line
+      // from _shelf_cascade_ch in tools/rcbitnova_dsp.py.
+      ty = slider(10 * (b + 1) + 2);
+      (dp[b*4+3] == 1 && (ty == 1 || ty == 2) && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA: HP tap (High Shelf) or LP tap (Low Shelf)
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = ty == 2 ? abs(chA - dk*v1 - v2) : abs(v2);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = ty == 2 ? abs(chB - dk*v1 - v2) : abs(v2);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant) - same as Bell
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        // shelf-cut coeffs without tan(): g = cg*rA (HS) or cg/rA (LS); full
+        // m0/m1/m2 output (not the bell x + cm1*v1 shortcut)
+        A = sqrt(gA); rA = sqrt(A); ckq = 1 / qb;
+        ty == 2 ? (
+          cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+        ) : (
+          cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+        );
+        ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = cm0*chA + cm1*v1 + cm2*v2;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); rA = sqrt(A);
+          ty == 2 ? (
+            cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+          ) : (
+            cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+          );
+          ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = cm0*chB + cm1*v1 + cm2*v2;
+        );
+      );
+
+      // Write working channels back to L/R
+      pl == 0 ? ( both_ms ? ( spl0 = chA + chB; spl1 = chA - chB; ) : ( spl0 = chA; spl1 = chB; ) ) :
+      pl == 3 ? ( spl0 = chA; ) :
+      pl == 4 ? ( spl1 = chA; ) :
+      pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
+                ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
+    );
+    b += 1;
+  );
+
+  // ===== Mode B (Brick, band-split, bit-exact) on the globally-delayed bus =====
+  any_b ? (
+    L_in = spl0; R_in = spl1;          // intermediate (post static + Mode-A)
+    corrL = 0; corrR = 0;
+    b = 0;
+    loop(N_BANDS,
+      (slider(50 + 10*b + 1) == 1 && mbmode[b] == 1 && slider(10*(b+1)+2) <= 2) ? (
+        pl = slider(10*(b+1)+8);
+        ty = slider(10*(b+1)+2);
+        qb = bp[b*3+1];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; rel = dp[b*4+2];
+        soft_on = slider(50 + 10*b + 8); hard_on = slider(90 + 10*b + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        ms_dom = 0; two = 0;
+        pl == 0 ? (
+          (dm[b] == 2) ? ( xa = (L_in + R_in)*0.5; xb = (L_in - R_in)*0.5; ms_dom = 1; ) :
+                         ( xa = L_in; xb = R_in; );
+          two = 1;
+        ) : pl == 1 ? ( xa = (L_in + R_in)*0.5; ms_dom = 1; ) :
+            pl == 2 ? ( xa = (L_in - R_in)*0.5; ms_dom = 1; ) :
+            pl == 3 ? ( xa = L_in; ) : ( xa = R_in; );
+
+        wp = mbwpos[b];
+        csA = b*2; csB = b*2 + 1;
+        baseA = csA*MAX_LOOK; baseB = csB*MAX_LOOK;
+
+        // channel A: extract band (detector state slot A), ring write, worst-peak
+        ic1 = dst[b*4]; ic2 = dst[b*4+1];
+        v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
+        bA = ty == 2 ? (xa - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
+        worstA = 0; i = 0;
+        loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
+
+        two ? (
+          ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
+          v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
+          bB = ty == 2 ? (xb - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
+          worstB = 0; i = 0;
+          loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
+        );
+
+        linked ? ( worstA = max(worstA, worstB); );   // linked: both channels share max peak
+
+        // ----- channel A cascade gain (gSoft smoothed * gHard instant) -----
+        soft_on ? (
+          tS = worstA > cS ? cS / worstA : 1;
+          esa = mbenv[csA]; tS < esa ? esa = tS : ( esa = tS + (esa - tS)*rel; esa = min(esa,1); ); mbenv[csA] = esa;
+          mbgc[csA] = (mbgc[csA] * GSMOOTH + esa) * inv_gsmooth;
+        ) : ( mbgc[csA] = 1; );
+        hard_on ? (
+          ps = worstA * mbgc[csA];
+          tH = ps > cH ? cH / ps : 1;
+          eha = mbeh[csA]; tH < eha ? eha = tH : ( eha = tH + (eha - tH)*rel; eha = min(eha,1); ); mbeh[csA] = eha;
+        ) : ( mbeh[csA] = 1; );
+        gA = mbgc[csA] * mbeh[csA];
+
+        rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
+        bdA = mb_band[baseA + rpos];
+        limA = bdA * gA; hard_on ? ( abs(limA) > cH ? (limA = limA > 0 ? cH : -cH); );
+        dcA = limA - bdA;
+
+        two ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = worstB > cS ? cS / worstB : 1;
+              esb = mbenv[csB]; tS < esb ? esb = tS : ( esb = tS + (esb - tS)*rel; esb = min(esb,1); ); mbenv[csB] = esb;
+              mbgc[csB] = (mbgc[csB] * GSMOOTH + esb) * inv_gsmooth;
+            ) : ( mbgc[csB] = 1; );
+            hard_on ? (
+              ps = worstB * mbgc[csB];
+              tH = ps > cH ? cH / ps : 1;
+              ehb = mbeh[csB]; tH < ehb ? ehb = tH : ( ehb = tH + (ehb - tH)*rel; ehb = min(ehb,1); ); mbeh[csB] = ehb;
+            ) : ( mbeh[csB] = 1; );
+            gB = mbgc[csB] * mbeh[csB];
+          );
+          bdB = mb_band[baseB + rpos];
+          limB = bdB * gB; hard_on ? ( abs(limB) > cH ? (limB = limB > 0 ? cH : -cH); );
+          dcB = limB - bdB;
+        );
+
+        pl == 0 ? (
+          ms_dom ? ( corrL += dcA + dcB; corrR += dcA - dcB; ) : ( corrL += dcA; corrR += dcB; );
+        ) : pl == 1 ? ( corrL += dcA; corrR += dcA; ) :
+            pl == 2 ? ( corrL += dcA; corrR -= dcA; ) :
+            pl == 3 ? ( corrL += dcA; ) : ( corrR += dcA; );
+
+        mbwpos[b] = (wp + 1) % MAX_LOOK;
+      );
+      b += 1;
+    );
+
+    // delayed dry L/R bus + accumulated band corrections
+    bus_dry[bus_wp] = L_in; bus_dry[bus_wp + MAX_LOOK] = R_in;
+    rp = (bus_wp - Lk + MAX_LOOK) % MAX_LOOK;
+    spl0 = bus_dry[rp] + corrL;
+    spl1 = bus_dry[rp + MAX_LOOK] + corrR;
+    bus_wp = (bus_wp + 1) % MAX_LOOK;
+  );
+
+  spl0 *= out_gain;
+  spl1 *= out_gain;
+);
