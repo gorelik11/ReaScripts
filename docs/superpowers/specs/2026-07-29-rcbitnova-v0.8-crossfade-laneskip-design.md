@@ -283,3 +283,47 @@ the output), and a stateful topology oracle with an event log rather than a subj
 - Min path byte-identical; instance-local memory only; per-engine tables keep their V0.7 roles;
   no latency/PDC change.
 - The Python DSP mirror remains THE ORACLE; live REAPER confirms transcription.
+
+## 11. As-shipped outcome (2026-08-07, tagged `rcbitnova-v0.8`)
+
+**Shipped as specified.** Fable final review: **bit-accuracy INTACT, no P0/P1, READY TO TAG**
+(it independently recomputed the memory layout, traced the fade ordering in `lpk_run`, and
+confirmed the steady-state path is byte-identical to V0.7).
+
+**Live-verified with the owner:**
+- **The crossfade does what it was built for.** Switching `HP Slope` 24↔48 **under playback** —
+  measured in §2 as a full-amplitude step (+6.4 dB relative to peak) — is now **completely
+  silent**. Mid/Side and knob sweeps behave normally.
+- **The intermediate refactor was proven behaviour-neutral by a NULL TEST**: V0.7 and V0.8 with
+  identical settings, one polarity inverted, summed to silence.
+- **Lane-B skip, after the fix below** (playback running, FX CPU per track):
+
+  | | Both | Mid |
+  |---|---|---|
+  | Normal | 0.90 % | **0.80 %** |
+  | High | 1.6 % | **1.2 %** |
+
+  At High that is −40 % `convolve_c` calls per hop on that engine (40 → 24), worth −25 % of
+  whole-plugin CPU — consistent with §5's deliberately narrow claim that the saving is scoped
+  to one engine's convolution work.
+- PDC readings confirmed the geometry independently: 12288 at Normal+Normal, 24576 at
+  High+Normal — exactly the oracle's `BD/2 + P` per engine.
+
+**The one real defect, and how it was found.** The zero-run counters were written as
+`iB == 0 ? ( rt[7] < skip_after ? rt[7] += 1; ) : ( rt[7] = 0; );` — an assignment inside a
+**nested ternary**, the documented EEL2 gotcha in this project (handoff §6). The increment
+never took effect, the threshold was never reached, and the skip never engaged. Before the
+fix, selective placement cost *more* than Both (Mid adds M/S encode and the dry ring while the
+convolution saving was missing): Normal 0.92→0.97 %, High 1.6→1.7 %. Rewritten as
+`rt[7] = min(rt[7] + 1, skip_after)`.
+
+**This was found by live measurement, not by review.** The oracle could not catch it (it models
+the algorithm, not EEL2 parsing) and Fable's final review passed the file — the code *reads*
+correctly. Only the CPU meter exposed it. It is the clearest evidence in this project so far
+that the live-verification step is not a formality.
+
+**Deferred (unchanged):** topology transitions for Placement/Phase/Resolution → **V0.9**, with
+the timing analysis in §9 as its starting point. Two smaller notes for V0.9: a fade freezes
+harmlessly if Phase is switched to Min mid-fade (output correct at every instant); and the
+small Gibbs bump at the corner of the FIR Brick knee is pre-existing (present in V0.7 too) and
+could be softened by spreading the magnitude step over 1–2 bins.
