@@ -327,3 +327,39 @@ the timing analysis in §9 as its starting point. Two smaller notes for V0.9: a 
 harmlessly if Phase is switched to Min mid-fade (output correct at every instant); and the
 small Gibbs bump at the corner of the FIR Brick knee is pre-existing (present in V0.7 too) and
 could be softened by spreading the magnitude step over 1–2 bins.
+
+## 12. V0.9 starting point — analysis done at the end of the V0.8 session
+
+Two findings from reading the shipped code, recorded so V0.9 does not re-derive them:
+
+**1. Placement can be made genuinely seamless — no mute, no parallel engines.** The reason a
+Placement change currently drops content is narrower than §9 assumed: `lpk_process` writes the
+complementary-dry ring **only inside the selective branch**, so while in `Both` no history
+accumulates at all. Switching Both→Mid therefore reads an empty/stale ring for `lat` samples
+(64–192 ms @96k) — the Side content is simply missing, which is worse than a click.
+
+`dryB` (`ob[14]`) is **allocated but never used** — it appears only in the layout. So the fix is
+cheap and uses memory already paid for: **write `l` and `r` into `dryA`/`dryB` every sample,
+regardless of placement**, and derive the complementary from the delayed pair at read time
+(Mid needs `(L_d − R_d)/2`, Side needs `(L_d + R_d)/2`, Left needs `R_d`, Right needs `L_d`).
+History is then always present, so a Placement switch has **zero warm-up**.
+
+What remains is the lane-A input jump (e.g. L → Mid). That is fixable by ramping over ~15 ms
+**both** the lane inputs and the recombination weights at once:
+`out = (1−a)·(old recombination) + a·(new recombination)` with the lane input likewise
+`(1−a)·act_old + a·act_new`. Every quantity is a continuous function of time, so the output is
+continuous — this is Arthur's `ms_wM/ms_wS` pattern adapted to the convolution engine, and it
+keeps his discipline (outside the ramp the weights are exactly 1/0 and the blend is skipped, so
+the steady path stays bit-identical).
+
+**2. Phase and Resolution cannot be made seamless under the current PDC policy.** Both change
+the reported latency and empty the engines, so the first valid output only appears after the
+combined engine latency (up to 36864 samples = 768 ms @48k), and REAPER adopts the new PDC at
+block level. Keeping the old engine alive would fix the warm-up but not the host-side latency
+switch; the only way to avoid that is a constant maximum PDC, which the owner explicitly
+rejected in V0.6 (it would make Min-only use carry the full linear latency).
+
+**Therefore the honest V0.9 shape is asymmetric:** make **Placement** genuinely seamless (the
+common live gesture), and give **Phase/Resolution** a clean, documented mute that covers the
+real warm-up rather than pretending a short dip is enough. That split should be the first
+question put to the owner when V0.9 is brainstormed.
