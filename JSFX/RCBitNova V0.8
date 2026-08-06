@@ -432,47 +432,105 @@ function lpk_build(eng, ftype, freq, res, nsec, brick)
 
 // Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
 function lpk_run(eng, iA, iB)
-  local(ob, KM, hspec, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
-        ir, cnt, out_rd, out_wr, fdl_wr, i, si, k, idx, ow, sc) (
+  local(ob, KM, hspec, hspec2, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
+        ir, cnt, out_rd, out_wr, fdl_wr, i, si, k, idx, ow, sc,
+        fading, fpos, flen, a, skip_after) (
   ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
-  hspec = ob[3]; fdlA = ob[4]; fdlB = ob[5];
+  hspec = ob[3]; hspec2 = ob[15]; fdlA = ob[4]; fdlB = ob[5];
   fftw = ob[6]; yacc = ob[7]; tmpc = ob[8];
   inA = ob[9]; inB = ob[10]; outA = ob[11]; outB = ob[12];
   rt = lp_rt + eng * 8;
   ir = rt[0]; cnt = rt[1]; out_rd = rt[2]; out_wr = rt[3]; fdl_wr = rt[4];
-  inA[ir] = iA; inB[ir] = iB; ir += 1; ir >= lpB ? ir = 0; cnt += 1;
+  skip_after = lp_geo[eng*4] + lpB;      // BD + B: past this many EXACT zeros the whole
+                                          // FDL of that lane is zero, so its output is too
+  inA[ir] = iA; inB[ir] = iB;
+  iA == 0 ? ( rt[6] < skip_after ? rt[6] += 1; ) : ( rt[6] = 0; );   // saturating zero-run
+  iB == 0 ? ( rt[7] < skip_after ? rt[7] += 1; ) : ( rt[7] = 0; );   // counters, per lane
+  ir += 1; ir >= lpB ? ir = 0; cnt += 1;
   lp_outA = outA[out_rd]; lp_outB = outB[out_rd];
   out_rd += 1; out_rd >= 16384 ? out_rd = 0;
   cnt >= lpP ? (
     cnt = 0; sc = 1.0 / lpB;
-    // lane A
-    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inA[si]; fftw[i*2+1] = 0; i += 1;);
-    fft(fftw, lpB); fft_permute(fftw, lpB);
-    memcpy(fdlA + fdl_wr * lpPB2, fftw, lpB * 2);
-    memset(yacc, 0, lpB * 2);
-    k = 0; loop(KM,
-      idx = fdl_wr - k; idx < 0 ? idx += KM;
-      memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
-      convolve_c(tmpc, hspec + k * lpPB2, lpB);
-      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
-      k += 1;
+    fading = lp_fs[eng*4]; fpos = lp_fs[eng*4+1]; flen = lp_fs[eng*4+2];
+    // ---- lane A ----
+    rt[6] >= skip_after ? (
+      i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outA[ow] = 0; i += 1;);
+    ) : (
+      i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inA[si]; fftw[i*2+1] = 0; i += 1;);
+      fft(fftw, lpB); fft_permute(fftw, lpB);
+      memcpy(fdlA + fdl_wr * lpPB2, fftw, lpB * 2);
+      memset(yacc, 0, lpB * 2);
+      k = 0; loop(KM,
+        idx = fdl_wr - k; idx < 0 ? idx += KM;
+        memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+        convolve_c(tmpc, hspec + k * lpPB2, lpB);
+        i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+        k += 1;
+      );
+      fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+      fading ? (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outA[ow] = yacc[(lpP + i)*2] * sc * (1 - a); i += 1;);
+        memset(yacc, 0, lpB * 2);
+        k = 0; loop(KM,
+          idx = fdl_wr - k; idx < 0 ? idx += KM;
+          memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+          convolve_c(tmpc, hspec2 + k * lpPB2, lpB);
+          i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+          k += 1;
+        );
+        fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outA[ow] += yacc[(lpP + i)*2] * sc * a; i += 1;);
+      ) : (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          outA[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+      );
     );
-    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
-    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outA[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
-    // lane B
-    i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inB[si]; fftw[i*2+1] = 0; i += 1;);
-    fft(fftw, lpB); fft_permute(fftw, lpB);
-    memcpy(fdlB + fdl_wr * lpPB2, fftw, lpB * 2);
-    memset(yacc, 0, lpB * 2);
-    k = 0; loop(KM,
-      idx = fdl_wr - k; idx < 0 ? idx += KM;
-      memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
-      convolve_c(tmpc, hspec + k * lpPB2, lpB);
-      i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
-      k += 1;
+    // ---- lane B ----
+    rt[7] >= skip_after ? (
+      i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outB[ow] = 0; i += 1;);
+    ) : (
+      i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inB[si]; fftw[i*2+1] = 0; i += 1;);
+      fft(fftw, lpB); fft_permute(fftw, lpB);
+      memcpy(fdlB + fdl_wr * lpPB2, fftw, lpB * 2);
+      memset(yacc, 0, lpB * 2);
+      k = 0; loop(KM,
+        idx = fdl_wr - k; idx < 0 ? idx += KM;
+        memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+        convolve_c(tmpc, hspec + k * lpPB2, lpB);
+        i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+        k += 1;
+      );
+      fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+      fading ? (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outB[ow] = yacc[(lpP + i)*2] * sc * (1 - a); i += 1;);
+        memset(yacc, 0, lpB * 2);
+        k = 0; loop(KM,
+          idx = fdl_wr - k; idx < 0 ? idx += KM;
+          memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+          convolve_c(tmpc, hspec2 + k * lpPB2, lpB);
+          i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+          k += 1;
+        );
+        fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outB[ow] += yacc[(lpP + i)*2] * sc * a; i += 1;);
+      ) : (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          outB[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+      );
     );
-    fft_ipermute(yacc, lpB); ifft(yacc, lpB);
-    i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outB[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+    // fade advances ONCE per hop, AFTER both lanes, so both used the same alpha
+    fading ? (
+      fpos += lpP; lp_fs[eng*4+1] = fpos;
+      fpos >= flen ? lpk_commit(eng);   // exact Hspec2 -> Hspec, clears fading
+    );
     out_wr += lpP; out_wr >= 16384 ? out_wr -= 16384;
     fdl_wr += 1; fdl_wr >= KM ? fdl_wr = 0;
   );
@@ -643,6 +701,7 @@ lp_sig != lp_sig_prev ? ( lp_sig_prev = lp_sig; lp_dirty = 1; );
 // (both engines always run, even at Slope=Off, so it never varies with filter settings).
 // Only a deliberate Phase or Resolution change moves it. Mode-B adds its lookahead Lk on top
 // (the linear delay is applied ONCE, by the engines).
+lp_fs[2] = floor(srate * 0.05); lp_fs[6] = lp_fs[2];   // 50 ms fade, follows srate
 lin_lat = slider140 == 1 ? (lp_geo[2] + lp_geo[6]) : 0;   // engine0 lat + engine1 lat
 pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
 pdc_bot_ch = 0; pdc_top_ch = 2;
@@ -656,21 +715,25 @@ ext_tail_size = slider140 == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 102
 // Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
 // knob sweep must not rebuild every block. The dirty flag persists, so the final knob
 // position is always built; the first build after a geometry change is never delayed.
-// V0.8 Task 5: builds land in Hspec2 and are committed IMMEDIATELY, so output is
-// identical to V0.7. Task 6 replaces the unconditional commit with a fade.
-hp_dirty ? (
+// V0.8: build into Hspec2, then either SNAP (first build after load/relayout, or while
+// Phase=Min where the engines do not run so a fade could never advance) or start a
+// per-sample crossfade. A rebuild is REFUSED while that engine is already fading - the
+// dirty flag persists, so the queued target is built as soon as the fade completes. That
+// makes an instantaneous kernel switch structurally impossible rather than merely unlikely
+// (the 100 ms limiter is wall time, the 50 ms fade is audio time; they can diverge).
+hp_dirty && lp_fs[0] == 0 ? (
   (lp_fs[3] == 0 || (time_precise() - hp_tbuild) >= 0.1) ? (
     lpk_build(0, 3, slider132, slider133,
       (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
-    lpk_commit(0);
+    (lp_fs[3] == 0 || slider140 == 0) ? ( lpk_commit(0); ) : ( lp_fs[0] = 1; lp_fs[1] = 0; );
     hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();
   );
 );
-lp_dirty ? (
+lp_dirty && lp_fs[4] == 0 ? (
   (lp_fs[7] == 0 || (time_precise() - lp_tbuild) >= 0.1) ? (
     lpk_build(1, 4, slider136, slider137,
       (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
-    lpk_commit(1);
+    (lp_fs[7] == 0 || slider140 == 0) ? ( lpk_commit(1); ) : ( lp_fs[4] = 1; lp_fs[5] = 0; );
     lp_dirty = 0; lp_fs[7] = 1; lp_tbuild = time_precise();
   );
 );
