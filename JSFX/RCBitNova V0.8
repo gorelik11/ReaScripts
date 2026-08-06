@@ -444,8 +444,12 @@ function lpk_run(eng, iA, iB)
   skip_after = lp_geo[eng*4] + lpB;      // BD + B: past this many EXACT zeros the whole
                                           // FDL of that lane is zero, so its output is too
   inA[ir] = iA; inB[ir] = iB;
-  iA == 0 ? ( rt[6] < skip_after ? rt[6] += 1; ) : ( rt[6] = 0; );   // saturating zero-run
-  iB == 0 ? ( rt[7] < skip_after ? rt[7] += 1; ) : ( rt[7] = 0; );   // counters, per lane
+  // Saturating zero-run counters, one per lane. NOTE: written with min() rather than a
+  // nested ternary - EEL2 mis-binds an assignment inside a nested ternary (documented
+  // project gotcha), which silently prevented the counter from ever reaching the
+  // threshold, so the skip never engaged.
+  iA == 0 ? ( rt[6] = min(rt[6] + 1, skip_after); ) : ( rt[6] = 0; );
+  iB == 0 ? ( rt[7] = min(rt[7] + 1, skip_after); ) : ( rt[7] = 0; );
   ir += 1; ir >= lpB ? ir = 0; cnt += 1;
   lp_outA = outA[out_rd]; lp_outB = outB[out_rd];
   out_rd += 1; out_rd >= 16384 ? out_rd = 0;
