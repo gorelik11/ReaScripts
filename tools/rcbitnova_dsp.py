@@ -1355,3 +1355,150 @@ def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip
     return {"outA": out["A"], "outB": out["B"], "skipped": skipped, "fade_hops": fade_hops,
             "state": {"fdl_wr": fdl_wr, "zcA": zc["A"], "zcB": zc["B"],
                       "fdlA": fdl["A"], "fdlB": fdl["B"], "hist_pos": hpos}}
+
+
+class TopoMachine:
+    """V0.9 topology-transition state machine (spec rev 3 §4).
+
+    Mirrors the JSFX call sites one-to-one: slider() == @slider, block() == @block,
+    sample() == @sample. It is deliberately pure logic with no DSP: the audio consequences
+    are proven separately by lp_engine_ref(clear_at=...).
+
+    States: 0 idle, 1 fading out, 2 holding (warm-up), 3 fading in.
+    sample() returns None when idle - modelling that the JSFX skips the whole block by
+    condition, so the steady-state path stays byte-identical to V0.8.
+    """
+
+    def __init__(self, srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192,
+                 boot=False):
+        self.srate = srate
+        self.P = P
+        self.act_phase = phase
+        self.act_hp_pl = hp_pl
+        self.act_lp_pl = lp_pl
+        self.act_bd0 = bd0
+        self.act_bd1 = bd1
+        self.sel = (phase, hp_pl, lp_pl, bd0, bd1)
+        self.fo = max(1, int(srate * 0.005))
+        self.fi = self.fo
+        self.state = 0
+        self.pos = 0
+        self.g = 1.0
+        self.hold = 0
+        self.blocks = 0
+        self.pend = 0
+        self.ready = 0
+        self.commit_count = 0
+        self.clears = []
+        self.geometry_changed = False
+        # boot=True models a freshly instantiated plugin whose first @slider pass must ADOPT
+        # the loaded state instead of treating it as a live topology change (spec §4.3a).
+        self.boot = 1 if boot else 0
+
+    # ---- geometry ----
+    @staticmethod
+    def _lat(bd, P):
+        """Reported latency (PDC). NOT the hold - see _hold_for_active."""
+        return bd // 2 + P
+
+    def _hold_for_active(self):
+        """Spec §4.5: one formula, using the kernel's FULL SUPPORT BD, not the reported
+        latency BD/2+P. At BD/2+P the output has merely appeared; only after BD samples does
+        the cleared engine's zeroed past stop influencing it, which is what makes the output
+        bit-identical to an engine that never stopped running. Linear -> BD0+BD1+P; Min -> 0."""
+        if self.act_phase != 1:
+            return 0
+        return self.act_bd0 + self.act_bd1 + self.P
+
+    # ---- @slider ----
+    def slider(self, phase, hp_pl, lp_pl, bd0, bd1):
+        self.sel = (phase, hp_pl, lp_pl, bd0, bd1)
+        if self.boot:
+            # Cold init: adopt immediately, no mute, no deferral. In the JSFX this is where
+            # lp_relayout + window builds + forced snap rebuilds happen, exactly as V0.8 did.
+            self.act_phase, self.act_hp_pl, self.act_lp_pl = phase, hp_pl, lp_pl
+            self.act_bd0, self.act_bd1 = bd0, bd1
+            self.state = 0
+            self.g = 1.0
+            self.pend = 0
+            self.ready = 1
+            self.boot = 0
+            return
+        changed = phase != self.act_phase
+        if phase == 1 and (bd0 != self.act_bd0 or bd1 != self.act_bd1):
+            changed = True
+        if phase == 1 and (hp_pl != self.act_hp_pl or lp_pl != self.act_lp_pl):
+            changed = True
+        if changed:
+            self.pend = 1
+            self.ready = 0
+            if self.state != 1:
+                self.pos = int(round((1.0 - self.g) * self.fo))
+                self.state = 1
+            return
+        # Reversal back to the active topology while still pending: cancel, fade back in.
+        if self.pend:
+            self.pend = 0
+            self.state = 3
+            self.pos = int(round(self.g * self.fi))
+
+    # ---- @block ----
+    def block(self, play_state=1, kernels_ready=True):
+        result = ""
+        if self.pend and (play_state == 0 or (self.state == 2 and self.g == 0.0)):
+            self._commit()
+            result = "commit"
+        if self.state == 2 and not self.ready:
+            self.ready = 1 if (kernels_ready and not self.pend) else 0
+            if not self.ready and not self.pend:
+                result = result or "deferred"
+        if self.state == 2 and self.blocks > 0:
+            # the commit block publishes PDC; the counted epochs are the blocks AFTER it
+            if result != "commit":
+                self.blocks -= 1
+        return result
+
+    def _commit(self):
+        phase, hp_pl, lp_pl, bd0, bd1 = self.sel
+        self.geometry_changed = (bd0 != self.act_bd0) or (bd1 != self.act_bd1)
+        phase_edge = phase != self.act_phase
+        self.clears.append("engines")
+        if phase_edge:
+            self.clears.append("minphase")
+        self.act_phase, self.act_hp_pl, self.act_lp_pl = phase, hp_pl, lp_pl
+        self.act_bd0, self.act_bd1 = bd0, bd1
+        self.hold = self._hold_for_active()
+        self.blocks = 2
+        self.pos = 0
+        self.pend = 0
+        self.ready = 0
+        self.state = 2
+        self.commit_count += 1
+
+    # ---- @sample ----
+    def sample(self, bypass=False):
+        if self.state == 0:
+            return None                       # block skipped entirely: no multiply at all
+        if bypass:
+            return None                       # frozen: nothing advances under bypass
+        if self.state == 1:
+            self.pos += 1
+            self.g = (self.fo - self.pos) / self.fo
+            if self.pos >= self.fo:
+                self.g = 0.0
+                self.state = 2
+                self.pos = 0
+        elif self.state == 2:
+            self.g = 0.0
+            if self.ready and self.blocks <= 0:
+                self.pos += 1
+                if self.pos >= self.hold:
+                    self.state = 3
+                    self.pos = 0
+        else:
+            self.pos += 1
+            self.g = self.pos / self.fi
+            if self.pos >= self.fi:
+                self.g = 1.0
+                self.state = 0
+        return self.g

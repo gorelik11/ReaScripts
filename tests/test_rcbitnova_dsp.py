@@ -1586,3 +1586,83 @@ def test_every_hspec2_partition_is_page_safe():
             for kp in range(KMAX):
                 s = L["Hspec2"] + kp * PB2
                 assert s // PAGE == (s + PB2 - 1) // PAGE, f"BD={BD} base={base} part={kp}"
+
+
+# ===================== V0.9: topology mute state machine =====================
+
+def _tm(**kw):
+    return dsp.TopoMachine(srate=48000, P=2048, **kw)
+
+
+def test_v09_idle_machine_does_not_touch_the_signal():
+    m = _tm()
+    for _ in range(1000):
+        assert m.sample() is None          # None == the whole block is skipped
+    assert m.state == 0 and m.commit_count == 0
+
+
+def test_v09_slider_arms_but_does_not_apply():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    assert m.pend == 1 and m.state == 1     # fading out
+    assert m.act_phase == 0                 # NOT applied yet
+    assert m.commit_count == 0
+
+
+def test_v09_commit_happens_exactly_when_the_envelope_reaches_zero():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    fo = int(48000 * 0.005)
+    for _ in range(fo - 1):
+        g = m.sample()
+        assert g > 0.0
+        assert m.block() == "", "committed while the output was still audible"
+        assert m.act_phase == 0 and m.commit_count == 0
+    assert m.sample() == 0.0        # the last fade-out sample lands exactly on zero
+    assert m.state == 2 and m.g == 0.0
+    assert m.commit_count == 0, "commit must wait for @block, not happen in @sample"
+    assert m.block() == "commit"
+    assert m.act_phase == 1 and m.commit_count == 1
+
+
+def test_v09_fade_out_steps_are_all_exactly_one_over_n():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    fo = int(48000 * 0.005)
+    gains = [m.sample() for _ in range(fo)]
+    assert gains[-1] == 0.0
+    steps = [gains[i - 1] - gains[i] for i in range(1, len(gains))]
+    for s in steps:
+        assert abs(s - 1.0 / fo) < 1e-12          # every step 1/N, including the last
+    assert abs((1.0 - gains[0]) - 1.0 / fo) < 1e-12
+
+
+def test_v09_fade_in_steps_are_all_exactly_one_over_n_and_land_on_one():
+    m = _tm(phase=1, bd0=8192, bd1=8192)
+    m.slider(phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)   # Linear->Min: hold 0 samples
+    fo = int(48000 * 0.005)
+    for _ in range(fo):
+        m.sample()
+    m.block()                                   # commit
+    m.block(); m.block()                        # burn the mt_blocks PDC gate
+    while m.state == 2:
+        m.sample()
+    gains = []
+    while m.state == 3:
+        gains.append(m.sample())
+    assert gains[-1] == 1.0
+    steps = [gains[i] - gains[i - 1] for i in range(1, len(gains))]
+    for s in steps:
+        assert abs(s - 1.0 / fo) < 1e-12
+    assert m.state == 0 and m.sample() is None
+
+
+def test_v09_short_and_degenerate_fade_lengths_are_clamped():
+    for sr in (48000, 8000, 100, 1):
+        m = dsp.TopoMachine(srate=sr, P=2048, phase=0)
+        m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+        n = 0
+        while m.state == 1 and n < 10000:
+            g = m.sample(); n += 1
+            assert 0.0 <= g <= 1.0
+        assert m.state == 2                     # always terminates, never divides by zero
