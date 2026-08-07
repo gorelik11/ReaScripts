@@ -1,7 +1,7 @@
 # RCBitNova V0.9 — Topology transitions via a deferred, honest mute
 
-**Date:** 2026-08-07 (**rev 2**, after the weakness review
-`2026-08-07-rcbitnova-v0.9-topology-mute-weaknesses.md`)
+**Date:** 2026-08-07 (**rev 3**, after the weakness review
+`2026-08-07-rcbitnova-v0.9-topology-mute-weaknesses.md` and Fable's review of rev 2 — see §12)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V0.9` (copy of V0.8). `rcbitnova-v0.8` remains the fallback tag;
 V0.8 and earlier are frozen.
@@ -79,9 +79,24 @@ through the downstream **LP** engine. Holding through that full serial tail woul
 69630 samples (1.45 s).
 
 **Instead, every topology commit clears both linear engines and the min-phase state.** Then no
-stale tail can exist, the hold reduces to a cold-start warm-up, one formula covers every event,
-and the acceptance criterion (§4.6) becomes bit-exact rather than a threshold. It also closes
-P1-1 (stale runtime on a Phase edge) by construction.
+stale tail can exist, the hold reduces to a cold-start warm-up, and one formula covers every
+event. It also closes P1-1 (stale runtime on a Phase edge) by construction.
+
+**rev 3 correction — the hold is `BD`, not `BD/2 + P` (Fable P0-1).** rev 2 set the hold to the
+engine's reported latency `lat = BD/2 + P`. That is a *phase-alignment* constant — where the
+linear-phase kernel's centre sits — and it is the moment output first *appears*, not the moment
+output is *right*. A cleared engine convolves a signal whose pre-commit past has been zeroed;
+since the kernel has finite support `BD`, that zeroed past stops influencing the output only
+after `BD` samples. Fade in at `lat` and the first `BD/2` samples still carry the filter's
+switch-on transient. Fade in at `BD` and the output depends solely on post-commit samples — and
+is therefore **bit-identical to an engine that had been running continuously**, which is the
+strongest claim physically available and, unlike rev 2's, a claim that actually constrains the
+hold length.
+
+(One detail of Fable's argument does not hold and is recorded so it is not re-litigated: an
+unpopulated FDL partition contains zeros, and its contribution is exactly the correct
+contribution of a zero-valued past — the engine is never computing a "truncated filter". The
+conclusion about the required length is nevertheless correct, for the reason above.)
 
 The clearing is explicit — resetting indices is not enough, because the FDL and rings still hold
 old samples that `convolve_c` would fold back in. A new helper `lp_engine_clear(eng)` zeroes
@@ -105,6 +120,7 @@ New instance variables (no new buffers):
 | `mt_pend` | 1 = a topology commit is owed |
 | `mt_ready` | 1 = commit done AND both active kernels valid; gates hold consumption |
 | `mt_g` | current envelope value (only read while `mt_state != 0`) |
+| `topo_boot` | 1 until the first `@slider` pass has adopted the loaded slider state (§4.3a) |
 
 `lp_geo` already carries the ACTIVE geometry (BD, KMAX, lat, dryN) per engine — the selected
 resolution stays in the sliders, exactly as in V0.7/V0.8. This spec adds the same
@@ -132,6 +148,28 @@ because it depends on the geometry that only exists after the relayout.
 Everything else in `@slider` (band setup, coefficient rebuilds, `Lk`, `out_gain`, the rebuild
 signatures) is unchanged.
 
+### 4.3a Boot: loading a project is not a topology event (Fable P0-2, P1-4)
+
+`@init` in V0.8 hardcodes `lp_relayout(8192, 8192)` and never consults the sliders. Under rev 2
+as written, a project saved with `Phase=Linear, Resolution=High, Placement=Mid` would reload
+with `act_*` at their EEL2 defaults of 0, so the **first** `@slider` pass — which JSFX runs
+during instantiation, before audio — would see a topology change, arm the mute, and play through
+the *wrong* topology (a stale Min-phase cascade) until the hold expired. On every reload. REAPER
+also re-runs `@init` on a **sample-rate change**, which would reproduce it mid-project.
+
+rev 3 therefore treats cold init as *already committed to the loaded state*:
+
+- `@init` sets `act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;`, sets
+  `mt_state = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;` and sets `topo_boot = 1`.
+- The first `@slider` pass with `topo_boot == 1` **applies** the selected geometry immediately —
+  the V0.8 path: `lp_relayout(sel_bd0, sel_bd1)`, window builds, resets, forced snap rebuilds —
+  then adopts `act_*`, publishes PDC, and clears `topo_boot`. No mute, no deferral.
+- Every subsequent pass uses the deferred path of §4.3.
+
+Doing the geometry work in the first `@slider` rather than in `@init` avoids depending on
+whether slider values are already loaded when `@init` runs, which JSFX does not guarantee across
+all hosts and load paths.
+
 ### 4.4 `@block` — pinned order
 
 The review (P1-3) is right that the order matters: if the V0.8 rebuild branches ran before the
@@ -158,7 +196,12 @@ Because `pdc_delay` is now written from `topo_commit()` rather than from `@slide
 computation moves into a small helper called from both places — `@slider` still owns the
 `Lk`/bypass part, which is not a topology event.
 
-`mt_blocks` is decremented once per `@block` while `mt_state == 2`.
+6. **Decrement `mt_blocks`** — as an explicit final step, and **not on the commit block itself**
+   (Fable P1-2). The commit block is the one that *publishes* the new `pdc_delay`; the two
+   epochs counted are the blocks that follow it. Implementation: the decrement is guarded by
+   `mt_state == 2 && mt_pend == 0`, and the commit sets `mt_pend = 0` and `mt_blocks = 2` in the
+   same pass, so the guard must additionally skip the pass in which the commit happened. The
+   guarantee is therefore exactly "the publishing block, plus two full blocks after it".
 
 **Transport-stopped commit (P0-4).** `play_state == 0` allows an *early* commit — it does not
 skip the warm-up and does not clear the machine. This matters because REAPER is not obliged to
@@ -171,22 +214,33 @@ nothing to output anyway.
 
 ### 4.5 Hold length — one formula
 
-All lengths in **processed samples**; `P = lpP = 2048`; `lat_e = lp_geo[e*4+2] = BD_e/2 + P`
-from the **new** geometry.
+All lengths in **processed samples**; `P = lpP = 2048`; `BD_e = lp_geo[e*4]` from the **new**
+geometry. Note this is `BD`, the kernel's full support — **not** the reported latency `lat_e`
+(§4.1).
 
 ```
-mt_hold = act_phase == 1 ? (lat0 + lat1 + P) : 0
+mt_hold = act_phase == 1 ? (BD0 + BD1 + P) : 0
 ```
 
 | Resulting case | Hold |
 |---|---|
-| Placement, Phase `Min→Linear`, or Resolution, at Normal+Normal | 14336 samples = 299 ms @48k |
-| …at High+Normal | 26624 = 555 ms |
-| …at High+High | 38912 = 810 ms |
+| Placement, Phase `Min→Linear`, or Resolution, at Normal+Normal | 18432 samples = 384 ms @48k |
+| …at High+Normal | 43008 = 896 ms |
+| …at High+High | 67584 = 1.41 s |
 | Phase `Linear→Min` | 0 samples — only the `mt_blocks` PDC gate (§6) |
 
-`Linear→Min` needs no sample hold: the min-phase cascade was just zeroed and is correct from its
-first sample. It still waits out the block gate so the host has adopted `pdc_delay = 0`.
+The serial composition is `BD0 + BD1 + P`: engine 0's output is free of pre-commit influence
+after `BD0` samples, engine 1 then needs `BD1` samples of that clean input, plus one hop of
+block granularity. The owner chose this over the shorter group-delay hold with the numbers
+above in front of him: in Normal — the working configuration — the honest length costs only
+85 ms more than rev 2's.
+
+`Linear→Min` needs no sample hold: the min-phase cascade is IIR with no finite support, and it
+was just zeroed, so it is correct from its first sample for a signal with a zero past. It still
+waits out the block gate so the host has adopted `pdc_delay = 0`. Its own ring-up (a
+staggered-Butterworth cascade plus the always-on resonance bell, which can run at high Q) is
+asserted to be inaudible rather than measured — §8.12 puts a high-Resonance `Linear→Min` case in
+the test matrix so the assertion is checked rather than assumed (Fable P1-1).
 
 Since every event resets everything, coincident events need no `max()` — the formula already
 covers them.
@@ -244,12 +298,17 @@ happens, and the hold is consumed by real samples.
   pending: cancel (`mt_pend = 0`), set `mt_state = 3` and `mt_pos = mt_g * mt_fi`, i.e. fade back
   in from wherever the envelope is. No relayout, no reset; the only audible effect is a short dip.
 
-**What "warm" means (P1-5).** The claim is precise and bit-exact: after the hold, the output
-equals that of the new topology **reset at commit and fed the same post-commit samples**. This is
-true by construction because the engines were cleared — `lat0 + lat1 + P` is exactly when a
-cleared serial pair has produced its first fully-supported output. The stronger claim (matching a
-topology that had processed the pre-commit history) is impossible without parallel engines and is
-**not** made.
+**What "warm" means (P1-5, corrected in rev 3 per Fable P0-3).** rev 2 defined it as "equals the
+new topology reset at commit and fed the same post-commit samples". Fable is right that this is
+**vacuous**: a cleared engine satisfies it at every hold length, including zero, because it is
+simply a restatement of what a cleared engine computes. It constrained nothing.
+
+rev 3's definition constrains the hold: after the hold, the output is **bit-identical to the same
+topology running continuously**, i.e. to an instance that had processed the full pre-commit
+history. With `mt_hold = BD0 + BD1 + P` this is achievable and true, because both kernels have
+finite support: every sample the output depends on lies after the commit, so the two instances
+cannot differ. At any shorter hold it is false — which is exactly what makes the test meaningful
+(§8.4).
 
 ## 5. Interaction with the V0.8 kernel crossfade
 
@@ -271,10 +330,23 @@ rev 1 argued that the one-hop term in the hold covered the host adopting the new
 review (P1-2) is right that this is unfounded: `P = 2048` and `samplesblock` are independent, so
 with a 4096-sample block a `Linear→Min` commit could finish its hold and start fading in inside
 the same host block — before any boundary at which REAPER could act on the new PDC. rev 2
-therefore gates fade-in on **`mt_blocks` `@block` epochs** (pinned at 2: the block that publishes,
-plus one full block after it) in addition to the sample hold. Whether REAPER needs more than one
-boundary is a question the live gate must answer; if it does, `mt_blocks` is the single constant
-to raise.
+therefore gates fade-in on **`mt_blocks` `@block` epochs** (pinned at 2 full blocks after the
+publishing block, §4.4 step 6) in addition to the sample hold.
+
+**A prior question the plugin cannot answer (Fable P1-3), and the first experiment to run.**
+V0.6–V0.8 never moved `pdc_delay` while the transport was running — PDC changed only at load or
+on a slider pass before playback. V0.9 is the first version to change host-visible latency
+*during playback*, and there is no evidence anywhere in this project's history about how REAPER
+behaves when a plugin does that: if the host re-buffers or flushes its routing around a live PDC
+change, the resulting artefact happens **outside** this instance and no amount of internal muting
+can suppress it. The fallback the owner rejected in V0.6 — constant maximum PDC — exists exactly
+for this failure mode.
+
+Therefore the very first work item (plan Task 0) is a standalone live experiment: change
+`pdc_delay` under playback in a trivial test JSFX and listen for host-side disruption. A bad
+answer forces a different architecture and must be known **before** the state machine is built,
+not after. If REAPER needs more than two block boundaries, `mt_blocks` is the single constant to
+raise.
 
 ## 7. Bit-accuracy — four machine-checked gates
 
@@ -303,12 +375,15 @@ the path, and inside the transition the signal is deliberately being taken to ze
 1. The commit happens **exactly** when the envelope reaches zero — not one sample earlier.
 2. `mt_hold` matches §4.5 for every event × geometry combination, including `Linear→Min` = 0.
 3. Steady-state bit-exactness (gate 2 of §7).
-4. **Stale-tail proof.** Every FDL partition, input ring and output ring is seeded with nonzero,
-   **stereo-asymmetric** history, and an impulse is placed just before the commit. After the
-   hold, the output must be bit-equal to the cleared-at-commit reference (§4.6) — sustained
-   audio alone can hide stale energy under new steady output, so the impulse case is the
-   decisive one. Run separately for **HP** Placement and **LP** Placement, since only HP has a
-   downstream FIR stage.
+4. **Hold sufficiency, against a CONTINUOUS reference.** After the hold, the output must be
+   bit-equal to the same topology **running continuously since before the commit** (§4.6) — not
+   to a cleared-at-commit reference, which rev 2 used and which is satisfied at every hold
+   length including zero (Fable P0-3). The companion test asserts the negative: at
+   `lat0 + lat1 + P` (rev 2's length) the two references **differ**, so the test fails if
+   someone shortens the hold back. Every FDL partition, input ring and output ring is seeded
+   with nonzero, **stereo-asymmetric** history, and an impulse is placed just before the commit —
+   sustained audio can hide a partially-formed response under new steady output. Run separately
+   for **HP** Placement and **LP** Placement, since only HP has a downstream FIR stage.
 5. **Bypass warm-up.** Change topology while bypassed, wait longer than `mt_hold`, then unbypass
    into a nonzero stereo signal: the machine must still be frozen and must then run the full
    fade-out → commit → hold → fade-in. (rev 1's test would have passed the bug.)
@@ -325,12 +400,16 @@ the path, and inside the transition the signal is deliberately being taken to ze
    `1/N` for `N` = 2, 3, 240, 480, 960, and the clamp holds for degenerate rates.
 10. Coalescing, pre-commit reversal, post-commit re-trigger; Phase and Resolution changed in the
     same `@slider` pass; an event during an active V0.8 kernel crossfade.
-11. **Transition error, with a number (P2-2).** Compare against uninterrupted old and new
-    references, normalize to signal peak, and require the worst error outside the intended mute
-    to be **≤ −80 dBFS**, measured across the whole transition (fade-out, hold, PDC adoption,
-    fade-in). Material: sustained sines at several phases, asymmetric stereo, impulse, noise, and
-    silence with the dynamics active. The bound replaces rev 1's unquantified
-    `|y[n] − y[n−1]|` criterion.
+11. **Transition error, with a number (P2-2).** Compare against **uninterrupted** old and new
+    references — an instance that never stopped running, explicitly NOT a cleared-at-commit one
+    (Fable P0-3) — normalize to signal peak, and require the worst error outside the intended
+    mute to be **≤ −80 dBFS**, measured across the whole transition (fade-out, hold, PDC
+    adoption, fade-in). The bound replaces rev 1's unquantified `|y[n] − y[n−1]|` criterion.
+12. **Test matrix for items 4 and 11**, chosen to expose a partially-formed response rather than
+    hide it: Slope 96 dB/oct and FIR Brick; High Resolution on both engines; Resonance near
+    maximum; sustained sines at several phases; asymmetric stereo; impulse; noise; silence with
+    the dynamics active; and a high-Resonance `Linear→Min` edge (the one case whose zero hold
+    rests on an assertion rather than a measurement — Fable P1-1).
 
 **Live verification with the owner in REAPER:**
 
@@ -340,7 +419,26 @@ the path, and inside the transition the signal is deliberately being taken to ze
 - The V0.8 null test (§7 gate 1).
 - Switching with the transport stopped, then playing: correct audio, short leading silence only.
 - Switching while bypassed, then unbypassing.
+- **Save a project with `Phase=Linear, Resolution=High, Placement=Mid`, reopen it, and play
+  immediately**: correct audio from the first sample, no mute, no interval of wrong-topology
+  sound (§4.3a). Repeat after a **sample-rate change** in the audio device settings.
+- **The Task 0 PDC experiment** (§6) repeated on the finished plugin: change Phase under
+  playback and confirm the host itself introduces no artefact around the latency change.
 - CPU unchanged from V0.8 (the lane-B skip is untouched: Normal Mid 0.80 %, High Mid 1.2 %).
+
+## 8a. Accepted risks
+
+- **Automating a topology slider mutes indefinitely.** If Phase, Resolution or Placement is
+  automated (or thrashed by a control surface) faster than `mt_hold`, the machine re-arms before
+  it can reach fade-in and the output stays silent for as long as that continues. This is
+  accepted, not fixed: these are set-up controls, not performance controls (§2), and silence is
+  a better failure than a burst of garbage per event. It is stated here so it is a known mode
+  rather than a surprise.
+- **Anticipative FX / offline render.** The design is driven by processed-sample counts and
+  `@block` epochs, never by wall-clock time, so pre-processing ahead of the transport behaves
+  like ordinary processing. `play_state` is used only to permit an *early* commit, never to skip
+  warm-up, so an ambiguous value cannot shorten a mute. Considered, no change required; §8.6 and
+  §8.7 cover it in tests.
 
 ## 9. Invariants preserved
 
@@ -376,3 +474,19 @@ assignment inside a conditional chain gets its own statement.
 | P1 "Warm" is undefined | **Accepted** — defined as bit-equality with a cleared-at-commit reference; the stronger claim is explicitly not made (§4.6) |
 | P2 Paused/record transport states omitted | **Accepted** — contract is "samples are being processed"; covered by the frozen-machine design and tested in §8.6 |
 | P2 Bounded-discontinuity criterion has no bound | **Accepted** — ≤ −80 dBFS relative to peak, with pinned material (§8.11) |
+
+## 12. Fable review disposition (rev 2 → rev 3)
+
+Fable reviewed rev 2 against the V0.8 source and returned "needs edits — not ready to plan".
+
+| Finding | Disposition |
+|---|---|
+| **P0-1** hold conflates group delay with settling; `lat0+lat1+P` is undersized | **Accepted**, hold is now `BD0+BD1+P` (§4.1, §4.5). One supporting argument of the finding is wrong — unpopulated FDL partitions hold zeros and contribute correctly, so the engine is never a "truncated filter" — but the conclusion stands: finite support `BD` is when the zeroed past stops mattering. The owner chose the longer hold with the cost table in front of him |
+| **P0-2** `act_*` and geometry never synced to loaded sliders; every project reload mutes and plays the wrong topology | **Accepted** — §4.3a treats cold init as already committed, and does the geometry work in the first `@slider` rather than `@init` so it does not depend on when slider values become available |
+| **P0-3** the stale-tail test cannot fail; the −80 dB gate inherits the same vacuity | **Accepted** — "warm" is redefined against a **continuous** reference (§4.6), the test asserts the negative at rev 2's length, and §8.12 pins a matrix that exposes a partially-formed response |
+| **P1-1** `Linear→Min` hold 0 asserted, not measured | **Accepted** — high-Resonance `Linear→Min` added to the §8.12 matrix; the assertion stays but is now checked |
+| **P1-2** when `mt_blocks` decrements is unpinned | **Accepted** — explicit step 6 in §4.4; not on the commit block |
+| **P1-3** live PDC change mid-playback is untested territory and could force a different architecture | **Accepted and promoted** — it is now plan **Task 0**, run before any implementation (§6) |
+| **P1-4** sample-rate change re-runs `@init` and reproduces P0-2 | **Accepted** — same fix, stated explicitly, with a live test |
+| **P2** automation thrashing → indefinite silence | **Accepted as a documented risk** (§8a) |
+| **P2** anticipative FX / offline `play_state` semantics | **Addressed in §8a**: the design is sample-count driven and `play_state` can only permit an early commit, never shorten a mute |
