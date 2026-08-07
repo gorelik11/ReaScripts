@@ -1927,3 +1927,81 @@ def test_v09_shipping_warmup_bounds_match_the_spec_table():
     P = 2048
     for bd0, bd1, want in ((8192, 8192, 20480), (32768, 8192, 45056), (32768, 32768, 69632)):
         assert bd0 + bd1 + 2 * P == want
+
+
+def _apply_machine(sig, m, events, srate=48000, block=512):
+    """Run `sig` through the mute envelope, delivering @block every `block` samples and
+    applying topology events at their pinned sample index. Returns the enveloped signal."""
+    out = []
+    for n, x in enumerate(sig):
+        if n in events:
+            m.slider(*events[n])
+        if n % block == 0:
+            m.block()
+        g = m.sample()
+        out.append(x if g is None else x * g)
+    return out
+
+
+def test_v09_no_signal_survives_the_intended_mute():
+    srate = 48000
+    n = srate                                     # 1 s
+    sig = _noise(n, seed=11)
+    m = dsp.TopoMachine(srate=srate, P=2048, phase=1, bd0=8192, bd1=8192)
+    ev = {1000: (1, 1, 0, 8192, 8192)}            # placement switch at sample 1000
+    out = _apply_machine(sig, m, ev, srate=srate)
+    fo = max(1, int(srate * 0.005))
+    start = 1000 + fo                             # fully muted from here
+    end = start + 20480                           # ... until the hold expires
+    worst = max(abs(v) for v in out[start:end])
+    assert worst == 0.0, f"signal leaked through the mute: {worst}"
+
+
+def test_v09_fade_endpoints_never_exceed_the_one_over_n_step_bound():
+    srate = 48000
+    n = 40000
+    sig = [1.0] * n                               # DC: every envelope step is directly visible
+    m = dsp.TopoMachine(srate=srate, P=2048, phase=1, bd0=8192, bd1=8192)
+    out = _apply_machine(sig, m, {100: (1, 1, 0, 8192, 8192)}, srate=srate)
+    fo = max(1, int(srate * 0.005))
+    steps = [abs(out[i] - out[i - 1]) for i in range(1, len(out))]
+    bound = 1.0 / fo * 1.000001
+    assert max(steps) <= bound, f"largest step {max(steps)} exceeds 1/N = {1.0/fo}"
+
+
+def test_v09_impulse_just_before_commit_does_not_reappear_after_the_clear():
+    """Sustained audio can hide stale energy under new steady output; an impulse cannot."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    T = 2000
+    sig = [0.0] * (T + 3000)
+    sig[T - 1] = 1.0                              # impulse in the LAST pre-commit sample
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)
+    assert all(v == 0.0 for v in cleared["outA"][T:]), \
+        "the pre-commit impulse survived the clear"
+
+
+def test_v09_steep_filters_are_the_worst_case_for_the_hold():
+    """Spec §8.12: a 96 dB/oct kernel at high resonance is the case most likely to expose a
+    partially-formed response, so the hold must hold up there too - and the group-delay length
+    must still be visibly wrong there."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 400.0, 0.9, 8, 14.0, 48000)   # 8 sections, high res
+    pre = _noise(4000, seed=21)
+    post = _noise(4000, seed=22)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)["outA"]
+    continuous = dsp.lp_engine_ref(sig, zeros, ker, ker, P)["outA"]
+    peak = max(abs(v) for v in continuous)
+    hold = BD + 2 * P
+    worst = max(abs(a - b) for a, b in zip(cleared[T + hold:], continuous[T + hold:]))
+    assert worst / peak < 1e-12, f"steep filter not warm after the hold: {worst/peak}"
+    lat = BD // 2 + P
+    win = slice(T + lat, T + lat + P)
+    short = max(abs(a - b) for a, b in zip(cleared[win], continuous[win]))
+    assert short / peak > 1e-3, f"group-delay length looks fine here: {short/peak}"
