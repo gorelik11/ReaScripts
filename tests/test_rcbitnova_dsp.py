@@ -1666,3 +1666,155 @@ def test_v09_short_and_degenerate_fade_lengths_are_clamped():
             g = m.sample(); n += 1
             assert 0.0 <= g <= 1.0
         assert m.state == 2                     # always terminates, never divides by zero
+
+
+def _run_to_commit(m, play_state=1):
+    """Drive the machine through fade-out and commit; returns samples consumed."""
+    n = 0
+    while m.state == 1:
+        m.sample(); n += 1
+    m.block(play_state=play_state)
+    return n
+
+
+def test_v09_hold_matches_the_spec_table_for_every_geometry():
+    cases = [
+        # (bd0, bd1, expected hold in samples) - FULL KERNEL SUPPORT BD, not lat=BD/2+P
+        (8192, 8192, 8192 + 8192 + 2048),      # Normal+Normal  = 18432 = 384 ms @48k
+        (32768, 8192, 32768 + 8192 + 2048),    # High+Normal    = 43008 = 896 ms
+        (32768, 32768, 32768 + 32768 + 2048),  # High+High      = 67584 = 1.41 s
+    ]
+    for bd0, bd1, want in cases:
+        m = _tm(phase=0)
+        m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=bd0, bd1=bd1)
+        _run_to_commit(m)
+        assert m.hold == want, (bd0, bd1, m.hold, want)
+
+
+def test_v09_linear_to_min_holds_zero_samples():
+    m = _tm(phase=1, bd0=32768, bd1=32768)
+    m.slider(phase=0, hp_pl=0, lp_pl=0, bd0=32768, bd1=32768)
+    _run_to_commit(m)
+    assert m.hold == 0
+
+
+def test_v09_placement_and_resolution_get_the_same_hold_as_phase():
+    base = dict(hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    m1 = _tm(phase=1, **base); m1.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)
+    m2 = _tm(phase=1, **base); m2.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=8192)
+    _run_to_commit(m1); _run_to_commit(m2)
+    assert m1.hold == 18432
+    assert m2.hold == 43008
+
+
+def test_v09_hold_is_full_support_not_reported_latency():
+    """Guard against a future 'optimization' back to lat0+lat1+P (spec §4.1, Fable P0-1)."""
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=32768)
+    _run_to_commit(m)
+    assert m.hold == 67584
+    assert m.hold != (32768 // 2 + 2048) * 2 + 2048, "hold fell back to the group-delay length"
+
+
+def test_v09_fade_in_waits_for_the_block_gate_even_when_the_hold_is_zero():
+    m = _tm(phase=1, bd0=8192, bd1=8192)
+    m.slider(phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)   # hold == 0
+    _run_to_commit(m)
+    m.block()                                  # ready=1, blocks 2 -> 1
+    for _ in range(5000):
+        m.sample()
+    assert m.state == 2, "fade-in started before the PDC block gate elapsed"
+    m.block()                                  # blocks 1 -> 0
+    m.sample()
+    assert m.state == 3
+
+
+def test_v09_hold_is_not_consumed_until_kernels_are_ready():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    while m.state == 1:
+        m.sample()
+    # the commit block itself reports the kernels as NOT yet built (a BD=32768 rebuild can be
+    # deferred past its own @block), so mt_ready must stay 0 from the very first pass
+    assert m.block(kernels_ready=False) == "commit"
+    for _ in range(3):
+        m.block(kernels_ready=False)
+    assert m.ready == 0
+    for _ in range(50000):
+        m.sample()
+    assert m.state == 2 and m.pos == 0, "hold consumed before kernels were valid"
+    m.block(kernels_ready=True); m.block(kernels_ready=True)
+    m.sample()
+    assert m.pos == 1
+
+
+def test_v09_bypass_freezes_the_whole_machine():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    for _ in range(200000):                    # far longer than fade+hold
+        assert m.sample(bypass=True) is None
+    assert m.state == 1 and m.pos == 0 and m.commit_count == 0
+    # release bypass: the full sequence must still run
+    _run_to_commit(m)
+    assert m.commit_count == 1 and m.hold == 18432
+
+
+def test_v09_stopped_transport_commits_early_but_still_holds():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    assert m.block(play_state=0) == "commit"   # early commit, no samples needed
+    assert m.act_phase == 1 and m.state == 2
+    m.block(); m.block()
+    n = 0
+    while m.state == 2 and n < 200000:
+        m.sample(); n += 1
+    assert n == 18432, "warm-up was skipped by the stopped path"
+
+
+def test_v09_no_block_while_stopped_still_commits_on_the_first_playback_block():
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    # REAPER delivered no @block at all while stopped: nothing may happen yet
+    assert m.commit_count == 0 and m.act_phase == 0
+    _run_to_commit(m)                          # first playback block
+    assert m.commit_count == 1 and m.act_phase == 1
+
+
+def test_v09_loading_a_project_with_non_default_topology_does_not_mute():
+    """Fable P0-2: EEL2 defaults act_* to 0, and @init hardcodes Normal+Normal. Without the
+    boot path, reopening a project saved as Linear/High/Mid would arm a mute AND play through
+    the wrong topology until the hold expired - on every reload, and again on every sample-rate
+    change (which re-runs @init)."""
+    m = dsp.TopoMachine(srate=48000, P=2048, phase=1, hp_pl=1, lp_pl=0,
+                        bd0=32768, bd1=32768, boot=True)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=32768, bd1=32768)   # the first @slider pass
+    assert m.state == 0, "loading a project armed a spurious mute"
+    assert m.act_phase == 1 and m.act_hp_pl == 1
+    assert m.act_bd0 == 32768 and m.act_bd1 == 32768, "geometry not adopted at boot"
+    assert m.sample() is None, "audio was muted on the first processed sample after load"
+    assert m.boot == 0
+    # and a real switch afterwards still works normally
+    m.slider(phase=1, hp_pl=2, lp_pl=0, bd0=32768, bd1=32768)
+    assert m.state == 1 and m.pend == 1
+
+
+def test_v09_boot_adopts_whatever_the_sliders_say_even_if_it_differs_from_the_constructor():
+    """The constructor models EEL2's zero-initialised globals; the sliders model the loaded
+    project. Boot must follow the sliders, not the defaults."""
+    m = dsp.TopoMachine(srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0,
+                        bd0=8192, bd1=8192, boot=True)
+    m.slider(phase=1, hp_pl=2, lp_pl=1, bd0=32768, bd1=8192)
+    assert m.state == 0 and m.commit_count == 0
+    assert (m.act_phase, m.act_hp_pl, m.act_lp_pl) == (1, 2, 1)
+    assert (m.act_bd0, m.act_bd1) == (32768, 8192)
+
+
+def test_v09_every_commit_clears_the_engines_and_phase_edges_clear_minphase():
+    m = _tm(phase=1, bd0=8192, bd1=8192)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)   # placement only
+    _run_to_commit(m)
+    assert m.clears == ["engines"]
+    m2 = _tm(phase=0)
+    m2.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)  # phase edge
+    _run_to_commit(m2)
+    assert m2.clears == ["engines", "minphase"]
