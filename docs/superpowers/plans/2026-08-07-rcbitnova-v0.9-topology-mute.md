@@ -4,17 +4,18 @@
 
 **Goal:** Make the three topology switches (HP/LP Placement in `Phase=Linear`, Phase, HP/LP Resolution) mute the plugin output honestly — deferring the change until the output is at zero and holding until the new topology is provably warm — without touching the steady-state signal path.
 
-**Architecture:** A `selected → pending → active` state machine. `@slider` only arms it; `@block` commits at exact zero, clears both linear engines and the min-phase state, publishes the new PDC, and forces snap kernel rebuilds; `@sample` runs a 5 ms fade-out / hold / 5 ms fade-in envelope at the FINAL plugin output. Because every commit clears state, one hold formula (`lat0 + lat1 + P`) covers every event and the acceptance criterion is bit-equality with a cleared-at-commit reference.
+**Architecture:** A `selected → pending → active` state machine. `@slider` only arms it; `@block` commits at exact zero, clears both linear engines and the min-phase state, publishes the new PDC, and forces snap kernel rebuilds; `@sample` runs a 5 ms fade-out / hold / 5 ms fade-in envelope at the FINAL plugin output. Because every commit clears state, one hold formula (`BD0 + BD1 + P`) covers every event, and the acceptance criterion is bit-equality with the same topology **running continuously** — a claim that is true exactly at that hold length and false at anything shorter.
 
 **Tech Stack:** JSFX (EEL2) for the plugin; Python 3.11 stdlib-only DSP mirror (`tools/rcbitnova_dsp.py`) as THE ORACLE; `pytest` for the oracle tests; live REAPER for transcription verification.
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-08-07-rcbitnova-v0.9-topology-mute-design.md` (**rev 2**). Section numbers referenced below are that document's.
+- **Spec:** `docs/superpowers/specs/2026-08-07-rcbitnova-v0.9-topology-mute-design.md` (**rev 3**). Section numbers referenced below are that document's.
+- **Hold length is `BD0 + BD1 + P`** — the kernel's full support, NOT the reported latency `lat = BD/2 + P`. Normal+Normal 18432 samples (384 ms @48k), High+Normal 43008 (896 ms), High+High 67584 (1.41 s), `Linear→Min` 0. Anyone tempted to shorten it should read spec §4.1: at `lat` the output has appeared but still carries the filter's switch-on transient; at `BD` it is bit-identical to an engine that never stopped running.
 - **New file `JSFX/RCBitNova V0.9`, created as an exact copy of `JSFX/RCBitNova V0.8`.** Never edit V0.8 or any earlier version — they are frozen and tagged. `rcbitnova-v0.8` is the fallback.
 - **Bit-accuracy is non-negotiable.** No `log`, `dB`, or `pow(10)` anywhere in the DSP path. Any gain that stays in the signal is an exact power of two. The mute envelope is ordinary float and is legal ONLY because the whole block is skipped by condition when `mt_state == 0`.
 - **Steady-state must be byte-identical to V0.8.** When no topology event is in flight, not one arithmetic operation may be added to `spl0`/`spl1`.
-- **EEL2 gotcha, cost a full live session in V0.8:** never write an assignment inside a nested ternary (`a ? ( b ? c += 1 )` silently never executes). Every assignment inside a conditional chain gets its own statement. The V0.9 state machine is exactly the shape where this hides.
+- **EEL2 gotcha, cost a full live session in V0.8:** the form `cond ? var += 1;` parses, reads correctly, passes review — and silently never executes. `cond ? var = X;` is fine; compound assignment under a `?` is not. Use `var = max(var - 1, 0)` / `min(var + 1, N)`, or make the conditional the right-hand side: `var = cond ? 1 : var;`. The V0.9 state machine is exactly the shape where this hides; the Task 6 grep gate checks for it mechanically.
 - **Geometry constants:** `P = lpP = 2048`, `B = lpB = 4096`, `BD` = 8192 (Normal) or 32768 (High), `lat_e = BD_e/2 + P` (6144 Normal, 18432 High), `KMAX = BD/P`, `PB2 = B*2`.
 - **Python:** `/Library/Frameworks/Python.framework/Versions/3.11/bin/python3`. The oracle is pure stdlib — do not add dependencies.
 - **Run the oracle from the worktree root:** `python3 -m pytest tests/test_rcbitnova_dsp.py -q`. All 144 existing tests must stay green at every commit.
@@ -33,6 +34,71 @@ Tasks 1–4 are pure Python and fully test-driven. Tasks 5–7 are the JSFX tran
 
 ---
 
+### Task 0: Live PDC experiment — can this plugin change latency under playback at all?
+
+**Why first:** V0.6–V0.8 never moved `pdc_delay` while the transport was running. If REAPER
+re-buffers or flushes its routing when a plugin's latency changes mid-playback, the artefact
+happens in the **host**, outside this instance, and no internal mute can suppress it. A bad
+answer forces a different architecture (the constant-max-PDC fallback the owner rejected in
+V0.6), so it must be known before any of the state machine is built. This is Fable P1-3.
+
+**Files:**
+- Create: `/private/tmp/claude-501/-Users-macbook-projects-reascripts/5fcf2fe0-bf08-4ad7-bdbe-cf2f5d585c7e/scratchpad/PDCProbe.jsfx` (scratchpad — this is a throwaway probe, not a repo artifact)
+
+- [ ] **Step 1: Write the probe**
+
+```eel2
+desc:PDC Probe (V0.9 Task 0 - throwaway)
+slider1:0<0,1,1{Off,On}>Latency
+
+@init
+buf = 0;
+freembuf(65536);
+wp = 0;
+
+@slider
+lat = slider1 == 1 ? 12288 : 0;
+pdc_delay = lat; pdc_bot_ch = 0; pdc_top_ch = 2;
+
+@sample
+// pure delay line matching the reported latency, so the plugin itself is honest and any
+// disruption heard is REAPER's, not ours
+buf[wp] = spl0; buf[wp + 32768] = spl1;
+rp = wp - lat; rp = rp < 0 ? rp + 32768 : rp;
+spl0 = buf[rp]; spl1 = buf[rp + 32768];
+wp += 1; wp >= 32768 ? wp = 0;
+```
+
+- [ ] **Step 2: Run the experiment in REAPER with the owner**
+
+Copy the probe to `~/Library/Application Support/REAPER/Effects/`, put it on a track playing
+steady material (sustained sine plus drums), add a second unprocessed track so any host-side
+re-sync is audible as a relative shift, and flip `Latency` **under playback** several times.
+
+Record: does REAPER click, drop out, re-buffer, or shift the two tracks relative to each other?
+How long does it take for the shift to settle? Try both a small (256) and a large (2048) audio
+device block size.
+
+- [ ] **Step 3: Decide**
+
+- **Clean** (only the expected latency change, no click/dropout beyond it) → proceed with Tasks
+  1–9 as planned; note the observed settling time and confirm `mt_blocks = 2` is enough.
+- **Not clean** → STOP and report. The architecture must change (constant max PDC, or Phase and
+  Resolution behind an explicit "apply while stopped only" contract), and the spec needs a new
+  revision before implementation.
+
+- [ ] **Step 4: Record the result in the spec**
+
+Append the finding to spec §6 as a dated note, including the block sizes tested and the observed
+settling behaviour. Commit:
+
+```bash
+git add docs/superpowers/specs/2026-08-07-rcbitnova-v0.9-topology-mute-design.md
+git commit -m "docs(rcbitnova): V0.9 Task 0 - live PDC-under-playback finding"
+```
+
+---
+
 ### Task 1: `TopoMachine` — states, fades, and the commit-at-zero contract
 
 **Files:**
@@ -41,11 +107,11 @@ Tasks 1–4 are pure Python and fully test-driven. Tasks 5–7 are the JSFX tran
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `class TopoMachine` with constructor `TopoMachine(srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)` and three methods mirroring the JSFX call sites exactly:
+- Produces: `class TopoMachine` with constructor `TopoMachine(srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192, boot=False)` and three methods mirroring the JSFX call sites exactly:
   - `slider(phase, hp_pl, lp_pl, bd0, bd1) -> None` (mirrors `@slider`)
   - `block(play_state=1, kernels_ready=True) -> str` returning `"commit"`, `"deferred"` or `""` (mirrors `@block`)
   - `sample(bypass=False) -> float | None` returning the envelope gain, or `None` when idle (mirrors `@sample`; `None` means "no multiply happens at all")
-  - Public attributes read by tests: `state` (0–3), `pend`, `ready`, `hold`, `blocks`, `act_phase`, `act_hp_pl`, `act_lp_pl`, `act_bd0`, `act_bd1`, `commit_count`, `clears` (list of `"engines"` / `"minphase"` strings recorded per commit).
+  - Public attributes read by tests: `state` (0–3), `pend`, `ready`, `hold`, `blocks`, `act_phase`, `act_hp_pl`, `act_lp_pl`, `act_bd0`, `act_bd1`, `commit_count`, `clears` (list of `"engines"` / `"minphase"` strings recorded per commit), `g`, `boot`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -156,7 +222,8 @@ class TopoMachine:
     condition, so the steady-state path stays byte-identical to V0.8.
     """
 
-    def __init__(self, srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192):
+    def __init__(self, srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192,
+                 boot=False):
         self.srate = srate
         self.P = P
         self.act_phase = phase
@@ -176,21 +243,39 @@ class TopoMachine:
         self.ready = 0
         self.commit_count = 0
         self.clears = []
+        # boot=True models a freshly instantiated plugin whose first @slider pass must ADOPT
+        # the loaded state instead of treating it as a live topology change (spec 4.3a).
+        self.boot = 1 if boot else 0
 
     # ---- geometry ----
     @staticmethod
     def _lat(bd, P):
+        """Reported latency (PDC). NOT the hold - see _hold_for_active."""
         return bd // 2 + P
 
     def _hold_for_active(self):
-        """Spec §4.5: one formula. Linear -> lat0+lat1+P; Min -> 0 (block gate only)."""
+        """Spec §4.5: one formula, using the kernel's FULL SUPPORT BD, not the reported
+        latency BD/2+P. At BD/2+P the output has merely appeared; only after BD samples does
+        the cleared engine's zeroed past stop influencing it, which is what makes the output
+        bit-identical to an engine that never stopped running. Linear -> BD0+BD1+P; Min -> 0."""
         if self.act_phase != 1:
             return 0
-        return self._lat(self.act_bd0, self.P) + self._lat(self.act_bd1, self.P) + self.P
+        return self.act_bd0 + self.act_bd1 + self.P
 
     # ---- @slider ----
     def slider(self, phase, hp_pl, lp_pl, bd0, bd1):
         self.sel = (phase, hp_pl, lp_pl, bd0, bd1)
+        if self.boot:
+            # Cold init: adopt immediately, no mute, no deferral. In the JSFX this is where
+            # lp_relayout + window builds + forced snap rebuilds happen, exactly as V0.8 did.
+            self.act_phase, self.act_hp_pl, self.act_lp_pl = phase, hp_pl, lp_pl
+            self.act_bd0, self.act_bd1 = bd0, bd1
+            self.state = 0
+            self.g = 1.0
+            self.pend = 0
+            self.ready = 1
+            self.boot = 0
+            return
         changed = phase != self.act_phase
         if phase == 1 and (bd0 != self.act_bd0 or bd1 != self.act_bd1):
             changed = True
@@ -220,7 +305,11 @@ class TopoMachine:
             if not self.ready and not self.pend:
                 result = result or "deferred"
         if self.state == 2 and self.blocks > 0:
-            self.blocks -= 1
+            # the commit block publishes PDC; the counted epochs are the blocks AFTER it
+            if result == "commit":
+                pass
+            else:
+                self.blocks -= 1
         return result
 
     def _commit(self):
@@ -308,10 +397,10 @@ def _run_to_commit(m, play_state=1):
 
 def test_v09_hold_matches_the_spec_table_for_every_geometry():
     cases = [
-        # (bd0, bd1, expected hold in samples)
-        (8192, 8192, 6144 + 6144 + 2048),      # Normal+Normal  = 14336 = 299 ms @48k
-        (32768, 8192, 18432 + 6144 + 2048),    # High+Normal    = 26624 = 555 ms
-        (32768, 32768, 18432 + 18432 + 2048),  # High+High      = 38912 = 810 ms
+        # (bd0, bd1, expected hold in samples) - FULL KERNEL SUPPORT BD, not lat=BD/2+P
+        (8192, 8192, 8192 + 8192 + 2048),      # Normal+Normal  = 18432 = 384 ms @48k
+        (32768, 8192, 32768 + 8192 + 2048),    # High+Normal    = 43008 = 896 ms
+        (32768, 32768, 32768 + 32768 + 2048),  # High+High      = 67584 = 1.41 s
     ]
     for bd0, bd1, want in cases:
         m = _tm(phase=0)
@@ -332,8 +421,17 @@ def test_v09_placement_and_resolution_get_the_same_hold_as_phase():
     m1 = _tm(phase=1, **base); m1.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)
     m2 = _tm(phase=1, **base); m2.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=8192)
     _run_to_commit(m1); _run_to_commit(m2)
-    assert m1.hold == 14336
-    assert m2.hold == 18432 + 6144 + 2048
+    assert m1.hold == 18432
+    assert m2.hold == 43008
+
+
+def test_v09_hold_is_full_support_not_reported_latency():
+    """Guard against a future 'optimization' back to lat0+lat1+P (spec §4.1, Fable P0-1)."""
+    m = _tm(phase=0)
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=32768)
+    _run_to_commit(m)
+    assert m.hold == 67584
+    assert m.hold != (32768 // 2 + 2048) * 2 + 2048, "hold fell back to the group-delay length"
 
 
 def test_v09_fade_in_waits_for_the_block_gate_even_when_the_hold_is_zero():
@@ -371,7 +469,7 @@ def test_v09_bypass_freezes_the_whole_machine():
     assert m.state == 1 and m.pos == 0 and m.commit_count == 0
     # release bypass: the full sequence must still run
     _run_to_commit(m)
-    assert m.commit_count == 1 and m.hold == 14336
+    assert m.commit_count == 1 and m.hold == 18432
 
 
 def test_v09_stopped_transport_commits_early_but_still_holds():
@@ -383,7 +481,7 @@ def test_v09_stopped_transport_commits_early_but_still_holds():
     n = 0
     while m.state == 2 and n < 200000:
         m.sample(); n += 1
-    assert n == 14336, "warm-up was skipped by the stopped path"
+    assert n == 18432, "warm-up was skipped by the stopped path"
 
 
 def test_v09_no_block_while_stopped_still_commits_on_the_first_playback_block():
@@ -393,6 +491,35 @@ def test_v09_no_block_while_stopped_still_commits_on_the_first_playback_block():
     assert m.commit_count == 0 and m.act_phase == 0
     _run_to_commit(m)                          # first playback block
     assert m.commit_count == 1 and m.act_phase == 1
+
+
+def test_v09_loading_a_project_with_non_default_topology_does_not_mute():
+    """Fable P0-2: EEL2 defaults act_* to 0, and @init hardcodes Normal+Normal. Without the
+    boot path, reopening a project saved as Linear/High/Mid would arm a mute AND play through
+    the wrong topology until the hold expired - on every reload, and again on every sample-rate
+    change (which re-runs @init)."""
+    m = dsp.TopoMachine(srate=48000, P=2048, phase=1, hp_pl=1, lp_pl=0,
+                        bd0=32768, bd1=32768, boot=True)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=32768, bd1=32768)   # the first @slider pass
+    assert m.state == 0, "loading a project armed a spurious mute"
+    assert m.act_phase == 1 and m.act_hp_pl == 1
+    assert m.act_bd0 == 32768 and m.act_bd1 == 32768, "geometry not adopted at boot"
+    assert m.sample() is None, "audio was muted on the first processed sample after load"
+    assert m.boot == 0
+    # and a real switch afterwards still works normally
+    m.slider(phase=1, hp_pl=2, lp_pl=0, bd0=32768, bd1=32768)
+    assert m.state == 1 and m.pend == 1
+
+
+def test_v09_boot_adopts_whatever_the_sliders_say_even_if_it_differs_from_the_constructor():
+    """The constructor models EEL2's zero-initialised globals; the sliders model the loaded
+    project. Boot must follow the sliders, not the defaults."""
+    m = dsp.TopoMachine(srate=48000, P=2048, phase=0, hp_pl=0, lp_pl=0,
+                        bd0=8192, bd1=8192, boot=True)
+    m.slider(phase=1, hp_pl=2, lp_pl=1, bd0=32768, bd1=8192)
+    assert m.state == 0 and m.commit_count == 0
+    assert (m.act_phase, m.act_hp_pl, m.act_lp_pl) == (1, 2, 1)
+    assert (m.act_bd0, m.act_bd1) == (32768, 8192)
 
 
 def test_v09_every_commit_clears_the_engines_and_phase_edges_clear_minphase():
@@ -419,7 +546,7 @@ Only touch `TopoMachine`. The likely gaps are: `ready` being set while `pend` is
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 159 passed.
+Expected: 161 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -453,17 +580,46 @@ def _noise(n, seed=1):
     return out
 
 
-def test_v09_clear_at_makes_the_engine_bit_equal_to_a_freshly_cleared_one():
+def test_v09_after_a_full_support_hold_the_cleared_engine_equals_a_CONTINUOUS_one():
+    """THE test the hold length must satisfy (spec §4.6, Fable P0-3).
+
+    The reference is an engine that NEVER stopped - it processed the pre-commit history too.
+    Equality can only hold once every sample the output depends on lies after the commit, i.e.
+    after the kernel's full support BD. Comparing against a cleared-at-commit reference instead
+    (what rev 2 specified) would be satisfied at ANY hold length, including zero, and would
+    therefore test nothing."""
     P = 256
     BD = 1024
     ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
-    pre = _noise(3000, seed=7)
-    post = _noise(3000, seed=99)
+    pre = _noise(4000, seed=7)
+    post = _noise(4000, seed=99)
     T = len(pre)
-    zeros = [0.0] * (T + len(post))
-    dirty = dsp.lp_engine_ref(pre + post, zeros, ker, ker, P, clear_at=T)
-    fresh = dsp.lp_engine_ref([0.0] * 0 + post, [0.0] * len(post), ker, ker, P)
-    assert dirty["outA"][T:] == fresh["outA"], "cleared engine is not equal to a fresh one"
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)["outA"]
+    continuous = dsp.lp_engine_ref(sig, zeros, ker, ker, P)["outA"]           # never cleared
+    hold = BD + P
+    assert cleared[T + hold:] == continuous[T + hold:], \
+        "after a full-support hold the cleared engine still differs from a continuous one"
+
+
+def test_v09_a_group_delay_hold_would_NOT_have_been_enough():
+    """The negative half of the pair: at rev 2's lat = BD/2 + P the two still differ, so this
+    test fails if anyone shortens mt_hold back to the reported latency."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    pre = _noise(4000, seed=7)
+    post = _noise(4000, seed=99)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)["outA"]
+    continuous = dsp.lp_engine_ref(sig, zeros, ker, ker, P)["outA"]
+    lat = BD // 2 + P
+    window = slice(T + lat, T + lat + P)
+    diff = max(abs(a - b) for a, b in zip(cleared[window], continuous[window]))
+    assert diff > 1e-9, "no difference at the group-delay length - the short hold would do"
 
 
 def test_v09_without_the_clear_old_domain_energy_outlives_the_group_delay():
@@ -484,35 +640,39 @@ def test_v09_without_the_clear_old_domain_energy_outlives_the_group_delay():
         "old-domain energy vanished by lat+P - the group-delay hold would have been enough"
 
 
-def test_v09_cleared_serial_pair_first_full_output_is_at_lat0_plus_lat1_plus_P():
-    """Spec §4.6: lat0+lat1+P is exactly when a cleared serial pair has produced its first
-    fully-supported output. Verified on a small geometry, then asserted for the shipping one."""
+def test_v09_serial_pair_needs_BD0_plus_BD1_plus_P():
+    """Spec §4.5: the serial composition. Engine 0's output is free of pre-commit influence
+    after BD0 samples; engine 1 then needs BD1 samples of that clean input, plus one hop."""
     P = 256
     BD0 = 1024
     BD1 = 512
     k0 = dsp.build_lp_kernel(BD0, "hp", 200.0, 0.0, 2, 14.0, 48000)
     k1 = dsp.build_lp_kernel(BD1, "lp", 8000.0, 0.0, 2, 14.0, 48000)
-    n = 6000
-    sig = _noise(n, seed=3)
-    zeros = [0.0] * n
-    e0 = dsp.lp_engine_ref(sig, zeros, k0, k0, P)["outA"]
-    e1 = dsp.lp_engine_ref(e0, zeros, k1, k1, P)["outA"]
-    lat0 = BD0 // 2 + P
-    lat1 = BD1 // 2 + P
-    warm = lat0 + lat1 + P
-    assert all(v == 0.0 for v in e1[:lat0 + lat1]), "output before the summed latency is not zero"
-    assert any(abs(v) > 1e-12 for v in e1[warm:warm + P]), "no output after the warm-up bound"
+    pre = _noise(4000, seed=3)
+    post = _noise(4000, seed=5)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+
+    def serial(clear_at):
+        a = dsp.lp_engine_ref(sig, zeros, k0, k0, P, clear_at=clear_at)["outA"]
+        return dsp.lp_engine_ref(a, zeros, k1, k1, P, clear_at=clear_at)["outA"]
+
+    cleared = serial(T)
+    continuous = serial(None)
+    hold = BD0 + BD1 + P
+    assert cleared[T + hold:] == continuous[T + hold:], "serial pair not warm at BD0+BD1+P"
 
 
 def test_v09_shipping_warmup_bounds_match_the_spec_table():
     P = 2048
-    for bd0, bd1, want in ((8192, 8192, 14336), (32768, 8192, 26624), (32768, 32768, 38912)):
-        assert (bd0 // 2 + P) + (bd1 // 2 + P) + P == want
+    for bd0, bd1, want in ((8192, 8192, 18432), (32768, 8192, 43008), (32768, 32768, 67584)):
+        assert bd0 + bd1 + P == want
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k v09_clear or v09_without or v09_cleared`
+Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "v09_after or v09_group_delay or v09_serial or v09_without"`
 Expected: FAIL — `lp_engine_ref() got an unexpected keyword argument 'clear_at'`.
 
 - [ ] **Step 3: Add `clear_at` to `lp_engine_ref`**
@@ -551,7 +711,7 @@ Insert at the top of the per-sample loop, before the lane loop (i.e. immediately
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 163 passed. If `test_v09_clear_at_makes_the_engine_bit_equal_to_a_freshly_cleared_one` fails on a tail difference, the clear list is incomplete — compare against every mutable name in the function and add the missing one; do NOT relax the assertion to a tolerance.
+Expected: 164 passed. If `test_v09_after_a_full_support_hold_the_cleared_engine_equals_a_CONTINUOUS_one` fails on a tail difference, the clear list is incomplete — compare against every mutable name in the function and add the missing one; do NOT relax the assertion to a tolerance.
 
 - [ ] **Step 5: Commit**
 
@@ -598,7 +758,7 @@ def test_v09_no_signal_survives_the_intended_mute_above_minus_80_dbfs():
     out = _apply_machine(sig, m, ev, srate=srate)
     fo = max(1, int(srate * 0.005))
     start = 1000 + fo                             # fully muted from here
-    end = start + 14336                           # ... until the hold expires
+    end = start + 18432                           # ... until the hold expires
     peak = max(abs(v) for v in sig)
     worst = max(abs(v) for v in out[start:end])
     assert worst == 0.0, f"signal leaked through the mute: {worst} (peak {peak})"
@@ -642,7 +802,7 @@ Expected fixes are in `TopoMachine` only (e.g. `sample()` returning a stale `g` 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 166 passed.
+Expected: 167 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -699,12 +859,17 @@ function lp_engine_clear(eng) local(ob, KM, PB2K) (
 Immediately after `lp_rt_reset(0);  lp_rt_reset(1);` (around line 586) add:
 
 ```eel2
-// V0.9 active topology. @slider only ARMS a change; @block adopts it. Initialised from the
-// sliders so a freshly loaded instance or a recalled preset is active immediately with no mute.
+// V0.9 active topology. @slider only ARMS a change; @block adopts it. Cold init is treated as
+// ALREADY COMMITTED to whatever the project loaded (spec 4.3a): without this, reopening a
+// project saved as Linear/High/Mid would arm a mute and play through the WRONG topology until
+// the hold expired - on every load, and again on every sample-rate change, which re-runs @init.
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
-mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 0;
-mt_hold = 0; mt_blocks = 0;
+mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
+mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
 mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;
+// The geometry itself is adopted by the FIRST @slider pass rather than here, because JSFX does
+// not guarantee that slider values are loaded when @init runs.
+topo_boot = 1;
 ```
 
 - [ ] **Step 4: Make `@sample` read the active topology**
@@ -759,9 +924,25 @@ Replace lines 689–696 (`sel_bd0 = ...` through the closing `);` of the relayou
 sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
 sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
 
-// V0.9: a topology change is ARMED here, never applied. Applying it in this pass is what
-// V0.8 did, and it is why a switch under audio emitted garbage: the first affected sample is
-// already in flight when @slider runs. @block adopts it once the output envelope is at zero.
+// V0.9 boot: the FIRST @slider pass adopts the loaded state immediately - relayout, window
+// builds, resets, forced snap rebuilds - exactly as V0.8 did, with no mute and no deferral.
+// This is what keeps a project reload (and a sample-rate change, which re-runs @init) from
+// arming a spurious transition through the wrong topology.
+topo_boot ? (
+  (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
+    lp_relayout(sel_bd0, sel_bd1);
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  );
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;
+  mt_state = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
+  topo_boot = 0;
+);
+
+// V0.9: after boot, a topology change is ARMED here, never applied. Applying it in this pass
+// is what V0.8 did, and it is why a switch under audio emitted garbage: the first affected
+// sample is already in flight when @slider runs. @block adopts it once the envelope is at zero.
 topo_changed = slider140 != act_phase;
 (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? topo_changed = 1;
 (slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)) ? topo_changed = 1;
@@ -828,8 +1009,11 @@ mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
   phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
   act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
   topo_pdc();
-  mt_hold = act_phase == 1 ? (lp_geo[2] + lp_geo[6] + lpP) : 0;
+  // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency
+  // lp_geo[2]/[6] = BD/2+P. See spec 4.1: at lat the output has merely appeared.
+  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + lpP) : 0;
   mt_blocks = 2;
+  mt_just_committed = 1;   // this pass publishes PDC; it does not count as an epoch
   mt_pos = 0;
   mt_pend = 0;
   mt_ready = 0;
@@ -845,16 +1029,29 @@ Append at the very end of `@block` (after the `lp_dirty` branch closes at line 7
 ```eel2
 // Kernels are valid once both engines have a built Hspec (or when Min is active, where no
 // kernel is used). Only then may the hold be consumed.
+// NOTE the shape of both assignments: NEVER `cond ? var += 1;` - that is the EEL2 form that
+// silently did nothing in V0.8 (the zero-run counter). Both are written as an assignment whose
+// right-hand side is the conditional, or via min/max.
 mt_state == 2 && mt_pend == 0 ? (
-  (act_phase == 0 || (lp_fs[3] && lp_fs[7])) ? mt_ready = 1;
-  mt_blocks > 0 ? mt_blocks -= 1;
+  mt_ready = (act_phase == 0 || (lp_fs[3] && lp_fs[7])) ? 1 : mt_ready;
+  // The commit block PUBLISHES the new pdc_delay; the two epochs counted are the blocks AFTER
+  // it, so the commit's own pass does not decrement (spec §4.4 step 6).
+  mt_just_committed ? (
+    mt_just_committed = 0;
+  ) : (
+    mt_blocks = max(mt_blocks - 1, 0);
+  );
 );
 ```
 
+`mt_just_committed` is set to 1 inside `topo_commit` (add it next to `mt_blocks = 2;` in Step 3)
+and is the only new variable this step introduces.
+
 - [ ] **Step 5: Check the EEL2 nested-ternary rule**
 
-Run: `grep -n "? *( *[a-z_]* *[?] .*+=" "JSFX/RCBitNova V0.9"`
-Expected: no output. Then read every `?` chain added in this task and confirm each assignment is
+Run: `grep -nE "\? *[a-zA-Z_][a-zA-Z0-9_\[\]]* *(\+=|-=|\*=|/=)" "JSFX/RCBitNova V0.9"`
+Expected: no output. This is the exact V0.8 form (`cond ? var += 1;`) that parsed fine, read
+correctly, passed review, and silently never executed. Then read every `?` chain added in this task and confirm each assignment is
 its own statement — this is the bug class that cost a full live session in V0.8, and neither the
 oracle nor a code review caught it then.
 
@@ -943,8 +1140,9 @@ Run every item and record the result:
 
 1. **Under playback**, switch Placement (Both→Mid), Phase (Min↔Linear), Resolution
    (Normal↔High). Each must give **silence** then correct audio — no burst, no click, no
-   missing Side content. Expected silences: ~300 ms Normal+Normal, ~810 ms High+High,
-   ~10 ms for Linear→Min.
+   missing Side content. Expected silences: ~384 ms Normal+Normal, ~896 ms High+Normal,
+   ~1.41 s High+High, ~10 ms for Linear→Min. A silence noticeably SHORTER than these means
+   mt_hold was built from lp_geo[2]/[6] (latency) instead of lp_geo[0]/[4] (support).
 2. **Null test (bit-accuracy gate 1):** two tracks, V0.8 and V0.9, identical settings, one
    polarity-inverted, summed → must be digital silence. Do not touch any topology slider during
    the test.
@@ -990,7 +1188,7 @@ Expected: no output. Any hit is a bit-accuracy violation and must be removed, no
 - [ ] **Step 2: Full oracle suite (bit-accuracy gate 2)**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 166 passed, 0 failed. Read the output; do not infer it.
+Expected: 167 passed, 0 failed. Read the output; do not infer it.
 
 - [ ] **Step 3: Fable final review (bit-accuracy gate 4)**
 
