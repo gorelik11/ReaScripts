@@ -1680,9 +1680,9 @@ def _run_to_commit(m, play_state=1):
 def test_v09_hold_matches_the_spec_table_for_every_geometry():
     cases = [
         # (bd0, bd1, expected hold in samples) - FULL KERNEL SUPPORT BD, not lat=BD/2+P
-        (8192, 8192, 8192 + 8192 + 2048),      # Normal+Normal  = 18432 = 384 ms @48k
-        (32768, 8192, 32768 + 8192 + 2048),    # High+Normal    = 43008 = 896 ms
-        (32768, 32768, 32768 + 32768 + 2048),  # High+High      = 67584 = 1.41 s
+        (8192, 8192, 8192 + 8192 + 4096),      # Normal+Normal  = 20480 = 427 ms @48k
+        (32768, 8192, 32768 + 8192 + 4096),    # High+Normal    = 45056 = 939 ms
+        (32768, 32768, 32768 + 32768 + 4096),  # High+High      = 69632 = 1.45 s
     ]
     for bd0, bd1, want in cases:
         m = _tm(phase=0)
@@ -1703,8 +1703,8 @@ def test_v09_placement_and_resolution_get_the_same_hold_as_phase():
     m1 = _tm(phase=1, **base); m1.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)
     m2 = _tm(phase=1, **base); m2.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=8192)
     _run_to_commit(m1); _run_to_commit(m2)
-    assert m1.hold == 18432
-    assert m2.hold == 43008
+    assert m1.hold == 20480
+    assert m2.hold == 45056
 
 
 def test_v09_hold_is_full_support_not_reported_latency():
@@ -1712,7 +1712,7 @@ def test_v09_hold_is_full_support_not_reported_latency():
     m = _tm(phase=0)
     m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=32768, bd1=32768)
     _run_to_commit(m)
-    assert m.hold == 67584
+    assert m.hold == 69632
     assert m.hold != (32768 // 2 + 2048) * 2 + 2048, "hold fell back to the group-delay length"
 
 
@@ -1756,7 +1756,7 @@ def test_v09_bypass_freezes_the_whole_machine():
     assert m.state == 1 and m.pos == 0 and m.commit_count == 0
     # release bypass: the full sequence must still run
     _run_to_commit(m)
-    assert m.commit_count == 1 and m.hold == 18432
+    assert m.commit_count == 1 and m.hold == 20480
 
 
 def test_v09_stopped_transport_commits_early_but_still_holds():
@@ -1768,7 +1768,7 @@ def test_v09_stopped_transport_commits_early_but_still_holds():
     n = 0
     while m.state == 2 and n < 200000:
         m.sample(); n += 1
-    assert n == 18432, "warm-up was skipped by the stopped path"
+    assert n == 20480, "warm-up was skipped by the stopped path"
 
 
 def test_v09_no_block_while_stopped_still_commits_on_the_first_playback_block():
@@ -1818,3 +1818,112 @@ def test_v09_every_commit_clears_the_engines_and_phase_edges_clear_minphase():
     m2.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)  # phase edge
     _run_to_commit(m2)
     assert m2.clears == ["engines", "minphase"]
+
+
+def _noise(n, seed=1):
+    """Deterministic stdlib-only pseudo-noise in [-1, 1]."""
+    x = seed
+    out = []
+    for _ in range(n):
+        x = (1103515245 * x + 12345) % 2147483648
+        out.append(x / 1073741824.0 - 1.0)
+    return out
+
+
+def test_v09_after_a_full_support_hold_the_cleared_engine_equals_a_CONTINUOUS_one():
+    """THE test the hold length must satisfy (spec §4.6, Fable P0-3).
+
+    The reference is an engine that NEVER stopped - it processed the pre-commit history too.
+    Equality can only hold once every sample the output depends on lies after the commit, i.e.
+    after the kernel's full support BD. Comparing against a cleared-at-commit reference instead
+    (what rev 2 specified) would be satisfied at ANY hold length, including zero."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    pre = _noise(4000, seed=7)
+    post = _noise(4000, seed=99)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)["outA"]
+    continuous = dsp.lp_engine_ref(sig, zeros, ker, ker, P)["outA"]           # never cleared
+    hold = BD + P
+    peak = max(abs(v) for v in continuous)
+    worst = max(abs(a - b) for a, b in zip(cleared[T + hold:], continuous[T + hold:]))
+    # Not bit-identical: the two runs sum different FFT blocks, so they differ by float64
+    # rounding only. Measured -285 dBFS; the gate is set well above that and far below the
+    # -43 dBFS the group-delay length leaves (see the companion test).
+    assert worst / peak < 1e-12, f"cleared engine differs from a continuous one: {worst/peak}"
+
+
+def test_v09_a_group_delay_hold_would_NOT_have_been_enough():
+    """The negative half of the pair: at rev 2's lat = BD/2 + P the two still differ, so this
+    test fails if anyone shortens mt_hold back to the reported latency."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    pre = _noise(4000, seed=7)
+    post = _noise(4000, seed=99)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+    cleared = dsp.lp_engine_ref(sig, zeros, ker, ker, P, clear_at=T)["outA"]
+    continuous = dsp.lp_engine_ref(sig, zeros, ker, ker, P)["outA"]
+    lat = BD // 2 + P
+    peak = max(abs(v) for v in continuous)
+    window = slice(T + lat, T + lat + P)
+    diff = max(abs(a - b) for a, b in zip(cleared[window], continuous[window]))
+    # Measured -43 dBFS: audible, not a rounding artefact. Six orders of magnitude above the
+    # full-support residual, which is what makes the choice of BD over BD/2+P non-cosmetic.
+    assert diff / peak > 1e-3, \
+        f"only {diff/peak} error at the group-delay length - the short hold would have done"
+
+
+def test_v09_serial_pair_needs_BD0_plus_BD1_plus_P():
+    """Spec §4.5: the serial composition. Engine 0's output is free of pre-commit influence
+    after BD0 samples plus its own hop; engine 1 then needs BD1 samples of that clean input plus
+    its own hop - hence 2P, not P. Measured residual: -219 dBFS at +P, -282 dBFS at +2P."""
+    P = 256
+    BD0 = 1024
+    BD1 = 512
+    k0 = dsp.build_lp_kernel(BD0, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    k1 = dsp.build_lp_kernel(BD1, "lp", 8000.0, 0.0, 2, 14.0, 48000)
+    pre = _noise(4000, seed=3)
+    post = _noise(4000, seed=5)
+    T = len(pre)
+    sig = pre + post
+    zeros = [0.0] * len(sig)
+
+    def serial(clear_at):
+        a = dsp.lp_engine_ref(sig, zeros, k0, k0, P, clear_at=clear_at)["outA"]
+        return dsp.lp_engine_ref(a, zeros, k1, k1, P, clear_at=clear_at)["outA"]
+
+    cleared = serial(T)
+    continuous = serial(None)
+    hold = BD0 + BD1 + 2 * P
+    peak = max(abs(v) for v in continuous)
+    worst = max(abs(a - b) for a, b in zip(cleared[T + hold:], continuous[T + hold:]))
+    assert worst / peak < 1e-12, f"serial pair not warm at BD0+BD1+2P: {worst/peak}"
+
+
+def test_v09_without_the_clear_old_domain_energy_outlives_the_group_delay():
+    """Proves the clear is NECESSARY: a linear-phase kernel has support BD, not BD/2, so a
+    placement switch that keeps the engine state leaks old-domain output for ~BD+P samples."""
+    P = 256
+    BD = 1024
+    ker = dsp.build_lp_kernel(BD, "hp", 200.0, 0.0, 2, 14.0, 48000)
+    pre = _noise(3000, seed=7)
+    post = [0.0] * 3000                      # silence after the switch
+    T = len(pre)
+    zeros = [0.0] * (T + len(post))
+    kept = dsp.lp_engine_ref(pre + post, zeros, ker, ker, P)                 # no clear
+    lat = BD // 2 + P
+    tail = kept["outA"][T + lat + P:T + BD + P]
+    assert max(abs(v) for v in tail) > 1e-9, \
+        "old-domain energy vanished by lat+P - the group-delay hold would have been enough"
+
+
+def test_v09_shipping_warmup_bounds_match_the_spec_table():
+    P = 2048
+    for bd0, bd1, want in ((8192, 8192, 20480), (32768, 8192, 45056), (32768, 32768, 69632)):
+        assert bd0 + bd1 + 2 * P == want

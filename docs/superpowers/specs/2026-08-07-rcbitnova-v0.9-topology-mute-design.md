@@ -219,21 +219,28 @@ geometry. Note this is `BD`, the kernel's full support — **not** the reported 
 (§4.1).
 
 ```
-mt_hold = act_phase == 1 ? (BD0 + BD1 + P) : 0
+mt_hold = act_phase == 1 ? (BD0 + BD1 + 2*P) : 0
 ```
 
 | Resulting case | Hold |
 |---|---|
-| Placement, Phase `Min→Linear`, or Resolution, at Normal+Normal | 18432 samples = 384 ms @48k |
-| …at High+Normal | 43008 = 896 ms |
-| …at High+High | 67584 = 1.41 s |
+| Placement, Phase `Min→Linear`, or Resolution, at Normal+Normal | 20480 samples = 427 ms @48k |
+| …at High+Normal | 45056 = 939 ms |
+| …at High+High | 69632 = 1.45 s |
 | Phase `Linear→Min` | 0 samples — only the `mt_blocks` PDC gate (§6) |
 
-The serial composition is `BD0 + BD1 + P`: engine 0's output is free of pre-commit influence
-after `BD0` samples, engine 1 then needs `BD1` samples of that clean input, plus one hop of
-block granularity. The owner chose this over the shorter group-delay hold with the numbers
-above in front of him: in Normal — the working configuration — the honest length costs only
-85 ms more than rev 2's.
+The serial composition is `BD0 + BD1 + 2P`: engine 0's output is free of pre-commit influence
+after `BD0` samples plus its own hop of block latency, and engine 1 then needs `BD1` samples of
+that clean input plus its own hop. **Measured in the oracle** (`test_v09_serial_pair_needs_...`):
+at `BD0+BD1+P` the residual against a continuous reference is still −219 dBFS; at `BD0+BD1+2P`
+it is −282 dBFS, i.e. float64 noise. The High+High figure of 69632 is, satisfyingly, the same
+number the weakness review derived as the full serial FIR tail (69630).
+
+**The measurement also settles how much this mattered.** Against a continuously running
+reference, rev 2's group-delay length leaves an error of **−43 dBFS** — plainly audible, not the
+"gentle ramp-in" it was assumed to be — while the full-support length leaves −282 dBFS. The
+owner chose the honest length with the cost table in front of him; the measurement confirms it
+was not a cosmetic choice.
 
 `Linear→Min` needs no sample hold: the min-phase cascade is IIR with no finite support, and it
 was just zeroed, so it is correct from its first sample for a signal with a zero past. It still
@@ -303,12 +310,15 @@ new topology reset at commit and fed the same post-commit samples". Fable is rig
 **vacuous**: a cleared engine satisfies it at every hold length, including zero, because it is
 simply a restatement of what a cleared engine computes. It constrained nothing.
 
-rev 3's definition constrains the hold: after the hold, the output is **bit-identical to the same
-topology running continuously**, i.e. to an instance that had processed the full pre-commit
-history. With `mt_hold = BD0 + BD1 + P` this is achievable and true, because both kernels have
-finite support: every sample the output depends on lies after the commit, so the two instances
-cannot differ. At any shorter hold it is false — which is exactly what makes the test meaningful
-(§8.4).
+rev 3's definition constrains the hold: after the hold, the output **matches the same topology
+running continuously**, i.e. an instance that had processed the full pre-commit history. With
+`mt_hold = BD0 + BD1 + 2P` this is achievable, because both kernels have finite support: every
+sample the output depends on lies after the commit, so the two instances can differ only by
+float64 rounding (they sum different FFT blocks). Measured: **−282 dBFS**. At any shorter hold it
+is false — at rev 2's length, −43 dBFS — which is exactly what makes the test meaningful (§8.4).
+
+Note the wording: *matches*, not *is bit-identical*. The FFT path makes literal bit-equality
+unavailable here, and claiming it would be false.
 
 ## 5. Interaction with the V0.8 kernel crossfade
 
@@ -379,7 +389,7 @@ the path, and inside the transition the signal is deliberately being taken to ze
    bit-equal to the same topology **running continuously since before the commit** (§4.6) — not
    to a cleared-at-commit reference, which rev 2 used and which is satisfied at every hold
    length including zero (Fable P0-3). The companion test asserts the negative: at
-   `lat0 + lat1 + P` (rev 2's length) the two references **differ**, so the test fails if
+   `lat0 + lat1 + P` (rev 2's length) the two references differ by −43 dBFS, so the test fails if
    someone shortens the hold back. Every FDL partition, input ring and output ring is seeded
    with nonzero, **stereo-asymmetric** history, and an impulse is placed just before the commit —
    sustained audio can hide a partially-formed response under new steady output. Run separately

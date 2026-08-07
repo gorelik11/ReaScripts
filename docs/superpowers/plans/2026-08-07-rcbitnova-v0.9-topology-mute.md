@@ -4,14 +4,14 @@
 
 **Goal:** Make the three topology switches (HP/LP Placement in `Phase=Linear`, Phase, HP/LP Resolution) mute the plugin output honestly — deferring the change until the output is at zero and holding until the new topology is provably warm — without touching the steady-state signal path.
 
-**Architecture:** A `selected → pending → active` state machine. `@slider` only arms it; `@block` commits at exact zero, clears both linear engines and the min-phase state, publishes the new PDC, and forces snap kernel rebuilds; `@sample` runs a 5 ms fade-out / hold / 5 ms fade-in envelope at the FINAL plugin output. Because every commit clears state, one hold formula (`BD0 + BD1 + P`) covers every event, and the acceptance criterion is bit-equality with the same topology **running continuously** — a claim that is true exactly at that hold length and false at anything shorter.
+**Architecture:** A `selected → pending → active` state machine. `@slider` only arms it; `@block` commits at exact zero, clears both linear engines and the min-phase state, publishes the new PDC, and forces snap kernel rebuilds; `@sample` runs a 5 ms fade-out / hold / 5 ms fade-in envelope at the FINAL plugin output. Because every commit clears state, one hold formula (`BD0 + BD1 + 2P`) covers every event, and the acceptance criterion is bit-equality with the same topology **running continuously** — a claim that is true exactly at that hold length and false at anything shorter.
 
 **Tech Stack:** JSFX (EEL2) for the plugin; Python 3.11 stdlib-only DSP mirror (`tools/rcbitnova_dsp.py`) as THE ORACLE; `pytest` for the oracle tests; live REAPER for transcription verification.
 
 ## Global Constraints
 
 - **Spec:** `docs/superpowers/specs/2026-08-07-rcbitnova-v0.9-topology-mute-design.md` (**rev 3**). Section numbers referenced below are that document's.
-- **Hold length is `BD0 + BD1 + P`** — the kernel's full support, NOT the reported latency `lat = BD/2 + P`. Normal+Normal 18432 samples (384 ms @48k), High+Normal 43008 (896 ms), High+High 67584 (1.41 s), `Linear→Min` 0. Anyone tempted to shorten it should read spec §4.1: at `lat` the output has appeared but still carries the filter's switch-on transient; at `BD` it is bit-identical to an engine that never stopped running.
+- **Hold length is `BD0 + BD1 + 2P`** — the kernel's full support, NOT the reported latency `lat = BD/2 + P`. Normal+Normal 20480 samples (427 ms @48k), High+Normal 45056 (939 ms), High+High 69632 (1.45 s), `Linear→Min` 0. Measured residual against a continuously running reference: −282 dBFS at this length, −219 dBFS at `+P`, and **−43 dBFS** at rev 2's group-delay length. Anyone tempted to shorten it should read spec §4.1: at `lat` the output has appeared but still carries the filter's switch-on transient; at `BD` it is bit-identical to an engine that never stopped running.
 - **New file `JSFX/RCBitNova V0.9`, created as an exact copy of `JSFX/RCBitNova V0.8`.** Never edit V0.8 or any earlier version — they are frozen and tagged. `rcbitnova-v0.8` is the fallback.
 - **Bit-accuracy is non-negotiable.** No `log`, `dB`, or `pow(10)` anywhere in the DSP path. Any gain that stays in the signal is an exact power of two. The mute envelope is ordinary float and is legal ONLY because the whole block is skipped by condition when `mt_state == 0`.
 - **Steady-state must be byte-identical to V0.8.** When no topology event is in flight, not one arithmetic operation may be added to `spl0`/`spl1`.
@@ -1011,7 +1011,7 @@ mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
   topo_pdc();
   // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency
   // lp_geo[2]/[6] = BD/2+P. See spec 4.1: at lat the output has merely appeared.
-  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + lpP) : 0;
+  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + 2*lpP) : 0;
   mt_blocks = 2;
   mt_just_committed = 1;   // this pass publishes PDC; it does not count as an epoch
   mt_pos = 0;
@@ -1140,8 +1140,8 @@ Run every item and record the result:
 
 1. **Under playback**, switch Placement (Both→Mid), Phase (Min↔Linear), Resolution
    (Normal↔High). Each must give **silence** then correct audio — no burst, no click, no
-   missing Side content. Expected silences: ~384 ms Normal+Normal, ~896 ms High+Normal,
-   ~1.41 s High+High, ~10 ms for Linear→Min. A silence noticeably SHORTER than these means
+   missing Side content. Expected silences: ~427 ms Normal+Normal, ~939 ms High+Normal,
+   ~1.45 s High+High, ~10 ms for Linear→Min. A silence noticeably SHORTER than these means
    mt_hold was built from lp_geo[2]/[6] (latency) instead of lp_geo[0]/[4] (support).
 2. **Null test (bit-accuracy gate 1):** two tracks, V0.8 and V0.9, identical settings, one
    polarity-inverted, summed → must be digital silence. Do not touch any topology slider during

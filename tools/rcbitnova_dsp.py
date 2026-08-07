@@ -1266,7 +1266,8 @@ def lp_packed_layouts(base, BD0, BD1, P):
     return l0, l1
 
 
-def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip_after=None):
+def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip_after=None,
+                  clear_at=None):
     """Integrated two-lane reference for the V0.8 linear-phase engine (spec rev 3 §4-§5).
 
     Models BOTH new features exactly as the JSFX must, in the pinned hop order:
@@ -1277,6 +1278,10 @@ def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip
     fade_len:   crossfade length in SAMPLES; 0 = instant swap (the V0.7 baseline).
     skip_after: zero-run threshold; None disables the skip. The counter saturates and
                 is updated including the current sample, BEFORE the hop decision.
+    clear_at:   V0.9 - sample index at which the engine is CLEARED exactly as lp_engine_clear()
+                does at a topology commit: FDL partitions, input history, pending output and all
+                counters zeroed. This is what removes the stale tail, and it is why the V0.9
+                hold is a cold-start warm-up rather than a full serial FIR tail.
 
     Returns dict(outA, outB, skipped, fade_hops, state)."""
     B = 2 * P
@@ -1297,6 +1302,16 @@ def lp_engine_ref(sigA, sigB, ker_a, ker_b, P, switch_hop=None, fade_len=0, skip
     skipped = 0; fading = False; fade_pos = 0; fade_hops = 0
 
     for n in range(len(sigA)):
+        if clear_at is not None and n == clear_at:
+            fdl = {"A": [[0j] * B for _ in range(KMAX)], "B": [[0j] * B for _ in range(KMAX)]}
+            hist = {"A": [0.0] * B, "B": [0.0] * B}
+            pend = {"A": [], "B": []}
+            zc = {"A": 0, "B": 0}
+            fdl_wr = 0
+            hpos = 0
+            cnt = 0
+            fading = False
+            fade_pos = 0
         for lane, src in (("A", sigA), ("B", sigB)):
             x = src[n]
             if skip_after is None:
@@ -1405,10 +1420,13 @@ class TopoMachine:
         """Spec §4.5: one formula, using the kernel's FULL SUPPORT BD, not the reported
         latency BD/2+P. At BD/2+P the output has merely appeared; only after BD samples does
         the cleared engine's zeroed past stop influencing it, which is what makes the output
-        bit-identical to an engine that never stopped running. Linear -> BD0+BD1+P; Min -> 0."""
+        match an engine that never stopped running. Each engine also contributes its own hop of
+        block latency, hence 2P for a serial pair (measured: at BD0+BD1+P the residual is still
+        -219 dBFS, at BD0+BD1+2P it is -282, i.e. float64 noise). Linear -> BD0+BD1+2P; Min -> 0.
+        """
         if self.act_phase != 1:
             return 0
-        return self.act_bd0 + self.act_bd1 + self.P
+        return self.act_bd0 + self.act_bd1 + 2 * self.P
 
     # ---- @slider ----
     def slider(self, phase, hp_pl, lp_pl, bd0, bd1):
