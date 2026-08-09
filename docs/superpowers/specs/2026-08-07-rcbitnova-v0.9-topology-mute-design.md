@@ -352,11 +352,18 @@ change, the resulting artefact happens **outside** this instance and no amount o
 can suppress it. The fallback the owner rejected in V0.6 — constant maximum PDC — exists exactly
 for this failure mode.
 
-Therefore the very first work item (plan Task 0) is a standalone live experiment: change
-`pdc_delay` under playback in a trivial test JSFX and listen for host-side disruption. A bad
-answer forces a different architecture and must be known **before** the state machine is built,
-not after. If REAPER needs more than two block boundaries, `mt_blocks` is the single constant to
-raise.
+Therefore the very first work item (plan Task 0) was a standalone live experiment: change
+`pdc_delay` under playback in a trivial test JSFX — an honest pure delay matching exactly what it
+reports, so anything heard beyond the latency change is the host's doing — and listen for
+host-side disruption.
+
+**Result, 2026-08-09 (owner, live): clean.** Flipping the reported latency between 0 and 12288
+samples under playback produced no click, dropout or stall. REAPER adopts a mid-playback PDC
+change without host-side artefacts, so V0.9's architecture stands as designed: the internal mute
+is sufficient, and the constant-max-PDC fallback the owner rejected in V0.6 is not needed. (The
+owner reported the outcome as a whole rather than per buffer size; no disruption was observed.)
+If a later session finds REAPER needs more than two block boundaries after all, `mt_blocks` is
+the single constant to raise.
 
 ## 7. Bit-accuracy — four machine-checked gates
 
