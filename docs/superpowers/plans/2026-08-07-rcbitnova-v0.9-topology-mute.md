@@ -15,7 +15,7 @@
 - **New file `JSFX/RCBitNova V0.9`, created as an exact copy of `JSFX/RCBitNova V0.8`.** Never edit V0.8 or any earlier version — they are frozen and tagged. `rcbitnova-v0.8` is the fallback.
 - **Bit-accuracy is non-negotiable.** No `log`, `dB`, or `pow(10)` anywhere in the DSP path. Any gain that stays in the signal is an exact power of two. The mute envelope is ordinary float and is legal ONLY because the whole block is skipped by condition when `mt_state == 0`.
 - **Steady-state must be byte-identical to V0.8.** When no topology event is in flight, not one arithmetic operation may be added to `spl0`/`spl1`.
-- **EEL2 gotcha, cost a full live session in V0.8:** the form `cond ? var += 1;` parses, reads correctly, passes review — and silently never executes. `cond ? var = X;` is fine; compound assignment under a `?` is not. Use `var = max(var - 1, 0)` / `min(var + 1, N)`, or make the conditional the right-hand side: `var = cond ? 1 : var;`. The V0.9 state machine is exactly the shape where this hides; the Task 6 grep gate checks for it mechanically.
+- **EEL2 gotcha, cost a full live session in V0.8:** a compound assignment (`+=`) inside a **NESTED** ternary — an inner `?` within an outer one that has an else-branch — parses, reads correctly, passes review, and silently never executes. Single-level `idx < 0 ? idx += KM;` is fine and appears throughout the V0.8 engine; that is why a grep for the form alone gives 17 false positives on working code. The mechanical gate is therefore: `diff` V0.8 against V0.9, take the ADDED lines only, and require no compound assignment among them at all — the V0.9 additions use `max()`/`min()` or put the conditional on the right-hand side (`var = cond ? 1 : var;`).
 - **Geometry constants:** `P = lpP = 2048`, `B = lpB = 4096`, `BD` = 8192 (Normal) or 32768 (High), `lat_e = BD_e/2 + P` (6144 Normal, 18432 High), `KMAX = BD/P`, `PB2 = B*2`.
 - **Python:** `/Library/Frameworks/Python.framework/Versions/3.11/bin/python3`. The oracle is pure stdlib — do not add dependencies.
 - **Run the oracle from the worktree root:** `python3 -m pytest tests/test_rcbitnova_dsp.py -q`. All 144 existing tests must stay green at every commit.
@@ -1049,9 +1049,13 @@ and is the only new variable this step introduces.
 
 - [ ] **Step 5: Check the EEL2 nested-ternary rule**
 
-Run: `grep -nE "\? *[a-zA-Z_][a-zA-Z0-9_\[\]]* *(\+=|-=|\*=|/=)" "JSFX/RCBitNova V0.9"`
-Expected: no output. This is the exact V0.8 form (`cond ? var += 1;`) that parsed fine, read
-correctly, passed review, and silently never executed. Then read every `?` chain added in this task and confirm each assignment is
+Run:
+```bash
+diff "JSFX/RCBitNova V0.8" "JSFX/RCBitNova V0.9" | grep '^>' | grep -nE "(\+=|-=|\*=|/=)"
+```
+Expected: no output (comments aside). Grepping the whole file for `? var += 1` instead gives 17
+false positives on V0.8 code that demonstrably works — the defect needed the assignment to be in
+a NESTED ternary, so the honest gate is "no compound assignment among the added lines at all". Then read every `?` chain added in this task and confirm each assignment is
 its own statement — this is the bug class that cost a full live session in V0.8, and neither the
 oracle nor a code review caught it then.
 

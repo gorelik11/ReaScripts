@@ -392,6 +392,19 @@ function lp_engine_clear(eng) local(ob, PB2K, dryN) (
   lp_rt_reset(eng);                 // indices + V0.8 fade state
 );
 
+// V0.9: PDC policy (c) from V0.6, derived from the ACTIVE topology and published at COMMIT
+// (or on any non-topology change such as Lk / bypass) rather than from the @slider pass that
+// merely observed a switch. Live-verified 2026-08-09: REAPER adopts a mid-playback pdc_delay
+// change without host-side artefacts, which is what makes the deferred publish safe.
+function topo_pdc() (
+  lin_lat = act_phase == 1 ? (lp_geo[2] + lp_geo[6]) : 0;      // engine0 lat + engine1 lat
+  pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0; // 0 when bypassed
+  pdc_bot_ch = 0; pdc_top_ch = 2;
+  // FIR ring-out: last possibly-nonzero output after the final input is
+  // 2*P + BD_hp + BD_lp - 2 + Lk; add margin. Small when Linear is off (IIR has no FIR tail).
+  ext_tail_size = act_phase == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
+);
+
 function lpk_commit(eng) local(ob, KM) (
   ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
   memcpy(ob[3], ob[15], KM * lpPB2);
@@ -719,11 +732,44 @@ lp_nsec > 0 ? (
 // Min->Linear transition is covered by the same geometry compare.
 sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
 sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
-(slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
-  lp_relayout(sel_bd0, sel_bd1);    // re-lays out BOTH engines (engine 1 is packed after 0)
-  lp_win_build(0); lp_win_build(1);
-  lp_rt_reset(0);  lp_rt_reset(1);
+
+// V0.9 BOOT: the FIRST @slider pass adopts the loaded state immediately - relayout, window
+// builds, resets, forced snap rebuilds - exactly as V0.8 did, with no mute and no deferral.
+// This is what stops a project reload (and a sample-rate change, which re-runs @init) from
+// arming a spurious transition and playing through the wrong topology until it expired.
+topo_boot ? (
+  (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
+    lp_relayout(sel_bd0, sel_bd1);  // re-lays out BOTH engines (engine 1 is packed after 0)
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  );
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
   hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force a snap-rebuild on both
+  mt_state = 0; mt_g = 1; mt_pend = 0; mt_ready = 1; mt_pos = 0;
+  topo_boot = 0;
+);
+
+// V0.9: after boot a topology change is ARMED here, NEVER applied. Applying it in this pass is
+// what V0.8 did, and it is why a switch under audio emitted garbage: the first affected sample
+// is already in flight when @slider runs. @block adopts it once the envelope reaches zero.
+topo_changed = slider140 != act_phase;
+(slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? topo_changed = 1;
+(slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)) ? topo_changed = 1;
+
+topo_changed ? (
+  mt_pend = 1;
+  mt_ready = 0;
+  mt_state != 1 ? (
+    mt_pos = floor((1 - mt_g) * mt_fo + 0.5);   // restart the fade-out from where we are
+    mt_state = 1;
+  );
+) : (
+  // Reversal back to the active topology while still pending: cancel and fade back in.
+  mt_pend ? (
+    mt_pend = 0;
+    mt_state = 3;
+    mt_pos = floor(mt_g * mt_fi + 0.5);
+  );
 );
 
 // Rebuild signature per engine: slope, freq, resonance (placement is routing, not magnitude).
@@ -732,20 +778,43 @@ hp_sig != hp_sig_prev ? ( hp_sig_prev = hp_sig; hp_dirty = 1; );
 lp_sig = slider135 + slider136 * 100003 + slider137 * 1009;
 lp_sig != lp_sig_prev ? ( lp_sig_prev = lp_sig; lp_dirty = 1; );
 
-// PDC policy (c): Min = zero-latency (V0.5); Linear = the sum of the two engines' latencies
-// (both engines always run, even at Slope=Off, so it never varies with filter settings).
-// Only a deliberate Phase or Resolution change moves it. Mode-B adds its lookahead Lk on top
-// (the linear delay is applied ONCE, by the engines).
-lp_fs[2] = floor(srate * 0.05); lp_fs[6] = lp_fs[2];   // 50 ms fade, follows srate
-lin_lat = slider140 == 1 ? (lp_geo[2] + lp_geo[6]) : 0;   // engine0 lat + engine1 lat
-pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0;   // 0 when bypassed
-pdc_bot_ch = 0; pdc_top_ch = 2;
-
-// FIR ring-out: the last possibly-nonzero output after the final input is
-// 2*P + BD_hp + BD_lp - 2 + Lk; add margin. Small when Linear is off (IIR has no FIR tail).
-ext_tail_size = slider140 == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
+lp_fs[2] = floor(srate * 0.05); lp_fs[6] = lp_fs[2];   // 50 ms V0.8 kernel fade, follows srate
+mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;   // 5 ms mute fades, follow srate
+// PDC + tail from the ACTIVE topology. A pending Phase/Resolution change does NOT move them
+// here; topo_pdc() is called again at commit, while the output is at zero.
+topo_pdc();
 
 @block
+
+// ---- V0.9 topology commit. Order is pinned: commit -> relayout/clear -> adopt+PDC -> the
+// forced snap builds below -> mt_ready. While mt_ready is 0 the hold does not count down, so no
+// sample is ever processed against a cleared, invalid Hspec.
+mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
+  geo_changed = slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]);
+  phase_edge = slider140 != act_phase;
+  geo_changed ? (
+    lp_relayout(sel_bd0, sel_bd1);      // memsets the whole span, so it clears too
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  ) : (
+    lp_engine_clear(0); lp_engine_clear(1);
+  );
+  phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+  topo_pdc();
+  // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency lp_geo[2]/[6]
+  // = BD/2+P, and 2 hops because each engine contributes its own. Oracle-measured: at BD+BD+P
+  // the residual vs a continuous engine is -219 dBFS, at +2P it is -282 (float64 noise), and at
+  // the reported latency it is -43 dBFS - audible.
+  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + 2*lpP) : 0;
+  mt_blocks = 2;
+  mt_just_committed = 1;   // this pass PUBLISHES pdc_delay; it does not count as an epoch
+  mt_pos = 0;
+  mt_pend = 0;
+  mt_ready = 0;
+  mt_state = 2;
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
+);
 
 // Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
 // knob sweep must not rebuild every block. The dirty flag persists, so the final knob
@@ -760,7 +829,7 @@ hp_dirty && lp_fs[0] == 0 ? (
   (lp_fs[3] == 0 || (time_precise() - hp_tbuild) >= 0.1) ? (
     lpk_build(0, 3, slider132, slider133,
       (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
-    (lp_fs[3] == 0 || slider140 == 0) ? ( lpk_commit(0); ) : ( lp_fs[0] = 1; lp_fs[1] = 0; );
+    (lp_fs[3] == 0 || act_phase == 0) ? ( lpk_commit(0); ) : ( lp_fs[0] = 1; lp_fs[1] = 0; );
     hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();
   );
 );
@@ -768,8 +837,23 @@ lp_dirty && lp_fs[4] == 0 ? (
   (lp_fs[7] == 0 || (time_precise() - lp_tbuild) >= 0.1) ? (
     lpk_build(1, 4, slider136, slider137,
       (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
-    (lp_fs[7] == 0 || slider140 == 0) ? ( lpk_commit(1); ) : ( lp_fs[4] = 1; lp_fs[5] = 0; );
+    (lp_fs[7] == 0 || act_phase == 0) ? ( lpk_commit(1); ) : ( lp_fs[4] = 1; lp_fs[5] = 0; );
     lp_dirty = 0; lp_fs[7] = 1; lp_tbuild = time_precise();
+  );
+);
+
+// V0.9: kernels are valid once both engines have a built Hspec (or when Min is active, where no
+// kernel is used). Only then may the hold be consumed. NOTE the shape of both assignments: the
+// V0.8 defect was a compound assignment inside a NESTED ternary (an inner `?` within an outer
+// one that has an else-branch), which parses and reads correctly but never executes. Single-level
+// `idx < 0 ? idx += KM;` is fine and is used throughout the engine; nested is not. Both writes
+// below therefore use max() or an assignment whose right-hand side is the conditional.
+mt_state == 2 && mt_pend == 0 ? (
+  mt_ready = (act_phase == 0 || (lp_fs[3] && lp_fs[7])) ? 1 : mt_ready;
+  mt_just_committed ? (
+    mt_just_committed = 0;    // the commit block publishes PDC; epochs are the blocks after it
+  ) : (
+    mt_blocks = max(mt_blocks - 1, 0);
   );
 );
 
