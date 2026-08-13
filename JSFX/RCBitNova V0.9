@@ -1173,4 +1173,50 @@ slider1 != 1 ? (
 
   spl0 *= out_gain;
   spl1 *= out_gain;
+
+  // ---- V0.9 topology mute, at the FINAL output. It must be here and not at the HP/LP
+  // boundary: the bands, the dynamics and the Mode-B bus are all stateful, so silence there is
+  // not silence at the output. When mt_state == 0 this whole block is SKIPPED by the condition
+  // - not multiplied by 1.0 - which is what keeps the steady-state path byte-identical to V0.8.
+  // It also sits INSIDE the bypass branch, so bypass freezes the machine entirely: a counter
+  // that ran while the engines were not being fed would expire the warm-up and then open into
+  // a cold topology.
+  //
+  // Every write below is a PLAIN assignment, never `+=` or `*=`. V0.8's one real defect was a
+  // compound assignment under a conditional that parsed, read correctly, passed review, and
+  // silently never executed; its exact parsing cause was never pinned down (single-level
+  // `ow -= 16384` works elsewhere in this same file), so the new code simply does not use the
+  // construct at all rather than relying on a rule nobody has proven.
+  mt_state ? (
+    mt_state == 1 ? (
+      // fade-out. Increment BEFORE computing the gain: computing first and overwriting the
+      // last value would make the final step 2/N instead of 1/N (~ -41.6 dB at 5 ms / 48k),
+      // which would be the largest discontinuity in a feature built for bounded discontinuity.
+      mt_pos = mt_pos + 1;
+      mt_g = (mt_fo - mt_pos) / mt_fo;
+      mt_pos >= mt_fo ? (
+        mt_g = 0; mt_state = 2; mt_pos = 0;
+      );
+    ) : (
+      mt_state == 2 ? (
+        // hold: silent until the commit has happened (mt_ready), the host has seen the new PDC
+        // (mt_blocks), and the new topology is warm (mt_hold processed samples).
+        mt_g = 0;
+        (mt_ready && mt_blocks <= 0) ? (
+          mt_pos = mt_pos + 1;
+          mt_pos >= mt_hold ? (
+            mt_state = 3; mt_pos = 0;
+          );
+        );
+      ) : (
+        mt_pos = mt_pos + 1;
+        mt_g = mt_pos / mt_fi;
+        mt_pos >= mt_fi ? (
+          mt_g = 1; mt_state = 0;
+        );
+      );
+    );
+    spl0 = spl0 * mt_g;
+    spl1 = spl1 * mt_g;
+  );
 );
