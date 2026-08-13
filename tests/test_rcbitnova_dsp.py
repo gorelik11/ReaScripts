@@ -1924,9 +1924,20 @@ def test_v09_without_the_clear_old_domain_energy_outlives_the_group_delay():
 
 
 def test_v09_shipping_warmup_bounds_match_the_spec_table():
-    P = 2048
+    """Drives the real machine at the shipping geometry. The earlier version of this test
+    asserted `bd0 + bd1 + 2*P == want` with `want` restating the same formula - it could not
+    fail and was evidence of nothing (found by Fable's final review)."""
     for bd0, bd1, want in ((8192, 8192, 20480), (32768, 8192, 45056), (32768, 32768, 69632)):
-        assert bd0 + bd1 + 2 * P == want
+        m = _tm(phase=0)
+        m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=bd0, bd1=bd1)
+        _run_to_commit(m)
+        assert m.hold == want, (bd0, bd1, m.hold, want)
+        # and the hold really is consumed sample by sample, not skipped
+        m.block(); m.block()
+        n = 0
+        while m.state == 2 and n <= want:
+            m.sample(); n += 1
+        assert n == want, f"hold consumed in {n} samples, expected {want}"
 
 
 def _apply_machine(sig, m, events, srate=48000, block=512):
@@ -2005,3 +2016,96 @@ def test_v09_steep_filters_are_the_worst_case_for_the_hold():
     win = slice(T + lat, T + lat + P)
     short = max(abs(a - b) for a, b in zip(cleared[win], continuous[win]))
     assert short / peak > 1e-3, f"group-delay length looks fine here: {short/peak}"
+
+
+# ---- V0.9 re-trigger paths (spec §8.10). Fable's final review found these were implemented on
+# both sides of the oracle/JSFX pair but exercised by NEITHER: every earlier test that called
+# .slider() twice used two separate machines. A transcription slip here would not have been
+# caught by anything except a lucky live listen.
+
+def test_v09_reversal_before_commit_cancels_without_committing():
+    m = _tm(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)     # Both -> Mid
+    fo = m.fo
+    for _ in range(fo // 2):                                     # halfway down
+        m.sample()
+    g_mid = m.g
+    assert 0.0 < g_mid < 1.0
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)     # back to Both before commit
+    assert m.pend == 0, "reversal did not cancel the pending commit"
+    assert m.state == 3, "reversal did not turn into a fade-in"
+    assert m.block() == "", "a commit happened despite the reversal"
+    # the envelope must resume from where it was, never jump
+    first = m.sample()
+    assert abs(first - g_mid) <= 1.0 / fo + 1e-9, f"envelope jumped: {g_mid} -> {first}"
+    while m.state == 3:
+        m.sample()
+    assert m.state == 0 and m.g == 1.0
+    assert m.commit_count == 0
+    assert m.act_hp_pl == 0, "the active topology changed despite the reversal"
+
+
+def test_v09_two_events_during_fade_out_coalesce_into_one_commit():
+    m = _tm(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)     # -> Mid
+    for _ in range(m.fo // 3):
+        m.sample()
+    m.slider(phase=1, hp_pl=2, lp_pl=0, bd0=32768, bd1=8192)    # -> Side AND High, still fading
+    assert m.state == 1 and m.pend == 1
+    _run_to_commit(m)
+    assert m.commit_count == 1, "coalescing produced more than one commit"
+    assert m.act_hp_pl == 2 and m.act_bd0 == 32768, "the final selection was not the one applied"
+    assert m.hold == 32768 + 8192 + 2 * 2048, "hold not computed from the FINAL geometry"
+
+
+def test_v09_event_after_commit_restarts_the_fade_without_a_jump():
+    m = _tm(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)
+    _run_to_commit(m)                                            # now in the hold, g == 0
+    m.block(); m.block()
+    for _ in range(100):
+        m.sample()
+    m.slider(phase=1, hp_pl=2, lp_pl=0, bd0=8192, bd1=8192)     # new event during the hold
+    assert m.pend == 1
+    assert m.g == 0.0, "envelope left zero when re-armed from silence"
+    _run_to_commit(m)
+    assert m.commit_count == 2 and m.act_hp_pl == 2
+
+
+def test_v09_event_during_fade_in_restarts_the_fade_out_from_the_current_gain():
+    m = _tm(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    m.slider(phase=1, hp_pl=1, lp_pl=0, bd0=8192, bd1=8192)
+    _run_to_commit(m)
+    m.block(); m.block()
+    while m.state == 2:
+        m.sample()
+    for _ in range(m.fi // 2):                                   # halfway back up
+        m.sample()
+    g_mid = m.g
+    assert 0.0 < g_mid < 1.0 and m.state == 3
+    m.slider(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)     # switch again mid fade-in
+    assert m.state == 1 and m.pend == 1
+    first = m.sample()
+    assert abs(first - g_mid) <= 1.0 / m.fo + 1e-9, f"envelope jumped: {g_mid} -> {first}"
+    assert first < g_mid, "fade did not reverse direction"
+
+
+def test_v09_rapid_switching_never_sticks_muted_and_always_resolves():
+    """The live 'five flips in two seconds' case, made deterministic."""
+    m = _tm(phase=1, hp_pl=0, lp_pl=0, bd0=8192, bd1=8192)
+    placements = [1, 2, 3, 4, 0]
+    n = 0
+    for i, pl in enumerate(placements):
+        m.slider(phase=1, hp_pl=pl, lp_pl=0, bd0=8192, bd1=8192)
+        for _ in range(300):                                     # ~6 ms between flips
+            if n % 512 == 0:
+                m.block()
+            m.sample(); n += 1
+    # let it settle
+    while m.state != 0 and n < 2_000_000:
+        if n % 512 == 0:
+            m.block()
+        m.sample(); n += 1
+    assert m.state == 0, "machine stuck muted after rapid switching"
+    assert m.g == 1.0
+    assert m.act_hp_pl == 0, "final selection not applied"

@@ -192,6 +192,14 @@ was already being consumed. `@block` therefore runs in this exact order:
    `act_phase == 0` where no kernel is needed). If a build was deferred, `mt_ready` stays 0 and
    the hold does not start counting.
 
+   *Traced in the final review:* this is a safety net rather than a live path. The commit forces
+   `lp_fs[3] = lp_fs[7] = 0` and, through `lp_engine_clear → lp_rt_reset → lp_fs_reset`, also
+   zeroes the "already fading" guards — so the rebuild block's `(lp_fs[3] == 0 || …)` gate always
+   bypasses the 100 ms rate limiter on the commit pass, and both kernels are in fact rebuilt
+   synchronously in that same `@block`. The deferred case is currently unreachable; `mt_ready`
+   exists so that a future change to the rate limiter cannot silently open into an invalid
+   `Hspec`.
+
 Because `pdc_delay` is now written from `topo_commit()` rather than from `@slider`, the PDC
 computation moves into a small helper called from both places — `@slider` still owns the
 `Lk`/bypass part, which is not a topology event.

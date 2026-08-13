@@ -756,6 +756,12 @@ topo_changed = slider140 != act_phase;
 (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? topo_changed = 1;
 (slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)) ? topo_changed = 1;
 
+// NOTE (Fable, V0.9 final review): the inner `mt_state != 1 ? (...)` below sits inside an outer
+// ternary that HAS an else-branch - structurally the same family as V0.8's defect, differing
+// only in using plain `=` rather than `+=`. It is kept because this is the arm-from-idle path
+// that every live switch exercises (no silence would ever have been heard otherwise), and both
+// of its writes are plain assignments inside explicit parens. The blanket claim in the @sample
+// comment ("does not use the construct at all") is true of @block and @sample, not of this block.
 topo_changed ? (
   mt_pend = 1;
   mt_ready = 0;
@@ -1182,11 +1188,14 @@ slider1 != 1 ? (
   // that ran while the engines were not being fed would expire the warm-up and then open into
   // a cold topology.
   //
-  // Every write below is a PLAIN assignment, never `+=` or `*=`. V0.8's one real defect was a
-  // compound assignment under a conditional that parsed, read correctly, passed review, and
-  // silently never executed; its exact parsing cause was never pinned down (single-level
-  // `ow -= 16384` works elsewhere in this same file), so the new code simply does not use the
-  // construct at all rather than relying on a rule nobody has proven.
+  // Every write below is a PLAIN assignment inside explicit parens, never `+=` or `*=`.
+  // V0.8's one real defect was `iA == 0 ? ( rt[6] < skip_after ? rt[6] += 1; ) : ( rt[6] = 0; );`
+  // - an inner conditional whose action was BOTH compound AND unparenthesized, inside an outer
+  // conditional that had an else-branch. Two hypotheses fit the evidence equally well (compound
+  // assignment is the trigger; or an unparenthesized inner branch is), and neither the oracle nor
+  // live testing can distinguish them, because single-level `ow -= 16384` demonstrably works in
+  // this same file. So this block avoids BOTH: no compound assignment, and every branch's action
+  // parenthesized. Belt and braces beats relying on a rule nobody has proven.
   mt_state ? (
     mt_state == 1 ? (
       // fade-out. Increment BEFORE computing the gain: computing first and overwriting the
