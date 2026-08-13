@@ -515,3 +515,61 @@ Fable reviewed rev 2 against the V0.8 source and returned "needs edits — not r
 | **P1-4** sample-rate change re-runs `@init` and reproduces P0-2 | **Accepted** — same fix, stated explicitly, with a live test |
 | **P2** automation thrashing → indefinite silence | **Accepted as a documented risk** (§8a) |
 | **P2** anticipative FX / offline `play_state` semantics | **Addressed in §8a**: the design is sample-count driven and `play_state` can only permit an early commit, never shorten a mute |
+
+## 13. As-shipped outcome (2026-08-13)
+
+**Shipped as specified in rev 3.** Fable's final review: **READY TO TAG, no P0s**, bit-accuracy
+verdict confirmed by direct code inspection rather than trust in the green suite — `mt_state ? (…)`
+is a hard skip, so when idle not one instruction touches `spl0`/`spl1`.
+
+**Live-verified with the owner:**
+
+- **All three switches under playback give silence, then correct audio** — no burst, no click,
+  no missing Side content. The feature does what it was built for.
+- **Null test V0.8 vs V0.9 (bit-accuracy gate 1): clean.** Identical settings, one instance
+  polarity-inverted, summed → digital silence. The steady-state path is byte-identical.
+- **Mute lengths scale as designed** between Normal and High (the ~3× contrast between
+  Normal+Normal and High+High is what distinguishes a full-support hold from a group-delay one).
+- **Bypass** switched mid-transition, then released: the full sequence runs.
+- **Rapid repeated switching** never sticks muted.
+- **PDC** read 24576 at HP High + LP Normal, matching `BD/2 + P` per engine.
+- **Task 0 (§6): changing `pdc_delay` under playback is clean in REAPER** — the finding the
+  whole architecture depended on, and the reason no constant-max-PDC fallback was needed.
+
+**CPU: not measured pairwise, and this is stated rather than glossed.** The captures taken were
+V0.9 in `Both` (0.99 %) and V0.8 in `Mid` (0.73 %) at HP High + LP Normal — different versions
+*and* different placements, so no conclusion about V0.9's cost follows from them, and an earlier
+draft of this section wrongly claimed one. The null test is the stronger evidence anyway: a
+byte-identical steady-state output cannot hide added steady-state work in the signal path. A
+pairwise V0.8-vs-V0.9 measurement at matched settings remains available if ever wanted.
+
+**What the reviews changed, in order of value:**
+
+1. **The hold length was wrong twice.** rev 2 used the reported latency `lat0+lat1+P`; measured
+   against a *continuously running* reference that leaves **−43 dBFS** of error — audible, not
+   the "gentle ramp-in" it was assumed to be. Full kernel support fixed it, and the serial pair
+   then turned out to need `2P`, not `P` (−219 dBFS at `+P`, −282 at `+2P`). Final: `BD0+BD1+2P`
+   = 20480 / 45056 / 69632 samples. The last figure is the same number the weakness review
+   independently derived as the full serial FIR tail.
+2. **rev 2's acceptance criterion could not fail.** "Equals a cleared-at-commit reference" is
+   satisfied at *every* hold length including zero. Redefining it against a continuous reference
+   is what turned the test suite into evidence.
+3. **Project reload would have played through the wrong topology** for the length of a hold, on
+   every load and on every sample-rate change, because `act_*` defaulted to 0 while `@init`
+   hardcoded Normal+Normal. `topo_boot` fixes it.
+4. **Five re-trigger paths were implemented and tested by nothing** — reversal, coalescing,
+   re-trigger after commit and during fade-in. Every earlier test that called `slider()` twice
+   used two separate machines. All five passed unchanged once written: the code was right, but
+   nothing was checking it.
+
+**Two notes carried forward.** The exact parsing cause of V0.8's EEL2 defect is still unproven —
+the confirmed-buggy form was compound *and* unparenthesized inside an outer conditional with an
+else-branch, while single-level `idx < 0 ? idx += KM;` demonstrably works in the same file — so
+V0.9's new code avoids both properties rather than relying on either hypothesis. And `mt_ready`
+is presently a safety net, not a live path: the commit forces the rate limiter open, so both
+kernels always rebuild synchronously in the commit block.
+
+**Deferred to V1.0:** genuinely seamless Placement (needs parallel engines or the hybrid state
+machine of §2, and the owner does not make the gesture); the `dryA`/`dryB` fix (§3, only pays if
+seamless Placement is ever built); softening the FIR Brick Gibbs bump over 1–2 bins (pre-existing
+since V0.6).
