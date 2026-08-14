@@ -2312,3 +2312,89 @@ def test_v10_mixed_placement_families_only_when_audible():
     assert curve.mixed_placement_families(ms, lr_off, 1) is False, "an Off filter dashed the traces"
     lr_on = [_hp(slope=4, placement="left")]
     assert curve.mixed_placement_families(ms, lr_on, 1) is True
+
+
+# ---- V1.0 axis mapping and the single-slider gesture solvers ----
+# One gesture writes one slider, so there is deliberately NO canonical split, NO write ordering,
+# NO fractional snapping and NO rounding-tie parity problem here. If any of those reappear, the
+# gesture rule has been broken somewhere.
+
+def test_v10_frequency_axis_round_trips():
+    for f in (20.0, 100.0, 1000.0, 12345.0, 20000.0):
+        x = curve.f_to_x(f, 40, 800)
+        assert abs(curve.x_to_f(x, 40, 800) - f) < 1e-6, f
+
+
+def test_v10_bits_axis_round_trips_and_clamps():
+    for b in (-4.0, -1.5, 0.0, 2.25, 4.0):
+        y = curve.bits_to_y(b, 10, 400)
+        assert abs(curve.y_to_bits(y, 10, 400) - b) < 1e-9, b
+    assert curve.bits_to_y(99.0, 10, 400) == curve.bits_to_y(4.0, 10, 400)
+    assert curve.bits_to_y(-99.0, 10, 400) == curve.bits_to_y(-4.0, 10, 400)
+
+
+def test_v10_rounding_is_half_away_from_zero_in_both_signs():
+    """Python's round() is ties-to-even, EEL2's floor(x+0.5) is ties-toward-positive; they
+    disagree exactly here. One rule, one shared helper, both languages."""
+    table = {0.5: 1, 1.5: 2, 2.5: 3, -0.5: -1, -1.5: -2, -2.5: -3,
+             0.4: 0, -0.4: 0, 2.6: 3, -2.6: -3}
+    for x, want in table.items():
+        assert curve.round_half_away(x) == want, (x, curve.round_half_away(x), want)
+
+
+def test_v10_macro_step_is_relative_to_mouse_down():
+    """Relative, not an absolute solve: an absolute inverse flips sign with negative gain and
+    is undefined at zero base."""
+    assert curve.macro_from_drag(0, 0.0, 1.0) == 0
+    assert curve.macro_from_drag(0, -24.0, 1.0) == 1        # up is negative y, +1 bit
+    assert curve.macro_from_drag(2, 48.0, 1.0) == 0         # down 2 bits from 2
+    assert curve.macro_from_drag(0, -23.0, 1.0) == 0        # not a full step yet
+
+
+def test_v10_drag_threshold_keeps_a_click_from_writing():
+    assert curve.drag_steps(0.0, 24) == 0
+    assert curve.drag_steps(3.9, 24) == 0
+    assert curve.drag_steps(-3.9, 24) == 0
+    assert curve.drag_steps(24.0, 24) == 1
+    assert curve.drag_steps(-48.0, 24) == -2
+    assert curve.drag_steps(12.0, 12) == 1
+
+
+def test_v10_macro_clamps_to_the_slider_range():
+    assert curve.macro_from_drag(16, -24.0 * 5, 1.0) == 16
+    assert curve.macro_from_drag(-16, 24.0 * 5, 1.0) == -16
+
+
+def test_v10_ratio_drag_stays_on_the_005_grid_and_clamps():
+    assert abs(curve.ratio_from_drag(1.0, -12.0) - 1.05) < 1e-12
+    assert abs(curve.ratio_from_drag(1.0, 12.0) - 0.95) < 1e-12
+    assert curve.ratio_from_drag(0.0, 12.0 * 5) == 0.0        # clamps at 0
+    assert curve.ratio_from_drag(3.0, -12.0 * 5) == 3.0       # clamps at 3
+    for steps in range(-20, 21):
+        v = curve.ratio_from_drag(1.0, steps * 12.0)
+        assert abs(round(v / 0.05) - v / 0.05) < 1e-9, v
+
+
+def test_v10_ratio_025_is_reachable_only_on_the_005_grid():
+    """The owner's criterion: a quarter is a simple binary fraction and 0.2 is not, and they
+    differ in character. At the shipping 0.1 step 0.25 does not exist at all."""
+    reachable = {round(curve.ratio_from_drag(0.0, -12.0 * i), 3) for i in range(0, 61)}
+    assert 0.25 in reachable
+    assert 0.2 in reachable
+    assert 0.25 not in {round(i * 0.1, 3) for i in range(31)}
+
+
+def test_v10_q_drag_clamps_to_the_slider_range():
+    assert abs(curve.q_from_drag(1.0, -12.0, False) - 1.01) < 1e-12
+    assert abs(curve.q_from_drag(1.0, -12.0, True) - 1.005) < 1e-12
+    assert curve.q_from_drag(10.0, -12.0 * 100, False) == 10.0
+    assert curve.q_from_drag(0.1, 12.0 * 100, False) == 0.1
+
+
+def test_v10_gestures_never_produce_micro():
+    """The rule that replaced the whole pair-write hazard. Every solver returns ONE parameter,
+    and none of them is Micro - it is typed only."""
+    import inspect
+    for fn in (curve.macro_from_drag, curve.ratio_from_drag, curve.q_from_drag):
+        src = inspect.getsource(fn)
+        assert "micro" not in src.lower(), f"{fn.__name__} touches Micro"

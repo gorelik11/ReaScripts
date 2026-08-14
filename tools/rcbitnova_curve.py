@@ -163,3 +163,96 @@ def sample_grid_bits(grid, f):
     f1, b1 = grid[hi]
     t = math.log(f / f0) / math.log(f1 / f0)
     return b0 + (b1 - b0) * t
+
+
+# --------------------------------------------------------------------------- axis mapping
+
+FMIN, FMAX = 20.0, 20000.0
+BITS_SPAN = 4.0                          # +-4 bits = +-24 dB viewport
+DRAG_THRESHOLD = 4.0                     # logical units before a click becomes a drag
+UNITS_PER_MACRO = 24.0
+UNITS_PER_RATIO = 12.0
+UNITS_PER_Q = 12.0
+RATIO_STEP = 0.05                        # V1.0 changes the slider from 0.1: at 0.1, 0.25 does
+                                         # not exist, and a quarter is a simple binary fraction
+Q_STEP, Q_STEP_FINE = 0.01, 0.005
+
+
+def f_to_x(f, x0, w, fmin=FMIN, fmax=FMAX):
+    f = min(max(f, fmin), fmax)
+    return x0 + w * (math.log(f / fmin) / math.log(fmax / fmin))
+
+
+def x_to_f(x, x0, w, fmin=FMIN, fmax=FMAX):
+    t = min(max((x - x0) / w, 0.0), 1.0)
+    return fmin * (fmax / fmin) ** t
+
+
+def bits_to_y(bits, y0, h, span=BITS_SPAN):
+    """Positive bits go UP, so y decreases. Over-range clamps to the edge; the caller prints the
+    number so the value is never hidden."""
+    b = min(max(bits, -span), span)
+    return y0 + h * (0.5 - b / (2.0 * span))
+
+
+def y_to_bits(y, y0, h, span=BITS_SPAN):
+    return (0.5 - (y - y0) / h) * 2.0 * span
+
+
+# --------------------------------------------------------------------------- gesture solvers
+#
+# ONE GESTURE WRITES ONE SLIDER. Each solver below returns exactly one parameter, and none of
+# them can return Micro - Micro is typed only. That is the whole reason this module has no
+# canonical split, no write ordering and no fractional edge handling: those existed only to make
+# a two-field write safe, and a two-field write no longer happens.
+#
+# All drags are RELATIVE, from the value captured at mouse-down. An absolute solve was rejected:
+# `ratio = pointer_bits / (macro + micro/100)` inverts sign with negative gain and is undefined
+# at zero base.
+
+def round_half_away(x):
+    """The ONE rounding rule, implemented identically in EEL2 as
+    `x < 0 ? -floor(-x + 0.5) : floor(x + 0.5)`."""
+    return int(math.floor(x + 0.5)) if x >= 0 else int(-math.floor(-x + 0.5))
+
+
+def drag_steps(delta_units, units_per_step):
+    """Relative drag quantiser with the click/drag threshold.
+
+    Below DRAG_THRESHOLD the gesture is still a click: without this, ordinary mouse jitter on a
+    click would write a parameter.
+    """
+    if abs(delta_units) < DRAG_THRESHOLD:
+        return 0
+    return int(delta_units / units_per_step)
+
+
+def macro_from_drag(macro_at_down, delta_y_units, ratio, macro_min=-16, macro_max=16):
+    """Macro after a vertical drag. Screen y grows downward, so dragging UP raises the value."""
+    steps = -drag_steps(delta_y_units, UNITS_PER_MACRO)
+    return min(max(macro_at_down + steps, macro_min), macro_max)
+
+
+def ratio_from_drag(ratio_at_down, delta_y_units, lo=0.0, hi=3.0):
+    """Bit Ratio after Shift + vertical drag, kept exactly on the 0.05 grid."""
+    steps = -drag_steps(delta_y_units, UNITS_PER_RATIO)
+    v = ratio_at_down + steps * RATIO_STEP
+    v = min(max(v, lo), hi)
+    return round_half_away(v / RATIO_STEP) * RATIO_STEP
+
+
+def q_from_drag(q_at_down, delta_y_units, fine, lo=0.1, hi=10.0):
+    """Q after Alt + vertical drag (or the wheel). Ctrl/fine halves the increment.
+
+    NOTE: 0.01 and 0.005 are product choices, not "one slider step" - the Q slider's declared
+    step is 0.001, so these are ten and five of them.
+    """
+    steps = -drag_steps(delta_y_units, UNITS_PER_Q)
+    v = q_at_down + steps * (Q_STEP_FINE if fine else Q_STEP)
+    return min(max(v, lo), hi)
+
+
+def freq_from_drag(x, x0, w):
+    """Frequency follows the pointer along the log axis - the one gesture that is absolute,
+    because the axis position IS the value and there is no scaling parameter in between."""
+    return x_to_f(x, x0, w)
