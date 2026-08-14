@@ -573,3 +573,44 @@ kernels always rebuild synchronously in the commit block.
 machine of §2, and the owner does not make the gesture); the `dryA`/`dryB` fix (§3, only pays if
 seamless Placement is ever built); softening the FIR Brick Gibbs bump over 1–2 bins (pre-existing
 since V0.6).
+
+## 14. The FIR Brick "Gibbs bump" — measured, and closed as an analyser artefact (2026-08-14)
+
+Carried since V0.6 as "soften the FIR Brick magnitude step over 1–2 bins (a small Gibbs bump at
+the knee corner)", deferred by V0.7, V0.8 and V0.9. It was never measured. It is now, and **it
+does not exist.**
+
+Computing the response directly from the whole kernel (`fir_brick_kernel`, the production
+algorithm), with no capture window and no analyser in the path:
+
+| Configuration | Passband | Transition |
+|---|---|---|
+| LP 20 kHz, BD 8192, 96 kHz | −0.0000 dB, flat | −3 → −120 dB in ~100 Hz |
+| HP 20 kHz, BD 8192, 96 kHz | −0.0000 dB, flat | same |
+| LP 15 kHz, BD 8192, 48 kHz | −0.0000 dB, flat | — |
+
+Worst passband deviation anywhere: **1.000002, i.e. +0.00002 dB**. The Kaiser window (beta 14)
+suppresses Gibbs ripple completely. Low cutoffs were checked too (HP 40 Hz at BD 8192 / 96 kHz is
+only 3.4 bins): passband still flat. What *is* weak there is stopband depth — −24.8 dB at 20 Hz —
+but that is the documented V0.6 resolution limit, cured by High Resolution (BD 32768 gives
+−133 dB at 20 Hz), and it is **not** Gibbs. Spreading the magnitude step over 1–2 bins would have
+widened the transition — degrading the anti-alias-before-SRC use the FIR Brick exists for —
+while fixing nothing.
+
+**Where the observation came from.** The owner reproduced it live in Bertom EQ Curve Analyzer 2
+using an impulse, and the same filter measured differently at every analyser FFT size: at 8192 a
+bump at the knee, at 16384 a clean shelf, at 32768 fine ripple across the whole shelf. A filter's
+response cannot depend on the analyser's window length, so the varying quantity was the
+measurement, not the filter. The mechanism fits: a linear-phase kernel of BD taps is symmetric
+about its centre, so an 8192-sample analysis window on an 8192-tap kernel is the marginal case —
+a small offset truncates one side, and truncating a symmetric response overshoots at a sharp
+corner; a 32768 window captures the response plus a long run of zeros, which with uncompensated
+latency produces comb modulation.
+
+**Method note for anyone re-checking a linear-phase kernel with an analyser:** make the analysis
+window substantially longer than the kernel and compensate the plugin's reported latency (in
+Bertom, the Latency field is greyed out until `AUTO SYNC` is switched off). Otherwise the
+measurement describes the window, not the filter.
+
+**Status: closed. Not deferred to V1.0.** Do not re-open without a measurement that survives
+these conditions.
