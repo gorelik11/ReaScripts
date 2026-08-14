@@ -1,6 +1,6 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 7**. Reviews folded in: weakness review of rev 1 (§10), Fable on
+**Date:** 2026-08-14 (**rev 8**. Reviews folded in: weakness review of rev 1 (§10), Fable on
 rev 2 (§11), weakness review of rev 3 (§12), Fable on rev 4 (§13), plan weakness review and the
 owner's correction on Macro/Micro semantics (§14).)
 **Branch:** `rcbitnova`
@@ -71,6 +71,18 @@ an unexplained shortcut.)
 **Stated limitation:** when M/S-placed and L/R-placed blocks are used *at the same time*, no set
 of per-domain scalar traces describes the true channel response - the stages do not factor. The
 traces then read as "what each group does", exactly as ReEQ's do.
+
+**"Has an enabled block" means AUDIBLY ACTIVE** (rev-7 review P1-3). Bands have an Enable
+slider; HP/LP do not, so their state comes from slope and phase — and an identity filter must not
+light up a domain or trigger the dashed warning:
+
+| Block state | Domain visible? |
+|---|---|
+| Band, Enable off | no |
+| HP/LP, Slope = Off | no |
+| HP/LP, **Min** + Brick | no — it is identity |
+| HP/LP, **Linear** + Brick | yes |
+| HP/LP, ordinary slope | yes |
 
 **And it must be visible in the GUI, not only in this document** (rev-3 review P1-5). While
 incompatible placement families coexist, the affected traces switch to a **dashed** style and the
@@ -215,30 +227,53 @@ because `lp_align` re-derives everything from `lp_base` itself.
 | Region | Words | Purpose |
 |---|---|---|
 | `gc_trace[2][5][CURVE_N]` | 2 × 5 × 512 = 5120 | display traces, **double-buffered**, 5 domains |
-| `gc_lin[2][2][LIN_N]` | 2 × 2 × 256 = 1024 | realized Linear/Brick magnitudes, per engine, double-buffered |
+| `gc_lin[2][2][LIN_N]` | 2 × 2 × 2048 = 8192 | realized Linear/Brick magnitudes, per engine, double-buffered |
 | `gc_snap[SNAP_N]` | 128 | per-field snapshot for invalidation |
-| `gc_meta` | 8 | generation counters, active buffer index, publication flags |
-| **Total** | **6280** | |
+| `gc_meta` | 16 | per-engine and per-trace indices + generations (named constants, never numeric) |
+| **Total** | **13456** | |
 
 **It fits, with the numbers rather than a promise** (Fable rev-4 P2-7). Tracing the static chain
 from `cf = 0`: `hplp_state = 37932`, `hplp_cf = 38004`, `lp_rt = 38130`, `lp_kc = 38146`,
 `lp_ks = 38209`, `lp_geo = 38227`, `lp_off = 38235`, `lp_fs = 38267`, end of region **38275**.
 `lp_base = ceil(38275 / 65536) * 65536 = 65536`, leaving **27261 words of padding**. Adding the
-6280-word `gc_*` block ends the region at **44555** — still ~21000 words short of the boundary.
+13456-word `gc_*` block ends the region at **51731** — still ~13800 words short of the boundary.
 **`lp_base` does not move and page alignment is untouched.**
+
+**Why `LIN_N = 2048` and not 256** (review P1-2): rev 7 argued the FFT grid is dense (BD/2 bins)
+and then immediately resampled it to 256 log points, re-creating the sparse grid it had just
+claimed to remove — a narrow Brick knee could still fall between stored points. At 2048 log
+points the spacing is ≈0.34 % in frequency, well under a pixel on a 512-point trace, and the
+reduction error against the full FFT is bounded by test (§8.13).
 
 The memory tests still pin `lp_base` before and after, and assert the worst-case `freembuf` size
 at High+High exactly — but as a regression guard, not as an open question.
 
-**Publication protocol** (rev-3 review P0-3). Reserving memory does not make an array update
-atomic: `@block` can be writing while `@gfx` reads, producing a frame that mixes old and new
-bins and draws spikes belonging to neither kernel. So:
+**Publication protocol.** Reserving memory does not make an array update atomic: `@block` can be
+writing while `@gfx` reads, producing a frame that mixes old and new bins and draws spikes
+belonging to neither kernel.
 
-1. `@block` fills the **inactive** buffer completely.
-2. Only after the final word is written does it publish — write the new generation and flip the
-   active index.
-3. `@gfx` snapshots (generation, index) **once** at frame start, reads only that buffer, and if
-   the publication changed mid-read, keeps the previous frame rather than drawing a mixture.
+**The publication unit is ONE ENGINE, with its own index and generation** (review P0-5). rev 7
+described a single shared index over `gc_lin[2][2][…]`, which is broken: HP and LP rebuild
+independently, so an HP-only rebuild that flips the shared index makes the LP trace read a half
+of the buffer nobody wrote — and a later LP-only rebuild flips back and resurrects the *old* HP
+grid. §14 claimed this was fixed, but only the plan carried the fix; the design contract did not.
+
+**`gc_lin` and `gc_trace` have SEPARATE metadata and separate writers** (review P0-6). Sharing
+one index would let `@block` and `@gfx` flip each other's buffers:
+
+| Region | Written by | Read by | Own index + generation |
+|---|---|---|---|
+| `gc_lin` (realized kernel grids) | `@block` | `@gfx` | per engine: `GCM_IDX0/GEN0`, `GCM_IDX1/GEN1` |
+| `gc_trace` (completed display traces) | `@gfx` | `@gfx` | `GCM_TIDX`, `GCM_TGEN` |
+
+Sequence, per writer:
+
+1. The writer fills its **own inactive** buffer completely.
+2. Only after the final word does it publish — flip that buffer's index, then bump that buffer's
+   generation.
+3. `@gfx` snapshots every `gc_lin` (generation, index) **once** at frame start, reads only those
+   buffers for the whole frame, and re-checks at frame end; if any changed mid-frame it keeps the
+   previously completed `gc_trace` rather than drawing a mixture.
 
 A stress test rebuilds both kernels continuously while rendering and asserts no non-finite values
 and no single-frame discontinuity beyond a pinned bound.
@@ -280,9 +315,15 @@ read; and `srate`.
 ### 3.4 What the curve represents during a rebuild
 
 rev 3 alternated between "what is heard" and the freshly built target (rev-3 review P1-1). Pinned
-choice: **the curve is a TARGET display.** When a Linear kernel is rebuilt, the new magnitude is
-published as soon as it exists, so during V0.8's 50 ms crossfade — and inside the 100 ms rebuild
-coalescing window — the graph leads the sound.
+choice: **the curve is a TARGET display**, with three distinct states rather than the single
+blurry one rev 7 described (rev-7 review P1-4). Before the rebuild runs the new magnitude does
+not exist yet, so the graph cannot be leading anything:
+
+| State | What the graph shows |
+|---|---|
+| Dirty, waiting out the 100 ms coalescing window | the **previous** realized curve — the new one does not exist |
+| Target built and published | the **new** curve appears |
+| V0.8's 50 ms audio crossfade running | the graph **leads** the audible transition until it completes |
 
 Why target rather than audible: blending two complex responses by the engine's crossfade progress
 would double the cache and the publication logic to chase a 50 ms visual discrepancy that no one
@@ -300,16 +341,11 @@ direct view of the parameter rather than a conversion.
 
 ## 5. Nodes and interaction
 
-One node per band, drawn at (frequency, gain).
+One node per band, drawn at (frequency, effective gain).
 
-| Gesture | Effect |
-|---|---|
-| Drag horizontally | Frequency |
-| Drag vertically | Gain, in **0.05-bit steps** (= 5 % of Micro) |
-| Shift + drag | Fine step |
-| Mouse wheel on a node | Q |
-| Hover + type a digit | Numeric entry: Enter commits, Esc cancels, Backspace deletes |
-| Click | Select (the selected node's readouts are shown) |
+**The gesture table below is the single normative interaction contract.** (rev 7 left an older
+table here from the pair-write design; it described a different interface and an implementer
+could have conformed to either — review P0-1.)
 
 **Slider map per band `b` (0-based), base `10*(b+1)`** — verified against the file, not assumed:
 
@@ -321,7 +357,7 @@ One node per band, drawn at (frequency, gain).
 | +4 | Q | 0.1–10, step 0.001 |
 | +5 | Macro (bits) | −16…16, step 1 |
 | +6 | Micro (% bit) | −100…100, step 0.1 |
-| +7 | Bit Ratio | 0–3, step 0.1 |
+| +7 | Bit Ratio | 0–3, **step 0.05** (was 0.1 through V0.9 — see below) |
 | +8 | Placement | Both / Mid / Side / Left / Right |
 | +9 | Q Character | 0–1 |
 
@@ -363,6 +399,28 @@ locked style with a readout saying why — silence here would read as a bug:
 proportion rather than a defect: one 0.05 step is 0.05 bits (≈0.3 dB) at Macro 1, 0.20 bits
 (≈1.2 dB) at Macro 4, and 0.40 bits (≈2.4 dB) at Macro 8.
 
+**Pointer-to-value mapping, pinned for every drag** (review P0-3, P2). All vertical drags are
+**relative**, measured from the position at mouse-down, never absolute solves — an absolute
+inverse (`ratio = pointer_bits / (Macro + Micro/100)`) inverts sign with negative gain, explodes
+near zero base, and is undefined at zero:
+
+| Drag | Mapping | Clamp |
+|---|---|---|
+| Macro | one whole bit per **24 logical units** of vertical movement | `[-16, +16]` |
+| Shift → Bit Ratio | one 0.05 step per **12 logical units** | `[0, 3]` |
+| Alt → Q, and the wheel | one step per **12 logical units** / one notch; Ctrl halves the step for both | slider's own `[0.1, 10]` |
+| Freq (horizontal) | continuous along the log axis under the pointer | `[20, 20000]` |
+
+**Drag threshold.** At mouse-down there is no movement vector, so there is no dominant axis yet;
+the action stays a *click/select* until the pointer moves **4 logical units**, and the axis is
+chosen from the displacement at that moment. Without this, ordinary click jitter would write a
+parameter.
+
+**Rounding rule, pinned across both languages** (review P1-1). `round()` in the Macro target is
+**half away from zero** — Python's built-in `round()` is ties-to-even and EEL2's
+`floor(x + 0.5)` is ties-toward-positive, and they disagree at `±0.5`, `±2.5`. One shared helper,
+one expected table, both signs.
+
 Because each gesture writes a single slider, **the write is atomic**: there is no ordering
 question, no intermediate pair, no canonical split, no `floor`-versus-truncate decision, no edge
 case at ±16.95, and no rounding-tie parity between Python and EEL2. All of that machinery — and
@@ -384,10 +442,18 @@ macro_target = round(pointer_bits / BitRatio − Micro/100)      clamped to [−
 - With `BitRatio ≠ 1` the node moves in steps of `BitRatio` bits, which is the honest
   consequence of dragging an integer parameter through a multiplier.
 
-**Numeric entry targets a named field.** The readout strip has **F / G / Micro / Q** fields;
-clicking one gives it keyboard focus (highlighted border). Typing edits that field alone: digits,
-minus and dot accumulate, Enter commits, Esc cancels, Backspace deletes. Units are in the label —
-Hz, bits, % of a bit, Q. The `gfx_getchar` loop is adapted from `Fable Eq Dynamic.jsfx`
+**Numeric entry targets a field named after its actual slider** (review P0-4). rev 7 called one
+field "G", which was ambiguous: with `BitRatio ≠ 1` or `Micro ≠ 0`, typing `2` could mean "set
+Macro to 2" or "give me 2 effective bits". Under the one-slider rule it must mean exactly one
+parameter, so the fields are named for them:
+
+**Freq (Hz) · Macro (bits) · Micro (% of a bit) · Ratio · Q**
+
+Clicking one gives it keyboard focus (highlighted border); typing edits that slider alone —
+digits, minus and dot accumulate, Enter commits, Esc cancels, Backspace deletes. A separate
+read-only readout shows the resulting **effective gain in bits**, so the number the node is drawn
+at is visible without being editable. This also gives Ratio a visible field, which rev 7 let the
+mouse change but never displayed. The `gfx_getchar` loop is adapted from `Fable Eq Dynamic.jsfx`
 (~lines 2160–2190), which already uses per-field identity.
 
 **Drag semantics, pinned:**
@@ -482,10 +548,12 @@ value is — a wrong curve is a silent, plausible-looking bug.
    with it. The only rounding is `round()` on the Macro target, tested at exact half-steps.
 7. Clamping beyond +-4 bits does not wrap or invert — for individual nodes **and for the total
    curve**, which can exceed the viewport while every node is inside it (review P2-1).
-8. **One gesture, one slider.** A vertical drag writes **only** Macro, as a whole number in
-   `[-16, +16]`; it never touches Micro or Bit Ratio. Test: sweep the pointer across the full
-   viewport at Micro values of 0, +37.5 and -62.5, and assert Micro is byte-identical afterwards.
-   This test is what keeps the deleted machinery from creeping back.
+8. **One gesture, one slider — a full matrix** (rev-7 review P1-5). For **each** gesture
+   (Freq drag, Macro drag, Shift→Ratio drag, Alt→Q drag, wheel, and each numeric field),
+   snapshot **all nine** band sliders before and after, and assert that **exactly one index
+   changed**, that it clamped correctly, and that `slider_automate` fired **once and only when
+   that value actually changed**. This matrix is what keeps the deleted pair-write machinery
+   from creeping back.
 9. **Bit Ratio:** for every Ratio step 0..3, `macro_target = round(pointer_bits / ratio -
    micro/100)` lands the node on the nearest reachable position, clamped to `[-16, +16]`;
    `Ratio = 0` locks the node rather than silently resetting a deliberate setting. Also assert
@@ -504,11 +572,23 @@ value is — a wrong curve is a silent, plausible-looking bug.
     deliberately-constructed pair of configurations that an arithmetic signature would collide on
     must NOT reuse the cache.
 
-**Transcription gate (review P1-4).** Python tests prove the Python maths; the shipping graph is
-a separate EEL implementation and a sign error there can still draw a smooth, believable curve.
-So: a debug path dumps the JSFX curve cache at a pinned parameter matrix, and the values are
-compared numerically against the oracle. Screenshots are not a numeric oracle. Coverage: shelf
-plateaus on both sides, `fc`, near-Nyquist warping, proportional-Q, Brick, and both sample rates.
+**Transcription gate (review P1-4), with a schema** (rev-7 review P1-6). Python tests prove the
+Python maths; the shipping graph is a separate EEL implementation and a sign error there still
+draws a smooth, believable curve. A debug path dumps what the graph **actually drew** — not an
+unrelated buffer — one self-describing row per sample:
+
+```
+case_id  sample_rate  phase  resolution_hp  resolution_lp  domain  engine  freq_hz  bits
+```
+
+Compared numerically against the oracle; tolerance **0.01 bits**. Coverage: shelf plateaus both
+sides, `fc`, near-Nyquist warping, proportional-Q, Brick at both resolutions, 48 and 96 kHz.
+**A missing or incomplete dump FAILS the release gate** — it must not `skip`. (A separately named
+skipping test may exist for day-to-day CI convenience, but it is not the gate.)
+
+13. **Realized-grid reduction error:** the 2048-point `gc_lin` grid deviates from the full FFT by
+    **≤ 0.01 bits** across 20 Hz–20 kHz, tested with Brick cutoffs placed deliberately halfway
+    between stored log points, at both resolutions and both sample rates.
 
 **Live in REAPER, with the owner:**
 
@@ -524,6 +604,10 @@ plateaus on both sides, `fc`, near-Nyquist warping, proportional-Q, Brick, and b
   failure mode, and an average hides it.
 - Worst case to test: **High + High**, both engines sweeping simultaneously, at 44.1 / 48 / 96
   and, if available, 192 kHz, at small and normal audio buffers.
+- **Pass/fail, not just "measure"** (rev-7 review P1-7): record the machine and audio device;
+  buffer sizes **128 and 512**; **60 s** per configuration; a continuous HP+LP frequency sweep;
+  require **zero xruns**; and require peak block time to stay within **+10 %** of V0.9 measured
+  the same way. Anything outside that is a failure, not an observation.
 - **GUI open vs closed** stays as a secondary measurement, of `@gfx` drawing cost.
 - Gating the FFT on `gfx_w > 0` was considered and rejected: reading `@gfx`-owned state from
   `@block` is the same unsynchronised cross-thread hazard as the cache publication problem.
@@ -666,3 +750,25 @@ Two things this surfaced, both verified rather than assumed:
 
 Micro remains typed-only. The modifier is sampled at mouse-down and held for the gesture, so a
 mid-drag key press can never redirect the write to a different slider.
+
+## 15. Rev-7 weakness review disposition (rev 7 -> rev 8)
+
+Six P0s, all accepted; two were mistakes I introduced while editing rather than design flaws.
+
+| Finding | Disposition |
+|---|---|
+| **P0** two contradictory gesture tables in §5 | **Accepted** — the stale pair-write table was left behind when the new map was added, so an implementer could conform to either. Deleted; the rev-7 map is declared normative |
+| **P0** Bit Ratio step is both 0.1 and 0.05 | **Accepted** — the canonical slider map was not updated with §14a. Now 0.05, with a compatibility test that old 0.1-grid values reload unchanged |
+| **P0** Shift+drag has a step but no pointer mapping | **Accepted** — all drags pinned as **relative**, with logical-units-per-step for each; an absolute inverse was explicitly rejected (it inverts with negative gain and is undefined at zero base) |
+| **P0** numeric field "G" is ambiguous | **Accepted** — fields renamed for their actual sliders (Freq / Macro / Micro / Ratio / Q), plus a read-only effective-gain readout. This also gives Ratio the visible field rev 7 lacked |
+| **P0** publication unit for two engines undefined | **Accepted** — one engine is the unit, each with its own index and generation. The fix existed only in the plan; the design now carries it |
+| **P0** `gc_lin` and `gc_trace` cannot share one index | **Accepted** — separate metadata, writers and generations, tabulated by region |
+| **P1** integer rounding tie still cross-language | **Accepted** — pinned as half-away-from-zero with one shared helper and a two-sign expected table |
+| **P1** "dense FFT" contradicted by a 256-point cache | **Accepted** — `LIN_N` raised to 2048 (≈0.34 % spacing) with a ≤0.01-bit reduction-error test; memory recomputed to 13456 words, still ~13800 short of the page boundary |
+| **P1** "enabled domain" undefined for Off / Min+Brick | **Accepted** — audible-activity table added |
+| **P1** target-display timeline inaccurate during coalescing | **Accepted** — three explicit states; before the rebuild the graph shows the previous curve and leads nothing |
+| **P1** verification misses the new gestures | **Accepted** — a full one-gesture-one-slider matrix over all nine band sliders |
+| **P1** transcription gate too abstract | **Accepted** — self-describing row schema, 0.01-bit tolerance, and a missing dump now FAILS rather than skips |
+| **P1** CPU acceptance has no limit | **Accepted** — zero xruns, +10 % peak-block-time ceiling, pinned buffers, duration and sweep |
+| **P2** "dominant axis at mouse-down" undefined | **Accepted** — 4-unit threshold; until then it is a click, not a drag |
+| **P2** Alt-drag Q mapping incomplete | **Accepted** — 12 units per step, Ctrl halves it, clamped to the slider's own range |
