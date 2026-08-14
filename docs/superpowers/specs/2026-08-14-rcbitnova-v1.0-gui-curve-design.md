@@ -1,6 +1,6 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 6**. Reviews folded in: weakness review of rev 1 (§10), Fable on
+**Date:** 2026-08-14 (**rev 7**. Reviews folded in: weakness review of rev 1 (§10), Fable on
 rev 2 (§11), weakness review of rev 3 (§12), Fable on rev 4 (§13), plan weakness review and the
 owner's correction on Macro/Micro semantics (§14).)
 **Branch:** `rcbitnova`
@@ -334,13 +334,34 @@ owner's own terms, quite apart from the write hazard.
 | Gesture | Writes | Step |
 |---|---|---|
 | Drag vertically | **Macro only** | whole bits: … −2, −1, 0, +1, +2 … |
-| Drag horizontally | Freq only | continuous |
-| Wheel on a node | Q only | one step per notch |
+| **Shift** + drag vertically | **Bit Ratio only** | **0.05** |
+| **Alt** + drag vertically, or wheel | **Q only** | one step per notch |
+| Drag horizontally | **Freq only** | continuous |
 | Numeric entry | the focused field only | any value |
 
+Every row writes exactly one slider, so the atomicity that makes this design safe is preserved
+across all four gestures.
+
 **Micro is never touched by the mouse.** It is typed into its readout field when genuinely
-needed — which, by the owner's account, is rare in an EQ. Bit Ratio likewise: typed, never
-dragged.
+needed — which, by the owner's account, is rare in an EQ.
+
+**Bit Ratio's slider step changes from 0.1 to 0.05** (`slider(10*(b+1)+7)`). This is required by
+the owner's own criterion, and it is a real gap in the shipping plugin rather than a GUI
+convenience: at step 0.1 the value **0.25 is unreachable** — 0.2 and 0.3 exist, 0.25 does not —
+and a quarter is precisely the "simpler" binary fraction the owner distinguishes by ear from 0.2.
+Existing projects are unaffected: every value on the old 0.1 grid remains on the 0.05 grid.
+
+**Two states where a vertical gesture legitimately does nothing**, both drawn in a distinct
+locked style with a readout saying why — silence here would read as a bug:
+
+| State | Why |
+|---|---|
+| `BitRatio == 0` | every Macro sounds at 0 bits, so a Macro drag cannot move the node |
+| `Macro == 0` and `Micro == 0` | Bit Ratio multiplies `(Macro + Micro/100)`, so scaling zero stays zero and a Shift drag cannot move the node |
+
+**How fine the Shift gesture is depends on Macro**, which is the honest behaviour of a
+proportion rather than a defect: one 0.05 step is 0.05 bits (≈0.3 dB) at Macro 1, 0.20 bits
+(≈1.2 dB) at Macro 4, and 0.40 bits (≈2.4 dB) at Macro 8.
 
 Because each gesture writes a single slider, **the write is atomic**: there is no ordering
 question, no intermediate pair, no canonical split, no `floor`-versus-truncate decision, no edge
@@ -375,7 +396,8 @@ Hz, bits, % of a bit, Q. The `gfx_getchar` loop is adapted from `Fable Eq Dynami
 |---|---|
 | Drag capture | The node grabbed on mouse-down keeps capture until release, even outside the graph |
 | Axis lock | Vertical and horizontal are independent parameters, so the dominant axis at mouse-down wins for the whole drag |
-| Wheel | Up = higher Q (narrower), one step per notch; Ctrl+wheel = fine |
+| Wheel | Up = higher Q (narrower), one step per notch; Ctrl+wheel = fine. Alt+drag does the same on the vertical axis |
+| Modifier read | The modifier is sampled at **mouse-down** and held for the whole drag, so pressing Shift mid-gesture cannot switch which slider is being written |
 | Overlapping nodes | The topmost by band index wins; a second click within 300 ms cycles through them |
 | Release outside window | Treated as a normal release, value kept |
 | Esc during drag | Cancels, restoring the value from mouse-down |
@@ -626,3 +648,21 @@ are typed, never dragged. The write is atomic by construction, so none of the ab
 §2's claim was also corrected: the GUI is not in the signal path, but it *is* a parameter writer,
 and pretending otherwise is what let six revisions of hazard accumulate under a reassuring
 sentence.
+
+### 14a. Gesture map (rev 6 -> rev 7)
+
+The owner extended the one-gesture-one-slider rule rather than narrowing it: plain drag = Macro,
+**Shift + drag = Bit Ratio at a 0.05 step**, Alt + drag (or the wheel) = Q, horizontal = Freq.
+Every gesture still writes exactly one slider, so nothing about the safety argument changes.
+
+Two things this surfaced, both verified rather than assumed:
+
+- **Bit Ratio's step must go from 0.1 to 0.05.** At 0.1 the value 0.25 is not reachable at all,
+  while 0.2 and 0.3 are — and the owner distinguishes those by character, not level. This is a
+  gap in the shipping parameter grid, found only because the GUI forced the question.
+- **Two legitimate no-op states** need visible marking: `BitRatio == 0` (a Macro drag cannot
+  move the node) and `Macro == Micro == 0` (a Bit Ratio drag cannot, since it scales zero).
+  Undrawn, either reads as an unresponsive GUI.
+
+Micro remains typed-only. The modifier is sampled at mouse-down and held for the gesture, so a
+mid-drag key press can never redirect the write to a different slider.
