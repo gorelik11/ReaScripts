@@ -1,7 +1,8 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 5**. Reviews folded in: weakness review of rev 1 (§10), Fable on
-rev 2 (§11), weakness review of rev 3 (§12), Fable on rev 4 (§13).)
+**Date:** 2026-08-14 (**rev 6**. Reviews folded in: weakness review of rev 1 (§10), Fable on
+rev 2 (§11), weakness review of rev 3 (§12), Fable on rev 4 (§13), plan weakness review and the
+owner's correction on Macro/Micro semantics (§14).)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.0` (copy of V0.9). `rcbitnova-v0.9` remains the fallback tag;
 V0.9 and earlier are frozen.
@@ -22,9 +23,14 @@ wait.
 
 ## 2. Non-negotiable constraints
 
-- **The GUI cannot change the sound.** `@gfx` never touches the signal path; it reads parameters
-  and writes sliders. Bit-accuracy and every live result from V0.9 therefore hold by
-  construction. Gate: a null test V0.9 vs V1.0, mouse untouched, must be digital silence.
+- **The GUI is not in the signal path — but it IS a parameter writer, and that is where the
+  danger lives.** rev 5 said "the GUI cannot change the sound"; that was false comfort. `@gfx`
+  never touches a sample, so an idle GUI cannot alter the audio (gate: null test V0.9 vs V1.0,
+  mouse untouched → digital silence). But a *drag* writes gain parameters, and a wrong write is
+  a wrong gain. rev 5 had one gesture writing two fields at once, which needed write-order
+  choice, canonical splitting, edge clamping and Ratio inversion to stay safe — six revisions of
+  patching a hazard that §5 now removes at the source: **one gesture writes exactly one
+  slider.**
 - **Sliders stay fully usable.** No parameter becomes reachable *only* through the graph. This
   keeps automation working exactly as before and leaves a fallback if the GUI has a bug.
 - **`slider_automate()` after every write.** Without it REAPER neither records the change into
@@ -319,83 +325,56 @@ One node per band, drawn at (frequency, gain).
 | +8 | Placement | Both / Mid / Side / Left / Right |
 | +9 | Q Character | 0–1 |
 
-**Y is EFFECTIVE gain, and drag inverts Bit Ratio** (review P0-3, owner's choice). The node is
-drawn at `bit_gain(Macro, Micro, BitRatio)`, so for the node to follow the pointer the drag must
-solve backwards:
+**One gesture writes exactly ONE slider.** This is the rule that makes the whole interaction
+safe, and it comes from the owner: Macro and Micro are not "coarse and fine" — they are
+qualitatively different. A quarter of a bit is a simple binary fraction; 0.2 of a bit is not, and
+they do not sound the same in character, only in level. Mixing them in one drag is wrong on the
+owner's own terms, quite apart from the write hazard.
 
-```
-base_target = effective_target / BitRatio      (BitRatio != 0)
-```
-
-- `BitRatio == 0` has **no inverse**: every Macro/Micro setting sounds at 0 bits. The node is
-  pinned at the zero line, drawn in a distinct "locked" style, and vertical drag does nothing.
-  A readout says why. Silently resetting Bit Ratio would destroy a setting the owner chose
-  deliberately.
-- If the inverse exceeds the representable base range, the value **clamps** and the node stops
-  following the pointer rather than jumping.
-- Division by e.g. 0.3 will not land on the Micro grid; the result is snapped after inversion,
-  so the audible step stays a clean multiple of 0.05 bit **of effective gain** only when
-  `BitRatio` is 1. Otherwise the snap applies to the base value and the readout shows the true
-  effective figure.
-
-**Canonical Macro/Micro split.** Many pairs encode the same gain (`+0.95` bits is
-`Macro 0, Micro 95` or `Macro 1, Micro -5`), so one rule is pinned: **truncation toward zero** —
-`Macro = int(base)`, `Micro = (base - Macro) * 100`, with Micro **signed**, in `(-100, +100)`.
-
-rev 3 specified `floor` with Micro in `[0,100)`; that silently lost part of the negative range
-(rev-3 review P1-3): `-16.5` would need `Macro = -17`, outside the slider's `[-16, +16]`, making
-the canonical range an asymmetric `[-16, +17)`. Truncation toward zero keeps the representable
-span symmetric at approximately `(-17, +17)` and treats positive and negative identically. The
-combined base is clamped to that span **before** splitting.
-
-Round-trip tests cover `-17`, `-16`, `0`, `+16`, `+17` and one Micro step either side of each.
-
-Two slider writes are not atomic (rev-3 review P1-3b). Writing Macro first at a boundary — say
-`0.95 → 1.00` — momentarily pairs the new Macro with the old Micro, i.e. `1.95` bits. Whether the
-DSP can ever observe that depends on JSFX coalescing both assignments before the next `@slider`,
-which is **host behaviour this spec would otherwise be relying on silently**.
-
-rev 4 pinned "Micro first" and claimed the transient is bounded by one bit. **That holds only for
-a single Macro-step crossing** (Fable rev-4 P1-3). Measured counter-example: `16.95 → -16.95`
-bits, a legitimate numeric entry or fast drag —
-
-| Transition | Micro first | Macro first |
+| Gesture | Writes | Step |
 |---|---|---|
-| `0.95 → 1.00` (one boundary) | **0.00 bits** | +1.95 bits |
-| `16.95 → -16.95` (large jump) | **+15.05 bits** (x33923) | -15.05 bits (x0.000029) |
+| Drag vertically | **Macro only** | whole bits: … −2, −1, 0, +1, +2 … |
+| Drag horizontally | Freq only | continuous |
+| Wheel on a node | Q only | one step per notch |
+| Numeric entry | the focused field only | any value |
 
-Neither fixed order is safe in general: Micro-first is perfect for smooth dragging and produces a
-34000x bang on a jump; Macro-first is the reverse, erring toward silence.
+**Micro is never touched by the mouse.** It is typed into its readout field when genuinely
+needed — which, by the owner's account, is rare in an EQ. Bit Ratio likewise: typed, never
+dragged.
 
-**Pinned: choose the order per write.** Compute both candidate intermediates —
-`bit_gain(old_macro, new_micro)` and `bit_gain(new_macro, old_micro)` — and write the field that
-yields the **smaller absolute intermediate gain** first. Two comparisons, no cost, and it always
-errs toward silence rather than toward a bang. This is the same failure class as V0.8's
-full-amplitude step, which is why it is worth two lines of arithmetic.
+Because each gesture writes a single slider, **the write is atomic**: there is no ordering
+question, no intermediate pair, no canonical split, no `floor`-versus-truncate decision, no edge
+case at ±16.95, and no rounding-tie parity between Python and EEL2. All of that machinery — and
+the measured `16.95 → −16.95` transient of **+15.05 bits (×33923)** that motivated it — is
+deleted rather than defended.
 
-**`slider_automate` fires only when the snapped pair actually changed**, so a stationary drag does
-not flood automation with identical points.
+**Bit Ratio and the vertical drag.** The node is drawn at the effective gain
+`(Macro + Micro/100) × BitRatio`, so it sits where the audio is. A vertical drag solves for the
+Macro that puts the node nearest the pointer:
 
-**Load-bearing and still unverified** (Fable rev-4 P1-4): whether the DSP can observe the
-intermediate pair at all depends on JSFX coalescing both writes before the next `@slider`. rev 4
-called this "live-tested"; no live test has run yet. It stays on the live checklist as a gate,
-not as a formality — with large numeric-entry jumps and fast multi-integer drags, both polarities,
-automation recording on.
+```
+macro_target = round(pointer_bits / BitRatio − Micro/100)      clamped to [−16, +16]
+```
 
-**Numeric entry targets a named field, not "the node"** (review P1-7). One node carries Freq,
-Gain and Q, so "hover and type" is ambiguous. The readout strip at the bottom has three fields —
-**F / G / Q** — and clicking one gives it keyboard focus (highlighted border). Typing then edits
-that field: digits, minus and dot accumulate, Enter commits, Esc cancels, Backspace deletes.
-Units are shown in the field label: Hz, bits, Q. The `gfx_getchar` loop is adapted from
-`Fable Eq Dynamic.jsfx` (~lines 2160–2190).
+- One `slider_automate`, and only when `macro_target` differs from the current Macro.
+- **`BitRatio == 0`**: every Macro sounds at 0 bits, so there is no solution. The node is pinned
+  at the zero line, drawn in a distinct locked style, and vertical drag does nothing. A readout
+  says why. Silently resetting Bit Ratio would destroy a deliberate setting.
+- With `BitRatio ≠ 1` the node moves in steps of `BitRatio` bits, which is the honest
+  consequence of dragging an integer parameter through a multiplier.
+
+**Numeric entry targets a named field.** The readout strip has **F / G / Micro / Q** fields;
+clicking one gives it keyboard focus (highlighted border). Typing edits that field alone: digits,
+minus and dot accumulate, Enter commits, Esc cancels, Backspace deletes. Units are in the label —
+Hz, bits, % of a bit, Q. The `gfx_getchar` loop is adapted from `Fable Eq Dynamic.jsfx`
+(~lines 2160–2190), which already uses per-field identity.
 
 **Drag semantics, pinned:**
 
 | | Behaviour |
 |---|---|
 | Drag capture | The node grabbed on mouse-down keeps capture until release, even outside the graph |
-| Axis lock | None by default; Shift held **at mouse-down** locks to the dominant axis |
-| Shift after start | Changes sensitivity to fine (0.01 bit / 1 Hz), does not re-lock the axis |
+| Axis lock | Vertical and horizontal are independent parameters, so the dominant axis at mouse-down wins for the whole drag |
 | Wheel | Up = higher Q (narrower), one step per notch; Ctrl+wheel = fine |
 | Overlapping nodes | The topmost by band index wins; a second click within 300 ms cycles through them |
 | Release outside window | Treated as a normal release, value kept |
@@ -476,19 +455,19 @@ value is — a wrong curve is a silent, plausible-looking bug.
    implementation uses (otherwise the test only proves the code agrees with itself).
 5. Proportional-Q: with Q Character above zero, the drawn width follows `band_qeff`, not the
    knob Q.
-6. Bit-to-pixel mapping round-trips; the 0.05-bit snap always lands on a multiple. **One tie
-   policy** is pinned and implemented identically in Python and EEL2 — Python's `round()` is
-   ties-to-even while `floor(x/step + 0.5)` rounds ties upward, and they disagree at values like
-   `-0.075`. Table-driven test around `+-0.025`, `+-0.075`, integer boundaries and the edges.
+6. Bit-to-pixel mapping round-trips. There is no fractional snapping left to get wrong: the
+   drag quantises to whole Macro steps, so the Python/EEL2 rounding-tie parity problem is gone
+   with it. The only rounding is `round()` on the Macro target, tested at exact half-steps.
 7. Clamping beyond +-4 bits does not wrap or invert — for individual nodes **and for the total
    curve**, which can exceed the viewport while every node is inside it (review P2-1).
-8. **Canonical split:** for a swept target, **truncation toward zero** — `Macro = int(base)`
-   with a **signed** Micro in `(-100, +100)` — reproduces the value exactly at every integer
-   boundary, at +-0.05, at the representable edges, and identically for both signs. (`floor`
-   with Micro in `[0,100)` was rejected in rev 4: it needs `Macro = -17` for `-16.5`.)
-   Clamping happens **after** snapping, so the snap can never push Macro outside `[-16, 16]`.
-9. **Bit Ratio inversion:** for every Ratio step 0..3, the node follows the cursor within a
-   stated tolerance or reports a constrained state; `Ratio = 0` is locked, not silently reset.
+8. **One gesture, one slider.** A vertical drag writes **only** Macro, as a whole number in
+   `[-16, +16]`; it never touches Micro or Bit Ratio. Test: sweep the pointer across the full
+   viewport at Micro values of 0, +37.5 and -62.5, and assert Micro is byte-identical afterwards.
+   This test is what keeps the deleted machinery from creeping back.
+9. **Bit Ratio:** for every Ratio step 0..3, `macro_target = round(pointer_bits / ratio -
+   micro/100)` lands the node on the nearest reachable position, clamped to `[-16, +16]`;
+   `Ratio = 0` locks the node rather than silently resetting a deliberate setting. Also assert
+   `slider_automate` fires only when Macro actually changes.
 10. **Realized Linear/Brick magnitude:** the drawn curve for Linear at Normal vs High differs in
     the steep low-frequency case that motivated V0.7. **Brick precedence is by phase**:
     `Linear + Brick` comes from the realized `fir_brick_kernel`, while `Min + Brick` draws
@@ -617,3 +596,33 @@ All findings accepted. One of them replaced my method with a better one.
 and page alignment (it is literally the same allocation); the below-`lp_base` cache is untouched
 by `lp_relayout`; 95 slider declarations; and the peak-block-time reasoning behind choosing a
 native FFT over a per-point DTFT.
+
+## 14. Plan review + the owner's correction (rev 5 -> rev 6)
+
+The plan derived from rev 5 was itself reviewed and found not executable: six P0s, of which the
+architectural ones (shared buffer index across two engines, mis-assigned generation slots,
+magnitude-domain interpolation contradicting the bits contract, clamp-then-snap emitting Macro 17)
+were fixed in the plan. But the owner then made the observation that dissolves the whole class:
+
+> "Макрошифт звучит по-другому, чем 0.2 … это разные битовые значения. 0.25, он более простой, это четверть бита.
+> Micro shift используется только в случае действительно какой-то необходимости супер-тонкой подстройки."
+
+Macro and Micro are not coarse-and-fine; they are qualitatively different quantities, and one
+gesture must not move both. That is a product judgement, and it happens to remove the engineering
+hazard entirely.
+
+**Deleted from the design as a result** — not patched, deleted:
+
+| Removed | Why it existed |
+|---|---|
+| Canonical Macro/Micro split (`floor` -> truncation debate) | needed only because one drag wrote both fields |
+| Per-write order selection | needed only to bound the transient between two writes |
+| Snap-then-clamp edge handling at +-16.95 / +-17 | a consequence of splitting a fractional target |
+| Python/EEL2 rounding-tie parity | a consequence of 0.05-bit snapping |
+| Bit Ratio inverse with fractional quantisation | now a single `round()` onto whole Macro steps |
+
+**What replaces it:** a vertical drag writes **Macro only**, in whole bits; Micro and Bit Ratio
+are typed, never dragged. The write is atomic by construction, so none of the above can recur.
+§2's claim was also corrected: the GUI is not in the signal path, but it *is* a parameter writer,
+and pretending otherwise is what let six revisions of hazard accumulate under a reassuring
+sentence.
