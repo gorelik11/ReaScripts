@@ -2109,3 +2109,82 @@ def test_v09_rapid_switching_never_sticks_muted_and_always_resolves():
     assert m.state == 0, "machine stuck muted after rapid switching"
     assert m.g == 1.0
     assert m.act_hp_pl == 0, "final selection not applied"
+
+
+# ===================== Distortion hygiene (probe, 2026-08-14) =====================
+# Thresholds are derived from measurement, not guessed: every linear block measures around
+# -283 dB, which is float64 arithmetic itself. -250 dB leaves headroom while still failing
+# loudly if any block starts distorting.
+
+from tools import rcbitnova_probe as probe   # noqa: E402
+
+
+LINEAR_FLOOR_DB = -250.0
+
+
+def test_probe_measurement_floor_is_arithmetic_not_window():
+    """Guards the probe itself: a smooth window would put the floor near -92 dB and every
+    'clean' result below would become vacuous. Coherent sampling must keep it near float64."""
+    r = probe.probe_tone(lambda s: list(s))          # identity: nothing but the tone
+    assert r["thd"] < -280.0, f"probe floor degraded to {r['thd']} dB"
+
+
+def test_probe_static_bands_are_linear():
+    for ftype, gain in (("bell", 1.0), ("bell", 2.0), ("lowshelf", 0.5), ("highshelf", 2.0)):
+        r = probe.probe_tone(lambda s: probe.run_band(s, 48000, ftype=ftype, gain_lin=gain))
+        assert r["thd"] < LINEAR_FLOOR_DB, (ftype, gain, r["thd"])
+        assert r["alias_peak"] < LINEAR_FLOOR_DB, (ftype, gain, r["alias_peak"])
+
+
+def test_probe_hplp_paths_are_linear():
+    cases = [
+        lambda s: probe.run_hplp_min(s, 48000, "hp", 100.0, 0.0, 4),
+        lambda s: probe.run_hplp_min(s, 48000, "lp", 8000.0, 0.0, 8),
+        lambda s: probe.run_hplp_linear(s, 48000, "hp", 100.0, 0.0, 4),
+        lambda s: probe.run_fir_brick(s, 48000, "lp", 15000.0),
+    ]
+    for fn in cases:
+        r = probe.probe_tone(fn)
+        assert r["thd"] < LINEAR_FLOOR_DB, r["thd"]
+
+
+def test_probe_bit_gain_is_exactly_a_power_of_two():
+    """Not a threshold - an identity. Halving then doubling must return the input bit-for-bit."""
+    assert probe.is_bit_transparent(lambda s: [x * 2.0 for x in probe.run_bit_gain(s, macro=-1)])
+    assert probe.is_bit_transparent(lambda s: probe.run_bit_gain(s, macro=0))
+
+
+def test_probe_dynamics_below_threshold_add_nothing():
+    """The most valuable hygiene row: a dynamics stage that is not acting must be transparent.
+    No listening test reveals a detector that leaks while idle."""
+    for fn in (lambda s: probe.run_modea(s, 48000, ceiling=0.9),
+               lambda s: probe.run_modeb(s, 48000, ceil_soft=0.9, ceil_hard=0.9)):
+        r = probe.probe_tone(fn, amp=0.5)
+        assert r["thd"] < LINEAR_FLOOR_DB, r["thd"]
+
+
+def test_probe_modeb_aliasing_stays_far_below_modea():
+    """Pins the 2026-08-14 finding that drives the oversampling decision: Mode B is clean and
+    Mode A is not. If a future change closes that gap, this test should be revisited - and if it
+    inverts, the oversampling plan is wrong."""
+    a = probe.probe_tone(
+        lambda s: probe.run_modea(s, 48000, fc=19000, ceiling=0.125, atk=0.05, rel=70.0),
+        target_hz=19000, amp=0.5)
+    b = probe.probe_tone(
+        lambda s: probe.run_modeb(s, 48000, fc=19000, ceil_soft=0.125, ceil_hard=0.125,
+                                  look=5.0, rel=70.0),
+        target_hz=19000, amp=0.5)
+    assert b["alias_peak"] < -110.0, f"Mode B aliasing regressed to {b['alias_peak']}"
+    assert a["alias_peak"] > -80.0, f"Mode A unexpectedly clean ({a['alias_peak']}) - re-measure"
+    assert b["alias_peak"] < a["alias_peak"] - 40.0
+
+
+def test_probe_modea_aliasing_improves_with_slower_attack():
+    """The mitigation offered in the report must actually hold."""
+    fast = probe.probe_tone(
+        lambda s: probe.run_modea(s, 48000, fc=19000, ceiling=0.125, atk=0.05, rel=70.0),
+        target_hz=19000, amp=0.5)
+    slow = probe.probe_tone(
+        lambda s: probe.run_modea(s, 48000, fc=19000, ceiling=0.125, atk=50.0, rel=70.0),
+        target_hz=19000, amp=0.5)
+    assert slow["alias_peak"] < fast["alias_peak"] - 15.0, (fast["alias_peak"], slow["alias_peak"])
