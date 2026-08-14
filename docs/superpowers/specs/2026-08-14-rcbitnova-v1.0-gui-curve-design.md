@@ -1,7 +1,8 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 2**, after the weakness review
-`2026-08-14-rcbitnova-v1.0-gui-curve-weaknesses.md` — disposition in §10)
+**Date:** 2026-08-14 (**rev 3**, after the weakness review
+`2026-08-14-rcbitnova-v1.0-gui-curve-weaknesses.md` and Fable's review of rev 2 — dispositions
+in §10 and §11)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.0` (copy of V0.9). `rcbitnova-v0.9` remains the fallback tag;
 V0.9 and earlier are frozen.
@@ -55,6 +56,13 @@ A domain trace includes the **Both** blocks as well as its own, because a Both b
 processes that domain too - so the Mid trace is "what actually happens to a mid signal", not
 "what the mid-placed bands do". The white trace is drawn whenever any Both block is enabled.
 
+*Why this is legitimate and not a coincidence:* a Both-placed block applies the **same**
+coefficients to L and R. Since M = (L+R)/2 and S = (L-R)/2 are linear combinations, applying an
+identical LTI filter to L and R is mathematically identical to applying it to M and S. So a Both
+block's scalar magnitude multiplies correctly into every domain trace. Verified against
+`@sample` and `lpk_process` in V0.9. (Recorded so a future editor does not "fix" what looks like
+an unexplained shortcut.)
+
 **Stated limitation:** when M/S-placed and L/R-placed blocks are used *at the same time*, no set
 of per-domain scalar traces describes the true channel response - the stages do not factor. The
 traces then read as "what each group does", exactly as ReEQ's do. This is a display limitation,
@@ -78,10 +86,40 @@ at all.
 - **Band gain** is `bit_gain(Macro, Micro, BitRatio)` - the same expression as the audio path.
 - **Proportional-Q:** drawn width uses `band_qeff(b)`, the effective Q, not the knob Q.
 
-Computing a windowed-kernel magnitude at 32768 taps per graph point is far too expensive per
-frame, so the Linear/Brick traces are evaluated on a **coarse frequency grid at kernel-rebuild
-time** (that work is already happening there) and interpolated for display. This keeps the drawn
-curve tied to the kernel that is actually convolving.
+**This is new computation, not reuse** (Fable P0-2). rev 2 claimed the work "is already
+happening" in `lpk_build`; it is not. `lpk_build` computes the magnitude of the min-phase
+**target** and then windows in the *time* domain (`ktime[i] = desbuf[...] * inv * wink[i]`); it
+never evaluates the frequency response of the windowed kernel. Obtaining the realized curve needs
+a direct DTFT sum over `ktime` (BD = 8192 or 32768 samples) at each query point.
+
+Cost, stated rather than assumed: **50-100 query points** per engine, log-spaced, interpolated
+for display. At BD = 32768 that is ~3.3 M multiply-adds per rebuild — significant, but rebuilds
+are already rate-limited to one per 100 ms per engine, and this must be confirmed to fit inside
+that budget during live verification.
+
+**Where it runs and where it lands** (Fable P0-3). `@gfx` must **never** read `ktime`, `Hspec`,
+`fdlA` or `fdlB`: they live above `lp_base`, `@block` rewrites them mid-rebuild, and
+`lp_relayout()` clears and `freembuf`s that whole region on any Resolution change — exactly the
+hazard §3.3 exists to prevent. Instead **`@block` computes the coarse grid in the same
+audio-thread pass, immediately after `lpk_build`/`lpk_commit`, and copies the results into the
+protected below-`lp_base` cache.** `@gfx` only reads that cache. This is the one place where the
+DSP thread, not `@gfx`, writes curve data — §2's "the GUI only reads parameters and writes
+sliders" is scoped to `@gfx` itself and does not cover this transfer.
+
+**Closed form for the bands** (Fable P0-4). The oracle has two magnitude functions and only one
+is usable: `svf_magnitude()` brute-forces 32768 IIR samples and measures RMS — infeasible per
+frame and too noisy for a numeric gate — while **`svf_response()` evaluates the exact 2x2 complex
+state-space at `z = e^{jw}`** and is cheap. `svf_response` is the explicit porting target for the
+JSFX. EEL2 has no complex type, so this is a hand-rolled ~15-20 line function, not a one-liner;
+ReEQ's `zdf_magnitude` (`ReJJ-1.0.11/svf_filter.jsfx-inc`) confirms the approach is standard in
+this plugin family, but its topology differs and does not supply RCBitNova's `m0/m1/m2` mixing —
+that algebra must be derived and oracle-tested first.
+
+**Read the ACTIVE topology, never the sliders** (Fable P1-1). V0.9 arms a Phase/Resolution/
+Placement change at `@slider` but commits it only at `@block`, and the hold can run for a second
+at BD = 32768. Reading `slider140`/`slider134`/`slider138` would draw a topology that is not the
+one currently playing. All magnitude evaluation uses `act_phase`, `act_hp_pl`, `act_lp_pl` and
+`lp_geo`.
 
 ### 3.2 Log floor
 
@@ -230,6 +268,10 @@ Deferred so the first stage stays finishable:
 - **Spectrum analyser** → V1.1. Heaviest part in both CPU and code.
 - **Live dynamics curve** (Mode A/B action) → V1.2. Needs detector state passed from `@sample`
   to `@gfx`.
+  *Forward note for that spec (Fable P2):* a Both-placed band whose dynamics run in Dual M/S
+  (`dp[b*4+3] == 1 && dm[b] == 2`) routes even its **static** SVF through M/S rather than L/R.
+  The static magnitude is domain-invariant so V1.0 is unaffected, but the *dynamic gain* is not —
+  V1.2 must handle this rather than rediscovering it live.
 - **Eight bands** — a DSP and memory change, not a GUI one; its own cycle and spec.
 - **Dragging HP/LP on the graph** — they are drawn in V1.0 but adjusted by their sliders.
 - **`@serialize`** — unnecessary: REAPER already persists slider values and the GUI holds no
@@ -241,11 +283,16 @@ Deferred so the first stage stays finishable:
 **Oracle (Python):** the magnitude functions are testable without a GUI, and that is where the
 value is — a wrong curve is a silent, plausible-looking bug.
 
-1. **Bell** magnitude at `fc` equals the full applied bit gain. **Shelves do NOT**: the shipping
-   TPT shelf uses `A = sqrt(gain_lin)`, so at `fc` a shelf is at **half** the gain in
-   logarithmic terms — measured: +-2.0000 bits on the plateau, +-0.9966 at `fc` (review P0-4;
-   rev 1's assertion would have failed a correct implementation). Shelf tests assert `sqrt(gain)`
-   at `fc` and full gain on the plateau.
+1. **Bell** magnitude at `fc` equals the full applied bit gain (exactly: +2.0000000000 bits for
+   a +2-bit bell). **Shelves do NOT**: the shipping TPT shelf uses `A = sqrt(gain_lin)`, so at
+   `fc` a shelf sits at **exactly half** the gain in logarithmic terms — `svf_response` gives
+   precisely `bits/2` for every `fc` (20 Hz–19.9 kHz) and `Q` (0.1–10) swept.
+   **All pinned numbers come from `svf_response`, the exact closed form** — never from
+   `svf_magnitude` (a finite-window RMS estimator) and never from an FFT bin. rev 2 quoted
+   "+-0.9966 at fc" as verified; that figure was an artefact of reading FFT bin 171 (1002 Hz)
+   instead of exactly 1000 Hz, which is also why it was asymmetric between low and high shelf
+   (0.9966 vs 1.0034). A correct implementation would have failed a test pinned to it
+   (Fable P0-1).
    *Node convention, pinned:* a shelf node is a **handle** drawn at `(fc, full gain)`, so it does
    not sit on its own curve. Stated here so it is not later diagnosed as a rendering defect.
 2. Band magnitude far from the centre tends to unity.
@@ -291,6 +338,11 @@ plateaus on both sides, `fc`, near-Nyquist warping, proportional-Q, Brick, and b
 - **Null test V0.9 vs V1.0** with the mouse untouched → digital silence.
 - **CPU with the GUI open vs closed** — measured, not assumed. V0.8's only real defect was found
   by the CPU meter and by nothing else.
+- **The coarse-grid cost is unconditional** (Fable P1-2): it runs inside `@block` after every
+  kernel rebuild whether or not the GUI window is open, so "GUI closed == V0.9" is *not* exactly
+  true. It is expected to be small against the 100 ms rebuild limit — confirm it live at
+  High+High, the worst case. Gating it on `gfx_w > 0` was considered and rejected: reading
+  `@gfx`-owned state from `@block` is the same unsynchronised cross-thread hazard as P0-3.
 - Placement colours match the actual placement of each band.
 
 ## 9. Method
@@ -323,3 +375,24 @@ Every finding accepted; two were verified numerically before accepting.
 | **P1** Resize and Retina asserted, not designed | **Accepted** — `@gfx 900 500`, one shared transform for drawing and hit-testing, minimum size, scaled hit radius (§6). rev 1's `gfx_init` was the ReaScript API, not JSFX |
 | **P2** Over-range covers nodes but not the curve | **Accepted** — clipping indicators and deterministic edge-label handling (§8.7) |
 | **P2** Slider count off by one | **Accepted, verified**: 95 declarations, not 96 (§1) |
+
+## 11. Fable review disposition (rev 2 → rev 3)
+
+Fable reviewed rev 2 against the V0.9 source and the oracle, and returned "needs edits".
+
+| Finding | Disposition |
+|---|---|
+| **P0-1** the pinned "+-0.9966 bits at fc" is measurement noise, not the true value | **Accepted, re-verified.** `svf_response` gives exactly `bits/2` for every `fc` and `Q`. My figure came from an FFT bin at 1002 Hz, not 1000 Hz — the low/high asymmetry (0.9966 vs 1.0034) was the tell. All pinned numbers now come from the closed form (§8.1). This is the fourth time on this project a "verified" number was an artefact of how it was measured |
+| **P0-2** "that work is already happening" in `lpk_build` is false | **Accepted** — `lpk_build` windows in the time domain and never evaluates the windowed kernel's response. The DTFT cost is now stated explicitly (§3.1) |
+| **P0-3** the coarse-grid data has no safe home; `@gfx` reading `ktime` reopens the very hazard §3.3 closes | **Accepted** — `@block` computes the grid in the same pass as the rebuild and copies it into the protected cache; `@gfx` never touches engine buffers (§3.1) |
+| **P0-4** no closed form given, and the tempting oracle function is the wrong one | **Accepted** — `svf_response` named as the porting target, `svf_magnitude` explicitly excluded, EEL2's lack of a complex type noted (§3.1) |
+| **P1-1** the magnitude table omits "active" topology | **Accepted** — all evaluation reads `act_*`/`lp_geo`, never the sliders, because a pending topology change can hold for a second (§3.1) |
+| **P1-2** the coarse-grid cost is unconditional, undermining the GUI-open-vs-closed gate | **Accepted** — stated as unconditional; the `gfx_w > 0` gate rejected as its own cross-thread hazard (§8) |
+| **P2** dynamics in Dual M/S route a Both band's static SVF through M/S | **Accepted** — forward note added to §7 for the V1.2 spec |
+
+**Confirmed correct by Fable, no change needed:** the per-domain trace model and its stated
+M/S-plus-L/R limitation (verified against `@sample` and `lpk_process`; the linearity argument is
+now written into §3); Brick mapping to `nsec = 0` in the min path; 95 slider declarations; the
+below-`lp_base` cache being untouched by `lp_relayout`'s `memset`/`freembuf` and not disturbing
+V0.7's page alignment; and `Fable Eq Dynamic`'s numeric-entry pattern already using per-field
+identity, matching §5's design.
