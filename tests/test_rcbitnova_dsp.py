@@ -2188,3 +2188,127 @@ def test_probe_modea_aliasing_improves_with_slower_attack():
         lambda s: probe.run_modea(s, 48000, fc=19000, ceiling=0.125, atk=50.0, rel=70.0),
         target_hz=19000, amp=0.5)
     assert slow["alias_peak"] < fast["alias_peak"] - 15.0, (fast["alias_peak"], slow["alias_peak"])
+
+
+# ===================== V1.0 GUI curve maths =====================
+# EVERYTHING IS IN BITS. band_bits/hplp_bits return log2|H|, and domain_bits SUMS them.
+# The earlier draft mixed linear magnitudes with bit grids and multiplied one by the other -
+# a silent arithmetic error. One currency removes that class entirely.
+
+from tools import rcbitnova_curve as curve   # noqa: E402
+
+
+def _band(**kw):
+    b = dict(enable=1, type="bell", freq=1000.0, q=0.707, macro=0, micro=0.0,
+             ratio=1.0, placement="both", qchar=0.0)
+    b.update(kw)
+    return b
+
+
+def _hp(**kw):
+    h = dict(ftype="hp", slope=4, freq=100.0, res=0.0, placement="both")
+    h.update(kw)
+    return h
+
+
+def test_v10_bell_at_fc_is_the_full_bit_gain():
+    for bits in (2.0, -2.0, 0.5):
+        b = _band(macro=int(bits), micro=(bits - int(bits)) * 100)
+        assert abs(curve.band_bits(b, 1000.0, 48000) - bits) < 1e-9, bits
+
+
+def test_v10_shelf_at_fc_is_exactly_half_the_gain():
+    """The shipping TPT shelf uses A = sqrt(gain_lin), so at fc it is EXACTLY bits/2 - measured
+    with svf_response, the exact closed form. An earlier draft pinned 0.9966 here, which was an
+    artefact of reading FFT bin 171 (1002 Hz) instead of 1000 Hz."""
+    for ftype in ("lowshelf", "highshelf"):
+        for bits in (2.0, -2.0):
+            for fc in (100.0, 1000.0, 8000.0):
+                for q in (0.4, 0.707, 3.0):
+                    b = _band(type=ftype, freq=fc, q=q, macro=int(bits))
+                    got = curve.band_bits(b, fc, 48000)
+                    assert abs(got - bits / 2) < 1e-9, (ftype, bits, fc, q, got)
+
+
+def test_v10_disabled_band_contributes_zero_bits():
+    assert curve.band_bits(_band(enable=0, macro=4), 1000.0, 48000) == 0.0
+
+
+def test_v10_band_far_from_centre_tends_to_zero_bits():
+    assert abs(curve.band_bits(_band(macro=4, q=4.0), 20.0, 48000)) < 0.01
+
+
+def test_v10_band_width_follows_q_eff_not_the_knob():
+    wide = _band(macro=4, q=1.0, qchar=0.0)
+    narrow = _band(macro=4, q=1.0, qchar=1.0)
+    off = 1000.0 * 2 ** (1 / 6)
+    assert curve.band_bits(narrow, off, 48000) < curve.band_bits(wide, off, 48000)
+
+
+def test_v10_bit_ratio_scales_the_gain():
+    """The node is drawn at (macro + micro/100) * ratio - the same expression as the audio."""
+    assert abs(curve.band_bits(_band(macro=2, ratio=0.5), 1000.0, 48000) - 1.0) < 1e-9
+    assert abs(curve.band_bits(_band(macro=2, ratio=0.0), 1000.0, 48000)) < 1e-12
+
+
+def test_v10_min_phase_brick_is_identity():
+    """Brick maps to nsec = 0 in the min path, so the audible response IS no filter. Drawing a
+    cutoff there would show something that is not being heard."""
+    for f in (20.0, 100.0, 1000.0, 15000.0):
+        assert curve.hplp_bits(_hp(slope=6), f, 48000, act_phase=0) == 0.0
+
+
+def test_v10_min_phase_hplp_matches_the_oracle():
+    """The slope slider holds an ENUM, not a section count: 5 means 96 dB/oct = 8 sections."""
+    import math
+    for slope_enum, nsec in ((1, 1), (2, 2), (4, 4), (5, 8)):
+        for f in (50.0, 100.0, 400.0):
+            got = curve.hplp_bits(_hp(slope=slope_enum), f, 48000, act_phase=0)
+            want = math.log2(dsp.hplp_digital_mag("hp", 100.0, 0.0, nsec, f, 48000))
+            assert abs(got - want) < 1e-12, (slope_enum, nsec, f)
+
+
+def test_v10_hplp_is_minus_3db_at_cutoff_only_without_resonance():
+    plain = curve.hplp_bits(_hp(slope=4, res=0.0), 100.0, 48000, act_phase=0)
+    assert abs(plain * 6.0206 + 3.0) < 0.2
+    assert curve.hplp_bits(_hp(slope=4, res=1.0), 100.0, 48000, act_phase=0) > plain
+
+
+def test_v10_domain_trace_sums_both_blocks_and_its_own():
+    """A Both block applies identical coefficients to L and R, which by linearity is identical
+    to applying them to M and S - so it belongs in EVERY domain trace."""
+    bands = [_band(macro=2, placement="both"), _band(freq=4000.0, macro=2, placement="mid")]
+    f = 1000.0
+    mid = curve.domain_bits(bands, [], "mid", f, 48000, 1)
+    side = curve.domain_bits(bands, [], "side", f, 48000, 1)
+    both_only = curve.band_bits(bands[0], f, 48000)
+    assert abs(mid - (both_only + curve.band_bits(bands[1], f, 48000))) < 1e-12
+    assert abs(side - both_only) < 1e-12
+
+
+def test_v10_domain_trace_excludes_other_domains():
+    """Guards the rev-1 mistake: folding every block into one scalar curve."""
+    bands = [_band(macro=3, placement="left"), _band(macro=3, placement="right")]
+    f = 1000.0
+    left = curve.domain_bits(bands, [], "left", f, 48000, 1)
+    assert abs(left - curve.band_bits(bands[0], f, 48000)) < 1e-12
+    assert abs(left - 3.0) < 1e-9
+
+
+def test_v10_audible_activity_excludes_off_and_min_brick():
+    """A filter dict has no 'enable' key. Counting an Off slope as active would light up its
+    domain and falsely dash every trace as a mixed placement family."""
+    assert curve.is_audible(_band(), 1) is True
+    assert curve.is_audible(_band(enable=0), 1) is False
+    assert curve.is_audible(_hp(slope=0), 1) is False          # Off
+    assert curve.is_audible(_hp(slope=6), 0) is False          # Min + Brick == identity
+    assert curve.is_audible(_hp(slope=6), 1) is True           # Linear + Brick is real
+    assert curve.is_audible(_hp(slope=4), 0) is True
+
+
+def test_v10_mixed_placement_families_only_when_audible():
+    ms = [_band(placement="mid")]
+    lr_off = [_hp(slope=0, placement="left")]
+    assert curve.mixed_placement_families(ms, lr_off, 1) is False, "an Off filter dashed the traces"
+    lr_on = [_hp(slope=4, placement="left")]
+    assert curve.mixed_placement_families(ms, lr_on, 1) is True
