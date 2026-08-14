@@ -1,7 +1,7 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 4**. Reviews folded in: weakness review of rev 1 (§10), Fable on
-rev 2 (§11), weakness review of rev 3 (§12).)
+**Date:** 2026-08-14 (**rev 5**. Reviews folded in: weakness review of rev 1 (§10), Fable on
+rev 2 (§11), weakness review of rev 3 (§12), Fable on rev 4 (§13).)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.0` (copy of V0.9). `rcbitnova-v0.9` remains the fallback tag;
 V0.9 and earlier are frozen.
@@ -112,7 +112,26 @@ closed, so V1.0 would regress the audio-only case.
 
 Instead: copy `ktime` into the existing `desbuf` scratch as a complex array, run the **native
 `fft(BD)`** already proven at 32768 in V0.7 (same page-alignment rules), take bin magnitudes, and
-resample to the display grid. This is O(N log N) in native code rather than millions of
+resample to the display grid. Four details are pinned here rather than left as "obvious", because
+this project's failures have all been plausible-looking transcriptions:
+
+- **`fft_permute` is mandatory.** EEL2's `fft()` returns bit-reversed order, and all four
+  existing `fft()` calls in V0.9 (lines 446, 459, 496, 533) are immediately followed by
+  `fft_permute()`. Omitting it yields a scrambled frequency mapping that still draws a smooth,
+  believable curve.
+- **Zero the imaginary lane explicitly** for all `BD` entries when copying `ktime` in. The prior
+  `ifft` leaves rounding residue there, not exact zeros.
+- **Use bins `0..BD/2` only.** `ktime` is real, so `X[BD-k] = conj(X[k])`; the upper half carries
+  no independent information.
+- **The `fftshift` needs no correction.** `ktime[i] = desbuf[(i + BD/2) mod BD] * inv * wink[i]`
+  is a circular shift applied before windowing; a half-period circular shift multiplies the
+  spectrum by `(-1)^k`, which `|X[k]|` removes entirely. Stated as a closed argument so a future
+  editor does not "fix" a phase artefact that does not exist.
+
+**Buffer lifecycle, verified:** `desbuf` (`ob[0]`, span `BD*2`) is last written by the `ifft` at
+line 451 and only read afterwards; `lpk_run` never touches it. It is free once `lpk_build`
+finishes, is exactly the right size, and at BD = 32768 is the same page-aligned span V0.7 already
+proved safe — this reuses the identical allocation rather than adding one. This is O(N log N) in native code rather than millions of
 interpreted operations, and it reuses a buffer that is already there. It also removes the sparse-
 grid accuracy problem (rev-3 review P1-2): the FFT grid is dense (BD/2 bins), so a narrow Brick
 transition or a resonant knee cannot fall between query points.
@@ -138,11 +157,30 @@ ReEQ's `zdf_magnitude` (`ReJJ-1.0.11/svf_filter.jsfx-inc`) confirms the approach
 this plugin family, but its topology differs and does not supply RCBitNova's `m0/m1/m2` mixing —
 that algebra must be derived and oracle-tested first.
 
-**Read the ACTIVE topology, never the sliders** (Fable P1-1). V0.9 arms a Phase/Resolution/
-Placement change at `@slider` but commits it only at `@block`, and the hold can run for a second
-at BD = 32768. Reading `slider140`/`slider134`/`slider138` would draw a topology that is not the
-one currently playing. All magnitude evaluation uses `act_phase`, `act_hp_pl`, `act_lp_pl` and
+**Which topology to read — phase-conditional, NOT uniformly `act_*`** (Fable rev-2 P1-1, then
+corrected by Fable rev-4 P0).
+
+In **Linear**, a Placement/Phase/Resolution change is deferred: armed at `@slider`, committed at
+`@block`, and the hold can run for a second at BD = 32768. Reading the sliders there would draw a
+topology that is not playing. So Linear evaluation uses `act_phase`, `act_hp_pl`, `act_lp_pl`,
 `lp_geo`.
+
+In **Min**, the opposite is true, and rev 4's blanket rule would have been wrong. Verified in
+V0.9: `topo_changed` only fires for a placement change when `slider140 == 1` (line 757), so while
+the user stays in Min and moves HP/LP Placement, `act_hp_pl`/`act_lp_pl` are **never updated
+after boot** — they are a fossil of whatever existed then. Meanwhile `@sample`'s Min branch calls
+`hplp_run(0, hp_nsec, slider134)` with the **raw slider** (line 874), and the state reset at
+lines 715–717 is ungated, so Min-phase placement is live and immediate.
+
+Pinned rule:
+
+| `act_phase` | HP/LP placement source for the curve |
+|---|---|
+| Min (0) | `slider134` / `slider138` — live, never deferred |
+| Linear (1) | `act_hp_pl` / `act_lp_pl` |
+
+Live test: with Phase held at Min, flip HP Placement repeatedly and confirm the trace follows
+immediately.
 
 ### 3.2 Log floor
 
@@ -176,9 +214,15 @@ because `lp_align` re-derives everything from `lp_base` itself.
 | `gc_meta` | 8 | generation counters, active buffer index, publication flags |
 | **Total** | **6280** | |
 
-`lp_base` is pinned in the memory tests **before and after** the change: adding 6280 words must
-not push the static block across the next 65536 boundary, and the worst-case `freembuf` size at
-High+High is asserted exactly, not merely "it does not crash".
+**It fits, with the numbers rather than a promise** (Fable rev-4 P2-7). Tracing the static chain
+from `cf = 0`: `hplp_state = 37932`, `hplp_cf = 38004`, `lp_rt = 38130`, `lp_kc = 38146`,
+`lp_ks = 38209`, `lp_geo = 38227`, `lp_off = 38235`, `lp_fs = 38267`, end of region **38275**.
+`lp_base = ceil(38275 / 65536) * 65536 = 65536`, leaving **27261 words of padding**. Adding the
+6280-word `gc_*` block ends the region at **44555** — still ~21000 words short of the boundary.
+**`lp_base` does not move and page alignment is untouched.**
+
+The memory tests still pin `lp_base` before and after, and assert the worst-case `freembuf` size
+at High+High exactly — but as a regression guard, not as an open question.
 
 **Publication protocol** (rev-3 review P0-3). Reserving memory does not make an array update
 atomic: `@block` can be writing while `@gfx` reads, producing a frame that mixes old and new
@@ -192,6 +236,16 @@ bins and draws spikes belonging to neither kernel. So:
 
 A stress test rebuilds both kernels continuously while rendering and asserts no non-finite values
 and no single-frame discontinuity beyond a pinned bound.
+
+**What this protocol does and does not guarantee** (Fable rev-4 P1-5). It is a seqlock, and it
+does catch a second rebuild completing mid-read. It does **not** prevent store-store reordering:
+on ARM — which is what this M4 actually is — the generation flip could in principle become
+visible before the buffer words, and EEL2 has no memory-barrier primitive to prevent that. This
+spec does not know what synchronisation REAPER guarantees between `@gfx` and `@block`, and does
+not claim the scheme is sufficient by construction. It is accepted because the **worst case is
+scoped**: a one-frame visual glitch in `@gfx`, self-correcting on the next frame, never signal
+corruption — `@gfx` writes nothing the audio path reads. Recorded as an accepted unknown rather
+than presented as solved.
 
 **Invalidation is two separate things** (rev-3 review P0-4). rev 3 bumped one counter from
 `@slider` — but `act_phase`/`act_hp_pl`/`act_lp_pl` change later, in `topo_commit` inside
@@ -209,7 +263,13 @@ Keeping them separate is what stops the GUI presenting a *requested* topology as
 committed.
 
 Watched fields for `gen_target`: per band Enable, Type, Freq, Q, Macro, Micro, Bit Ratio,
-Placement, Q Character; HP/LP Slope, Freq, Resonance, Placement; and `srate`.
+Placement, Q Character; HP/LP Slope, Freq, Resonance, Placement; **Phase (`slider140`) and both
+Resolutions (`slider141`, `slider142`)** — omitted in rev 4 (Fable rev-4 P1-6), although Phase
+selects which of §3.1's three magnitude sources applies and Resolution selects which BD grid is
+read; and `srate`.
+
+`gen_target` gates recomputation of the cheap analytic curves (bands, Min-phase HP/LP).
+`gen_active` gates what the realized Linear/Brick trace is allowed to show.
 
 ### 3.4 What the curve represents during a rebuild
 
@@ -295,12 +355,32 @@ Two slider writes are not atomic (rev-3 review P1-3b). Writing Macro first at a 
 DSP can ever observe that depends on JSFX coalescing both assignments before the next `@slider`,
 which is **host behaviour this spec would otherwise be relying on silently**.
 
-Pinned: write **Micro first, then Macro**, so the transient pairs the *old* Macro with the new
-Micro — bounded by one bit rather than by the size of the Macro step — then `slider_automate`
-both. **`slider_automate` fires only when the snapped pair actually changed**, so a stationary
-drag does not flood automation with identical points. The live checklist includes fast drags
-across positive and negative integer boundaries with automation recording, asserting the DSP
-never sees an outlier.
+rev 4 pinned "Micro first" and claimed the transient is bounded by one bit. **That holds only for
+a single Macro-step crossing** (Fable rev-4 P1-3). Measured counter-example: `16.95 → -16.95`
+bits, a legitimate numeric entry or fast drag —
+
+| Transition | Micro first | Macro first |
+|---|---|---|
+| `0.95 → 1.00` (one boundary) | **0.00 bits** | +1.95 bits |
+| `16.95 → -16.95` (large jump) | **+15.05 bits** (x33923) | -15.05 bits (x0.000029) |
+
+Neither fixed order is safe in general: Micro-first is perfect for smooth dragging and produces a
+34000x bang on a jump; Macro-first is the reverse, erring toward silence.
+
+**Pinned: choose the order per write.** Compute both candidate intermediates —
+`bit_gain(old_macro, new_micro)` and `bit_gain(new_macro, old_micro)` — and write the field that
+yields the **smaller absolute intermediate gain** first. Two comparisons, no cost, and it always
+errs toward silence rather than toward a bang. This is the same failure class as V0.8's
+full-amplitude step, which is why it is worth two lines of arithmetic.
+
+**`slider_automate` fires only when the snapped pair actually changed**, so a stationary drag does
+not flood automation with identical points.
+
+**Load-bearing and still unverified** (Fable rev-4 P1-4): whether the DSP can observe the
+intermediate pair at all depends on JSFX coalescing both writes before the next `@slider`. rev 4
+called this "live-tested"; no live test has run yet. It stays on the live checklist as a gate,
+not as a formality — with large numeric-entry jumps and fast multi-integer drags, both polarities,
+automation recording on.
 
 **Numeric entry targets a named field, not "the node"** (review P1-7). One node carries Freq,
 Gain and Q, so "hover and type" is ambiguous. The readout strip at the bottom has three fields —
@@ -508,3 +588,22 @@ All findings accepted. One of them replaced my method with a better one.
 | **P1** the mixed M/S + L/R limitation is invisible in the GUI | **Accepted** — affected traces go dashed with a legend state, plus a GUI test (§3) |
 | **P2** edge-label behaviour required but not designed | **Accepted** — ordering, offsets, selected-node priority and in-plot constraint pinned (§6) |
 | **P2** "GUI open vs closed" is not the important comparison | **Accepted** — primary gate is now V0.9-closed vs V1.0-closed, with peak block time and xruns (§8) |
+
+## 13. Fable review disposition (rev 4 → rev 5)
+
+| Finding | Disposition |
+|---|---|
+| **P0** "always read `act_*`" is wrong in Min phase | **Accepted, verified in code.** `topo_changed` only fires for placement when `slider140 == 1`, so in Min the `act_*` pair goes permanently stale while `@sample` uses the raw slider — the curve would have shown a domain abandoned minutes earlier. Rule is now phase-conditional (§3.1) |
+| **P1** `fft_permute`, Hermitian symmetry, imaginary-lane residue missing from the write-up | **Accepted** — all three pinned in §3.1. Omitting the permute would have produced a scrambled but entirely believable curve |
+| **P1** fftshift concern | **Closed as a non-issue**, with the shift-theorem argument recorded so nobody "fixes" it later |
+| **P1** Micro-first does not bound the transient in general | **Accepted, measured.** `16.95 → -16.95` gives **+15.05 bits (x33923)** with Micro first. Replaced by choosing the order per write, always erring toward silence (§5) |
+| **P1** the host-coalescing assumption is restated, not resolved | **Accepted** — explicitly marked load-bearing and unverified, kept as a live gate (§5) |
+| **P1** the double-buffer scheme has no memory barrier on ARM | **Accepted as a scoped unknown** — worst case is a one-frame `@gfx` glitch, never signal corruption; recorded honestly instead of claiming sufficiency (§3.3) |
+| **P1** `gen_target` omits Phase and Resolution | **Accepted** — both added, and what each generation counter gates is now stated (§3.3) |
+| **P2** memory arithmetic left as a future test | **Accepted** — computed and written into the spec: 27261 words of padding today, 21000 remaining after the 6280-word block; `lp_base` does not move (§3.3) |
+| **P2** imaginary lane must be zeroed explicitly | **Accepted** — folded into the §3.1 FFT details |
+
+**Confirmed correct by Fable, no change needed:** the `desbuf` reuse is safe in lifecycle, size
+and page alignment (it is literally the same allocation); the below-`lp_base` cache is untouched
+by `lp_relayout`; 95 slider declarations; and the peak-block-time reasoning behind choosing a
+native FFT over a per-point DTFT.
