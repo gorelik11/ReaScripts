@@ -47,8 +47,9 @@ Tasks 1–4 are pure Python and test-driven. Tasks 5–8 are the EEL2 transcript
 - Consumes: `dsp.svf_make`, `dsp.svf_response`, `dsp.hplp_digital_mag`, `dsp.bit_gain`, `dsp.q_eff`.
 - Produces:
   - `band_mag(band: dict, f: float, sr: float) -> float` — linear magnitude of one band at `f`. `band` keys: `enable, type, freq, q, macro, micro, ratio, placement, qchar`.
-  - `hplp_mag(hp: dict, f: float, sr: float, act_phase: int) -> float` — `hp` keys: `slope, freq, res, placement, ftype`.
-  - `domain_mag(bands: list, filters: list, domain: str, f: float, sr: float, act_phase: int) -> float` — product over blocks whose placement is `"both"` or `domain`.
+  - `hplp_mag(hp: dict, f: float, sr: float, act_phase: int, realized: dict | None) -> float` — `hp` keys: `slope, freq, res, placement, ftype`. `realized` is keyed **by engine identity** (`{"hp": grid, "lp": grid}`), because HP and LP are two independently configured engines and one shared sampler would force both to use the same response.
+  - `domain_mag(bands, filters, domain, f, sr, act_phase, realized=None) -> float`
+  - `is_audible(block, act_phase) -> bool` — an Off slope, and `Min + Brick`, are **not** audible and must neither draw a trace nor trigger the mixed-family dashing.
   - `DOMAINS = ("both", "mid", "side", "left", "right")`
 
 - [ ] **Step 1: Write the failing tests**
@@ -209,9 +210,11 @@ def hplp_mag(hp, f, sr, act_phase, realized=None):
         if hp["slope"] == BRICK_SLOPE or nsec == 0:
             return 1.0
         return dsp.hplp_digital_mag(hp["ftype"], hp["freq"], hp["res"], nsec, f, sr)
-    if realized is None:
-        raise ValueError("Linear phase needs a realized-kernel sampler")
-    return realized(f)
+    if nsec == 0 and hp["slope"] != BRICK_SLOPE:
+        return 1.0                                   # Off is Off in Linear too
+    if realized is None or hp["ftype"] not in realized:
+        raise ValueError(f"Linear phase needs a realized grid for {hp['ftype']!r}")
+    return sample_grid_bits(realized[hp["ftype"]], f)
 
 
 def _applies(placement, domain):
@@ -234,26 +237,40 @@ def domain_mag(bands, filters, domain, f, sr, act_phase, realized=None):
     return m
 
 
-def active_domains(bands, filters):
-    """Domains that have at least one enabled block, so only those traces are drawn."""
+def is_audible(block, act_phase):
+    """Does this block actually do anything right now?
+
+    A filter dict has no 'enable' key, so a naive .get('enable', 1) would treat an Off slope as
+    active and light up its placement domain - drawing a trace for a filter that is not there,
+    and falsely dashing everything because M/S and L/R appear to coexist.
+    """
+    if "slope" in block:                                   # HP/LP
+        if block["slope"] == BRICK_SLOPE:
+            return act_phase == 1                          # Min + Brick is identity
+        return _SLOPE_SECTIONS[block["slope"]] > 0
+    return bool(block["enable"])
+
+
+def active_domains(bands, filters, act_phase):
+    """Domains with at least one AUDIBLE block, so only those traces are drawn."""
     out = set()
     for blk in list(bands) + list(filters):
-        if blk.get("enable", 1):
+        if is_audible(blk, act_phase):
             out.add(blk["placement"])
     return tuple(d for d in DOMAINS if d in out)
 
 
-def mixed_placement_families(bands, filters):
-    """True when M/S-placed and L/R-placed blocks coexist, in which case per-domain scalar
-    traces cannot describe the true channel response and must be drawn dashed."""
-    doms = active_domains(bands, filters)
+def mixed_placement_families(bands, filters, act_phase):
+    """True when M/S-placed and L/R-placed AUDIBLE blocks coexist, in which case per-domain
+    scalar traces cannot describe the true channel response and must be drawn dashed."""
+    doms = active_domains(bands, filters, act_phase)
     return any(d in doms for d in ("mid", "side")) and any(d in doms for d in ("left", "right"))
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 194 passed (183 + 11).
+Expected: 193 passed (183 + 10).
 
 - [ ] **Step 5: Commit**
 
@@ -430,7 +447,7 @@ def write_order(old_macro, old_micro, new_macro, new_micro, ratio):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 202 passed.
+Expected: 201 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -594,7 +611,7 @@ def sample_grid(grid, f):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 208 passed.
+Expected: 207 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -734,7 +751,7 @@ def watched_fields(bands, filters, phase, res0, res1, srate):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 212 passed.
+Expected: 211 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -774,11 +791,21 @@ Find the static memory chain (`lp_rt = hplp_cf + 126;` … `lp_fs = lp_off + 32;
 // lp_base = 65536, leaving 27261 words of padding; this block ends the region at 44555, still
 // ~21000 short of the boundary, so lp_base does NOT move and page alignment is untouched.
 GC_N     = 512;                       // display points per trace
-GC_LIN_N = 256;                       // realized-kernel grid points per engine
+GC_LIN_N = 512;                       // realized-kernel grid points PER ENGINE
 gc_trace = lp_fs + 8;                 // [2 buffers][5 domains][GC_N]
 gc_lin   = gc_trace + 2*5*GC_N;       // [2 buffers][2 engines][GC_LIN_N]
 gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words: per-field snapshot
-gc_meta  = gc_snap + 128;             // 8 words: 0 gen_active, 1 active_idx, 2 gen_target
+gc_meta  = gc_snap + 128;             // 16 words, NAMED below - never index it numerically
+
+// Named metadata slots. Numeric indices caused a real defect in the first draft of this plan:
+// topo_commit bumped gc_meta[2] while its comment said "gen_active", which actually advanced
+// gen_target and left the active generation frozen.
+GCM_IDX0   = 0;    // active buffer index, ENGINE 0
+GCM_IDX1   = 1;    // active buffer index, ENGINE 1  - INDEPENDENT per engine
+GCM_GEN0   = 2;    // published generation, engine 0
+GCM_GEN1   = 3;    // published generation, engine 1
+GCM_GTGT   = 4;    // gen_target: bumped from @slider on any watched-field change
+GCM_GACT   = 5;    // gen_active: bumped where audible state commits (topo_commit)
 ```
 
 Then change the `lp_base` line to start from `gc_meta + 8` instead of `lp_fs + 8`:
@@ -882,7 +909,8 @@ function gc_build_grid(eng) local(ob, BD, desbuf, ktime, half, i, k, b, frac, ds
   i = 0; loop(BD, desbuf[i*2] = ktime[i]; desbuf[i*2+1] = 0; i += 1;);
   fft(desbuf, BD); fft_permute(desbuf, BD);   // permute is MANDATORY: fft() returns bit-reversed
   half = BD * 0.5;
-  dst = gc_lin + (1 - gc_meta[1]) * (2*GC_LIN_N) + eng * GC_LIN_N;   // INACTIVE buffer
+  // INACTIVE buffer of THIS engine only
+  dst = gc_lin + (1 - gc_meta[eng == 0 ? GCM_IDX0 : GCM_IDX1]) * (2*GC_LIN_N) + eng * GC_LIN_N;
   i = 0;
   loop(GC_LIN_N,
     t = i / (GC_LIN_N - 1);
@@ -894,16 +922,24 @@ function gc_build_grid(eng) local(ob, BD, desbuf, ktime, half, i, k, b, frac, ds
     // |X[k]| for a REAL sequence: bins 0..BD/2 carry all the information
     m = sqrt(desbuf[k*2]*desbuf[k*2] + desbuf[k*2+1]*desbuf[k*2+1]) * (1 - frac)
       + sqrt(desbuf[(k+1)*2]*desbuf[(k+1)*2] + desbuf[(k+1)*2+1]*desbuf[(k+1)*2+1]) * frac;
-    dst[i] = m;
+    // Store BITS, not linear magnitude: rev 5 pins interpolation as linear in log frequency on
+    // values already in bits, and serial blocks then SUM instead of multiplying. Interpolating
+    // magnitudes instead would put the midpoint of 1.0 and 0.5 at 0.75 rather than 0.7071 -
+    // wrong exactly on the steep skirts this path exists to render honestly.
+    dst[i] = log(max(m, 0.0000001)) / log(2);
     i += 1;
   );
 );
 
-// Publish: flip the active index, then bump the generation. Both happen only AFTER every word
-// of the inactive buffer is written, so @gfx can never draw a mixture of two kernels.
-function gc_publish() (
-  gc_meta[1] = 1 - gc_meta[1];
-  gc_meta[0] = gc_meta[0] + 1;
+// Publish ONE engine. The index and generation are per-engine on purpose: a shared index would
+// mean an HP-only rebuild flips the pair and the LP trace suddenly reads a buffer nobody wrote,
+// resurrecting a stale or zero grid - and a later LP-only rebuild would flip back and resurrect
+// the OLD HP. Independent slots make each engine's publication self-contained.
+function gc_publish(eng) local(ix, gn) (
+  ix = eng == 0 ? GCM_IDX0 : GCM_IDX1;
+  gn = eng == 0 ? GCM_GEN0 : GCM_GEN1;
+  gc_meta[ix] = 1 - gc_meta[ix];
+  gc_meta[gn] = gc_meta[gn] + 1;
 );
 ```
 
@@ -912,24 +948,18 @@ function gc_publish() (
 In the `hp_dirty` branch, immediately after `hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();` add:
 
 ```eel2
-    act_phase == 1 ? ( gc_build_grid(0); gc_dirty = 1; );
+    act_phase == 1 ? ( gc_build_grid(0); gc_publish(0); );
 ```
 
-and the same in the `lp_dirty` branch with `gc_build_grid(1)`.
-
-Then, at the very end of `@block`, after the `mt_state == 2` block:
-
-```eel2
-// One publication per block, after any grids built this pass are complete.
-gc_dirty ? ( gc_publish(); gc_dirty = 0; );
-```
+and the same in the `lp_dirty` branch with `gc_build_grid(1); gc_publish(1);`. Each engine
+publishes itself, immediately after its own grid is complete — there is no shared flip.
 
 - [ ] **Step 3: Bump `gen_active` where audible state commits**
 
 Inside `topo_commit` (right after `mt_state = 2;`), add:
 
 ```eel2
-  gc_meta[2] = gc_meta[2] + 1;   // gen_active: the graph must follow COMMITTED topology
+  gc_meta[GCM_GACT] = gc_meta[GCM_GACT] + 1;   // graph must follow COMMITTED topology
 ```
 
 This is required because `act_phase`/`act_hp_pl`/`act_lp_pl` change here, in `@block`, and
@@ -1106,19 +1136,23 @@ function gc_write_gain(b, eff_bits)
   ratio = slider(s + 7);
   ratio == 0 ? ( 0; ) : (          // Ratio 0 has no inverse: the node is locked, not reset
     base = eff_bits / ratio;
-    base = min(max(base, -16.999999), 16.999999);
+    // SNAP FIRST, THEN CLAMP. Clamping to 16.999999 and snapping afterwards rounds to exactly
+    // 17.0, and truncation then yields Macro 17 - outside the slider's [-16, 16].
     base = floor(base / 0.05 + 0.5) * 0.05;
+    base = min(max(base, -16.95), 16.95);            // largest representable multiple of 0.05
     macro = base < 0 ? ceil(base) : floor(base);     // truncation toward zero
     micro = (base - macro) * 100;
     om = slider(s + 5); ou = slider(s + 6);
     im = abs(pow(2, (om + micro * 0.01) * ratio));   // micro written first
     ia = abs(pow(2, (macro + ou * 0.01) * ratio));   // macro written first
+    // Write and automate each field ONLY if it actually changed - the global rule. A
+    // stationary drag would otherwise write identical values every frame and flood automation.
     im <= ia ? (
-      slider(s + 6) = micro; slider_automate(slider(s + 6));
-      slider(s + 5) = macro; slider_automate(slider(s + 5));
+      micro != ou ? ( slider(s + 6) = micro; slider_automate(slider(s + 6)); );
+      macro != om ? ( slider(s + 5) = macro; slider_automate(slider(s + 5)); );
     ) : (
-      slider(s + 5) = macro; slider_automate(slider(s + 5));
-      slider(s + 6) = micro; slider_automate(slider(s + 6));
+      macro != om ? ( slider(s + 5) = macro; slider_automate(slider(s + 5)); );
+      micro != ou ? ( slider(s + 6) = micro; slider_automate(slider(s + 6)); );
     );
   );
 );
