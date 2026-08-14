@@ -1,314 +1,164 @@
-# RCBitNova V1.0 GUI Curve - Weakness Review
+# RCBitNova V1.0 GUI Curve Design Rev 3: Weakness Review
 
-**Date:** 2026-08-14
-**Reviewed spec:** `2026-08-14-rcbitnova-v1.0-gui-curve-design.md`
-**Reviewed base:** `JSFX/RCBitNova V0.9` at tag `rcbitnova-v0.9`
-**Review type:** response mathematics, parameter mapping, JSFX memory, interaction, and verification audit
-
-## Verdict
-
-The oracle-first direction is correct, and using `band_qeff()` is essential. The
-fixed +/-4-bit viewport with explicit over-range labels is also a sensible display
-policy.
-
-The current curve contract is not yet mathematically well-defined. Mixed
-Placement filters form a stereo transfer matrix, not one scalar magnitude whose
-blocks can be multiplied. Linear HP/LP is only targeted from the min-phase
-magnitude before finite windowing, and FIR Brick has an entirely separate target.
-Two proposed oracle assertions are already false for the shipping SVF: shelves
-have half the logarithmic gain at their cutoff, and HP/LP is not universally -3 dB
-there when Resonance or FIR Brick is active.
-
-Interaction also has one blocking ambiguity: the node is drawn at effective gain
-after Bit Ratio, while vertical drag writes unscaled Macro/Micro. Without an
-inverse mapping, the node cannot follow the pointer for Ratio other than 1, and
-Ratio 0 has no inverse at all.
+**Reviewed:** `2026-08-14-rcbitnova-v1.0-gui-curve-design.md`, revision 3
+**Review posture:** adversarial architecture, DSP-display correctness, real-time safety, and acceptance-test completeness
+**Overall assessment:** Rev 3 closes most of the mathematical and product-semantics gaps from the earlier review. The remaining blockers are concentrated in the linear-phase display path: one contradictory Brick rule, an unbounded audio-thread workload, and incomplete synchronization between `@block` and `@gfx`.
 
 ## Findings
 
-### P0 - Mixed Placement has no single scalar combined response
+### P0. The Brick verification rule contradicts the actual Min-phase topology
 
-Section 3 proposes multiplying the magnitudes of every enabled HP/LP and band.
-That is valid only when every block processes the same scalar domain. RCBitNova can
-place each block independently in Both, Mid, Side, Left, or Right.
+The response table distinguishes Min and Linear modes, but then adds an unconditional row:
 
-A selective block is a stereo matrix. For example:
+> HP/LP Slope = FIR Brick -> actual `fir_brick_kernel` at the active BD
 
-```text
-Left placement:  [[H, 0], [0, 1]]
-Mid placement:   M/S transform -> [[H, 0], [0, 1]] -> inverse transform
-```
+The verification section is stronger still:
 
-Serial blocks with different placements must be multiplied as ordered complex
-2x2 matrices. Multiplying their scalar magnitudes applies every filter to every
-domain and can draw attenuation or boost that neither output channel actually
-has. Placement colours on nodes disclose the settings but do not repair the
-combined curve's mathematics. HP/LP Placement makes the same problem apply before
-the four bands.
+> Brick slope must never draw as no filter
 
-**Required change:** define what the main curve means. Viable choices include:
+That is false when `Phase = Min`. In the current engine, FIR Brick maps to Off in Min phase: the active minimum-phase section count is zero and the audible response is identity. A test enforcing the current sentence would make the graph show a cutoff that is not being heard.
 
-- Restrict the combined curve to configurations where all enabled blocks use Both;
-- Draw separate domain traces and state exactly how mixed L/R and M/S stages are handled;
-- Compute the ordered complex stereo transfer matrix per frequency and display
-  named probes or metrics such as L->L, R->R, Mid->Mid, Side->Side, or singular values;
-- Draw individual band shapes only and remove the claim that one total trace shows
-  what is heard under mixed Placement.
+**Required resolution:** define precedence explicitly:
 
-The oracle must include non-commuting mixed-placement sequences. A test that
-defines the expected curve as the product of the same scalar helpers only proves
-the implementation agrees with its own incorrect assumption.
+- `act_phase = Min` and active slope `FIR Brick`: identity response, exactly like Off.
+- `act_phase = Linear` and active slope `FIR Brick`: magnitude of the realized `fir_brick_kernel` at the active BD.
+- Add both combinations to the oracle and live GUI matrix. Rename the verification requirement to “Linear + FIR Brick must use the realized Brick kernel.”
 
-### P0 - Linear HP/LP and FIR Brick are not the min-phase curve by construction
+### P0. Direct DTFT in `@block` is an unbounded real-time regression
 
-For ordinary Linear slopes, V0.9 samples the min-phase magnitude, transforms it to
-an impulse, shifts it, and multiplies it by a finite Kaiser window. Windowing
-changes the realized frequency response. The min-phase magnitude is the kernel's
-**target**, not its exact final magnitude. Normal and High resolutions can differ
-materially in steep low-frequency cuts; that is the reason Resolution exists.
+At High resolution, 100 query frequencies over a 32768-tap kernel are about 3.3 million tap operations per engine per rebuild. Two engines rebuilding together are about 6.6 million operations. At the proposed 100 ms rebuild cadence, a continuous edit can demand roughly 66 million interpreted EEL operations per second before counting kernel construction, trigonometry or recurrence setup, partition FFTs, and the existing audio work.
 
-FIR Brick is a separate and clearer contradiction. V0.9 builds it from an ideal
-sampled step:
+The important failure mode is peak block time, not average CPU. Putting the calculation in `@block` can make one audio block miss its deadline even when the later average looks acceptable. It also runs while the GUI is closed, so V1.0 can regress the audio-only case.
 
-```eel
-m = HP ? (f >= fe ? 1 : 0) : (f <= fe ? 1 : 0);
-```
+“Benchmark High + High” is not a sufficient contract because no pass/fail limit is pinned and implementation is allowed before the result is known.
 
-In the min-phase path the same slope selection maps to `nsec = 0`, i.e. Off. It has
-no min-phase Brick equivalent to draw. The finite window then gives the actual
-Brick transition and Gibbs behavior its own shape.
+**Required resolution:** remove the direct per-frequency DTFT from the audio thread. The natural implementation is one native FFT of the already-windowed `ktime` in reusable build scratch, followed by permutation/magnitude extraction and interpolation to display frequencies. If direct DTFT remains, make the benchmark a pre-implementation gate and specify hard limits for:
 
-**Required change:** choose between a target curve and a realized curve and label
-the contract honestly. If the graph must show what is heard:
+- worst and percentile audio-block duration versus the device deadline;
+- added CPU versus V0.9 with the GUI closed;
+- xruns during simultaneous HP and LP sweeps at High + High;
+- 44.1, 48, 96, and 192 kHz at small and normal audio buffers;
+- open and closed GUI states.
 
-- Min uses `hplp_digital_mag`;
-- Linear uses the magnitude of the actual finite windowed kernel at the active
-  Resolution, or a verified equivalent calculation;
-- FIR Brick uses `fir_brick_kernel`, never the min-phase/Off helper.
+### P0. The curve cache has no safe publication protocol
 
-Test Min versus Normal versus High at the low-frequency and steep-slope cases that
-motivated V0.7, plus Brick transition width, passband ripple, stopband leakage, and
-both sample rates and resolutions.
+Moving visualization storage below `lp_base` protects it from `memset` and `freembuf`, but it does not make an array update atomic. `@block` can be writing a new coarse linear response while `@gfx` is reading it. A frame may therefore combine old and new bins and briefly draw spikes, discontinuities, or a response belonging to neither kernel.
 
-### P0 - Vertical drag is inconsistent with Bit Ratio
+`curve_gen` is described as an invalidation counter, not as a completed-publication marker. Incrementing it before or during a write does not solve the torn-read problem.
 
-The node is drawn at effective gain:
+**Required resolution:** use a two-buffer publication scheme:
 
-```text
-effective_bits = (Macro + Micro/100) * BitRatio
-```
+1. `@block` fills an inactive cache completely.
+2. It publishes the completed generation and active cache index only after the final value is written.
+3. `@gfx` snapshots generation/index, reads that immutable buffer, and retains the previous frame if publication changes during the read.
 
-The proposed drag takes the pointer's Y value in bits and writes that value directly
-into Macro/Micro while leaving Bit Ratio unchanged. For Ratio 2, dragging to +2
-bits writes base gain +2 and the node redraws at +4. For Ratio 0, every Macro/Micro
-setting still draws and sounds at 0, so vertical drag cannot move the node at all.
+Add a stress test that continuously rebuilds both kernels while rendering and checks for non-finite values and one-frame discontinuities beyond a pinned bound.
 
-**Required change:** pin whether Y represents effective bits or pre-ratio parameter
-bits. Because the node and audible gain already use effective bits, pointer mapping
-normally requires:
+### P0. Invalidation is tied to `@slider`, but active topology changes in `@block`
 
-```text
-base_target = effective_target / BitRatio
-```
+The specification correctly says the graph must use active values such as `act_phase`, active placement, and active resolution. However, the proposed invalidation check runs in `@slider`, while those active values are changed later by `topo_commit` in `@block`. There is no guarantee that `@slider` runs again after the commit.
 
-That needs explicit behavior for Ratio 0, clamping when the inverse exceeds the
-Macro/Micro range, and quantization when division by values such as 0.3 cannot land
-exactly on the Micro grid. Test every Ratio step from 0 to 3 and assert the node
-either follows the cursor within a stated tolerance or displays a clear constrained
-state.
+The result can be a graph that continues to display the old active topology, or publishes a new realized kernel without causing `@gfx` to consume it.
 
-### P0 - The shelf centre-gain oracle assertion is false
+**Required resolution:** bump a completed curve generation from the same places that commit audible state:
 
-The shipping TPT shelf uses `A = sqrt(gain_lin)`. At `f = fc`, both Low Shelf and
-High Shelf have magnitude `A`, halfway to the shelf plateau in logarithmic units.
-The existing oracle confirms, for a +/-2-bit shelf:
+- `topo_commit` for phase, placement, and resolution changes;
+- successful realized-kernel cache publication;
+- any immediate active-state path that does not pass through `topo_commit`.
+
+Keep target-slider invalidation separate from active-state publication so the UI cannot accidentally present requested topology as committed topology.
+
+### P1. “Actual realized curve” is underspecified during rebuild and kernel crossfade
+
+For an ordinary linear parameter change, V0.9 can keep the old kernel audible, build a new kernel, and then run a 50 ms dual-kernel crossfade. Rev 3 proposes publishing the magnitude of the newly built `ktime` immediately. During that interval the graph is neither the old audible response nor the time-varying crossfade response; it is the target response.
+
+The same ambiguity exists during the 100 ms rebuild coalescing window. Static band changes can be reflected immediately while the linear HP/LP response still belongs to the previous build.
+
+**Required resolution:** choose and name one contract:
+
+- **Target display:** publish the new curve only as a target and explicitly accept that it leads the sound during rebuild/crossfade.
+- **Audible display:** retain old and new caches and blend their complex responses or documented magnitude approximation with the engine's crossfade progress.
+
+The current wording alternates between “what is actually heard” and target-kernel behavior, so either implementation could pass an informal review while violating the other interpretation.
+
+### P1. The 50-100 point realized grid has no accuracy bound
+
+Across roughly three decades, 50-100 log-spaced points are about 6-15% apart in frequency. A narrow Brick transition or resonant/high-Q cutoff can sit between points. Interpolating sparse magnitudes can miss the knee, attenuate a local maximum, or place the apparent cutoff incorrectly even though every sampled point is mathematically correct.
+
+The design does not pin:
+
+- whether interpolation is linear in Hz or log frequency;
+- whether it interpolates linear magnitude, dB, or bits;
+- the maximum permitted error between samples;
+- adaptive samples around HP/LP cutoff and resonant extrema.
+
+**Required resolution:** prefer a full native FFT grid and interpolate in log frequency from complex-bin magnitudes. Otherwise define an adaptive grid and a numerical error budget against dense direct evaluation. Test Brick and maximum-resonance cases with cutoffs deliberately placed halfway between coarse query points, at every supported block duration.
+
+### P1. The canonical Macro/Micro split loses part of the current negative range
+
+The proposed canonical form is:
 
 ```text
-plateau gain:       +/-2 bits
-magnitude at fc:    +/-1 bit
+Macro = floor(base_bits)
+Micro = (base_bits - Macro) * 100
+Micro in [0, 100)
 ```
 
-Verification item 1 instead requires Bell, Low Shelf, and High Shelf all to equal
-the full applied gain at centre. A correct implementation must fail that test.
+But Macro is limited to `[-16, +16]`. A value such as `-16.5` is currently representable as Macro `-16`, Micro `-50`; the canonical formula requires Macro `-17`, which is outside the slider range. Conversely, positive values can approach `+17` using Macro `+16` and positive Micro. The canonical range is therefore approximately `[-16, +17)`, not the full physical range implied by the two sliders.
 
-This also means a shelf node drawn at `(fc, full_gain)` does not lie on its
-individual response curve. That can be a deliberate handle convention, but it must
-be stated so it is not diagnosed later as a rendering defect.
+“Clamp to the representable slider range” does not resolve which range is intended, and the proposed tests stop at +/-16 instead of covering the actual edges.
 
-**Required change:** split the tests by type. Bell equals full gain at `fc`;
-shelves equal `sqrt(gain_lin)` at `fc` and approach full gain on their boosted/cut
-plateau. Pin whether shelf nodes represent parameter handles or points on the curve.
+**Required resolution:** pin one of these choices:
 
-### P1 - The HP/LP -3 dB cutoff test needs scope
+- deliberately adopt the asymmetric canonical range `[-16, +17)` and document it;
+- retain a signed remainder using truncation toward zero, preserving approximately `(-17, +17)`;
+- special-case the lower edge with a different canonical representation.
 
-Verification item 3 says HP/LP is -3 dB at cutoff at every slope. That holds for
-the staggered Butterworth cascade with Resonance 0. It does not hold when the
-separate resonance bell is active: its centre gain multiplies the Butterworth
-cutoff magnitude. FIR Brick also follows the sampled/windowed step contract rather
-than the Butterworth -3 dB contract.
+Add round-trip tests around `-17`, `-16`, `0`, `+16`, and `+17`, including values one Micro step to either side.
 
-**Required change:** assert -3 dB only for non-Brick slopes at Resonance 0. Add
-separate centre-response tests for Resonance 0..1 and realized Brick tests. Keep
-"matches the production response" as the primary criterion rather than forcing
-all filter types into one cutoff rule.
+### P1. Two slider assignments are not specified as one observable transaction
 
-### P1 - The curve cache has no pinned memory ownership
+“Write Macro first, then Micro, then automate both” controls automation notification order, but it does not establish that `@slider` or the audio path cannot observe the pair between assignments. At a canonical boundary, the intermediate value can be large: changing `0.95` to `1.00` and writing Macro first temporarily forms `1.95` with the old Micro.
 
-The design requires roughly 1000 cached y-values but assigns no address. V0.9 uses
-low instance memory for DSP state and dynamically packs large Linear engines above
-`lp_base`; `lp_relayout()` clears that region and calls `freembuf(lp_top + 1)`.
+JSFX may in practice coalesce both assignments before the next `@slider` execution, but the design currently relies on that unstated host/runtime behavior.
 
-An ad hoc fixed cache address can overwrite audio state. A cache placed relative to
-the current `lp_top` can move or be invalidated on Resolution changes while `@gfx`
-runs on a separate thread.
+**Required resolution:** document and verify the event-order guarantee being relied on, or route GUI edits through one pending combined value that the control path decomposes and publishes coherently. Include fast drags and automation recording across positive and negative integer boundaries in live tests; assert that DSP never observes an outlier combined value.
 
-**Required change:** reserve a fixed `gfx_curve` region in the static layout before
-`lp_base` is aligned, or otherwise prove it can never overlap any Normal/High
-packing. Include it in memory-top tests and assert that every relayout leaves its
-address and contents legal. Do not let `@gfx` allocate or relocate audio memory.
+### P1. The fixed cache has no exact memory inventory
 
-### P1 - A cheap arithmetic signature can leave a stale plausible curve
+“About 1000 cached y-values” and “placed below `lp_base`” are not enough to verify memory safety. Rev 3 now needs at least realized coarse grids, per-domain traces, snapshots, generation metadata, and, if publication is fixed, double buffers. Growing the static region can cross the next 65536-word boundary and move `lp_base`, changing total allocation even if all offsets remain technically below it.
 
-The proposed signature spans dozens of values. Weighted sums like `hp_sig` are not
-collision-free; two different band configurations can produce the same scalar and
-skip recomputation. This is precisely the silent, plausible-looking failure the
-oracle-first policy is meant to prevent.
+**Required resolution:** add an explicit word-level layout with named start/end offsets, buffer counts, maximum point counts, and alignment padding. Pin `lp_base` before and after the change and calculate worst-case `freembuf` size for High + High. The memory test should assert exact non-overlap and maximum allocation, not only “no crash.”
 
-The invalidation set must also include more than band gain/frequency/Q:
+### P1. Mixed M/S and L/R traces are knowingly non-physical but have no visible state
 
-- enable, type, Q Character, Bit Ratio, and Placement under any placement-aware curve;
-- HP/LP slope, frequency, resonance, Placement, active Phase, and active Resolution;
-- `srate`, because every digital response is sample-rate dependent.
+Rev 3 honestly states that simultaneous M/S and L/R placement cannot be represented exactly and that the colored traces are group displays. That limitation remains invisible in the proposed GUI. A user can still read the curves as channel responses, especially because the design motivation says the graph shows what is heard.
 
-**Required change:** compare a cached snapshot of each relevant value, or increment
-a dedicated curve-generation counter from `@slider` after exact per-field change
-detection. Test single-field changes and deliberate old-signature collisions.
+**Required resolution:** when incompatible placement families coexist, visually mark the affected traces as group/approximate views, for example with a distinct dashed style and a compact legend state. Add a GUI test for Both + Mid + Left/Right showing that the limitation is visible without consulting the design document.
 
-### P1 - Python-only maths tests do not verify the EEL transcription
+### P2. Edge-label behavior is accepted as a requirement but not designed
 
-The nine tests can prove the Python response functions, but the shipping graph is
-a separate EEL implementation of complex state-space magnitude, log-frequency
-mapping, log2 conversion, clamping, and caching. A sign error in the JSFX can still
-produce a smooth believable curve while every Python test remains green.
+The document says overrange nodes clamp to the edge and that overlap handling must be deterministic, but it never defines the algorithm. Multiple bands at the same frequency and beyond the same Y edge can produce coincident nodes and unreadable labels. “Clipped to plot bounds” can also hide the very numeric value meant to preserve information outside +/-4 bits.
 
-**Required change:** add a transcription gate. For a deterministic parameter
-matrix, export selected JSFX cache points through a probe/debug path and compare
-them numerically with the oracle, or create a source-level test around one shared,
-pinned formula plus live pixel checks at known coordinates. Cover DC-side shelf
-plateaus, `fc`, Nyquist-side plateaus, high-frequency warping, proportional-Q, and
-Brick. Screenshot-only visual judgement is not a numeric oracle.
+**Required resolution:** specify ordering, offsets, collision resolution, selected-node priority, and whether labels remain fully inside the plot. Include identical-frequency/identical-value and opposite-overrange cases at minimum width and Retina scale.
 
-### P1 - Product-then-log needs a zero/underflow contract
+### P2. “GUI open versus closed” is not the most important CPU comparison
 
-To draw a bit axis, a magnitude product must become:
+Because the realized grid is intentionally computed with the GUI closed, comparing V1.0 open versus V1.0 closed mostly measures drawing. It does not expose the new unconditional audio-thread cost.
 
-```text
-bits = log(magnitude) / log(2)
-```
+**Required resolution:** make V0.9 closed versus V1.0 closed the primary regression benchmark, with peak block time and xruns as well as average CPU. Keep open versus closed as a secondary measurement of `@gfx` cost.
 
-FIR Brick's target contains exact zeros, and deep serial cuts can underflow or
-approach zero. `log(0)` can produce non-finite coordinates and corrupt a line strip
-before the +/-4-bit clamp is applied.
+## Strengths Preserved in Rev 3
 
-**Required change:** accumulate finite log magnitudes with a pinned epsilon/floor,
-then clamp the resulting bit value before pixel conversion. Test exact zero,
-subnormal magnitudes, NaN/Inf rejection, and a serial HP+LP configuration with no
-meaningful passband. Scope the old "no log in DSP" invariant to `@sample`; GUI-only
-`log` must not be mistaken for an audio-path regression.
+These parts are now strong enough to implement as written and should not be reopened without new evidence:
 
-### P1 - Macro/Micro splitting is non-canonical and incomplete at boundaries
+- Per-placement-domain traces include Both-domain processing and explicitly reject a false scalar-combined response.
+- Bell and shelf overlays use the exact TPT/SVF closed form, including effective `band_qeff`.
+- Ordinary Linear HP/LP and Linear Brick are intended to display realized windowed kernels rather than ideal analog substitutes.
+- Active topology, logarithmic magnitude floor, effective-Y inversion, ratio-zero lock, drag clamp, and base snapping are all explicit.
+- The slider count is corrected to 95.
+- Numeric-entry field mapping, minimum drawable size, Retina coordinate policy, and Python-to-JSFX transcription gate are substantially better specified than in rev 1.
 
-Many slider pairs encode the same base gain. For example, +0.95 bits can be
-`Macro=0, Micro=95` or `Macro=1, Micro=-5`. "Integer part and remainder" does not
-pin truncation versus floor for negative values or behavior near +/-16.
+## Recommended Gate Before the Implementation Plan
 
-The representable base range is also not merely the Macro range: with Micro it can
-reach approximately +/-17, and Bit Ratio can take effective gain to approximately
-+/-51 bits. An inverse Ratio drag may request values outside that range.
-
-Two slider writes are not one atomic parameter. A representation change across an
-integer boundary can briefly expose an unintended intermediate gain and can create
-dense automation points if unchanged snapped values are written every GUI frame.
-
-**Required change:** define one canonical split for positive and negative values,
-clamp the combined base value before splitting, and choose write/notification order.
-Call `slider_automate()` only when the snapped pair actually changes. Test every
-integer boundary, +/-0.05, +/-16, the true combined extrema, Ratio inversion, and
-recorded automation playback.
-
-### P1 - Numeric entry does not identify which node parameter is being edited
-
-The borrowed Fable pattern works because each hovered knob maps to one value. One
-RCBitNova node represents Frequency, Gain, and Q. "Hover + type a digit" does not
-say which of the three receives the number, what unit is parsed, or how the user
-switches fields.
-
-Likewise, "Shift + drag = fine" does not define whether it refines frequency, gain,
-both axes, or what happens when Shift is pressed after a drag has started.
-
-**Required change:** give keyboard focus to a concrete readout field or define
-explicit F/G/Q entry modes, units, ranges, and focus indication. Pin drag capture,
-axis locking, Shift sensitivity, wheel direction/step, overlapping-node selection,
-release outside the window, and cancellation. Live verification should check
-parameter identity and values, not only that digits can be entered.
-
-### P1 - Resize and Retina behavior is asserted, not designed
-
-The spec says drawing is resolution-independent but provides no logical coordinate
-system, minimum plot dimensions, scaled hit radius, or text-overflow policy. On a
-Retina Mac, drawing and mouse coordinates must use the same `gfx_ext_retina`
-transform or nodes can render in one place and respond in another.
-
-It also names `gfx_init` for the default size. In JSFX the preferred initial size
-is declared on the `@gfx width height` section; `gfx_init()` is the ReaScript gfx
-API pattern, not the normal JSFX contract.
-
-**Required change:** pin a base coordinate space, graph/readout rectangles, Retina
-transform, minimum usable size, and shared draw/hit-test transforms. Verify at 1x
-and 2x scale, small/default/large windows, and edge nodes with long over-range
-labels. Confirm live whether REAPER presents the generic slider list below the
-custom graph or through a UI-mode switch; do not rely on that layout without a gate.
-
-### P2 - Over-range handling covers nodes but not the total curve
-
-Clamping and labelling an individual node prevents a +/-16-bit setting from being
-hidden, as intended. The combined response can exceed +/-4 even when every node is
-inside the viewport, and the spec does not define clipping or an over-range marker
-for the curve itself.
-
-Several nodes can also clamp to the same top or bottom edge, causing labels and hit
-targets to overlap. Effective gain can reach far beyond +/-16 because of Micro and
-Bit Ratio, so label width is not bounded by the Macro range cited in §4.
-
-**Required change:** define curve clipping indicators and deterministic edge-label
-collision handling. Test all four nodes over-range at nearby frequencies, mixed
-positive/negative values, effective extrema, and a combined curve that clips
-without any individual node clipping.
-
-### P2 - The slider-count premise is off by one
-
-`JSFX/RCBitNova V0.9` contains 95 slider declarations, not 96. The sparse highest
-ID is 142, but IDs are not a count. This does not affect the GUI architecture, yet
-the stated pain point should use the verified count just as the slider map does.
-
-## What Is Already Strong
-
-- The Y axis uses native bit units rather than an unnecessary dB abstraction.
-- Values outside +/-4 bits remain visible through clamped nodes and numeric labels.
-- Bell width is based on the actual `band_qeff()` law, including Q Character and Bit Ratio.
-- Disabled bands remain discoverable without contributing to the response.
-- Slider writes explicitly require `slider_automate()` and preserve generic controls.
-- Curve maths is scheduled for oracle tests before GUI implementation.
-- GUI-open versus GUI-closed CPU measurement and a V0.9 null test are explicit gates.
-
-## Required Spec Edits Before Implementation
-
-1. Define a mathematically valid response display for mixed Placement.
-2. Separate Min, realized Linear, and FIR Brick HP/LP curves.
-3. Define effective-gain drag inversion for every Bit Ratio, especially zero.
-4. Correct shelf-centre and HP/LP cutoff oracle assertions.
-5. Reserve collision-free curve-cache memory and collision-free invalidation.
-6. Add a JSFX-versus-Python numeric transcription gate.
-7. Pin finite log-floor behavior and canonical Macro/Micro splitting.
-8. Define keyboard target, drag/wheel semantics, Retina scaling, and minimum layout.
-9. Extend over-range behavior to the total curve and overlapping edge labels.
+Do not start the GUI implementation plan until the four P0 items have explicit dispositions in the design. In particular, run a small JSFX benchmark/prototype comparing native FFT extraction against direct DTFT at BD 32768, and choose the cache publication protocol before assigning memory offsets. Those two decisions determine the CPU budget, buffer count, invalidation flow, and a meaningful acceptance matrix.

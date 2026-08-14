@@ -1,8 +1,7 @@
 # RCBitNova V1.0 — GUI: EQ curve with draggable nodes
 
-**Date:** 2026-08-14 (**rev 3**, after the weakness review
-`2026-08-14-rcbitnova-v1.0-gui-curve-weaknesses.md` and Fable's review of rev 2 — dispositions
-in §10 and §11)
+**Date:** 2026-08-14 (**rev 4**. Reviews folded in: weakness review of rev 1 (§10), Fable on
+rev 2 (§11), weakness review of rev 3 (§12).)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.0` (copy of V0.9). `rcbitnova-v0.9` remains the fallback tag;
 V0.9 and earlier are frozen.
@@ -65,23 +64,37 @@ an unexplained shortcut.)
 
 **Stated limitation:** when M/S-placed and L/R-placed blocks are used *at the same time*, no set
 of per-domain scalar traces describes the true channel response - the stages do not factor. The
-traces then read as "what each group does", exactly as ReEQ's do. This is a display limitation,
-documented rather than hidden, and it is why the graph never claims to be a measurement.
+traces then read as "what each group does", exactly as ReEQ's do.
+
+**And it must be visible in the GUI, not only in this document** (rev-3 review P1-5). While
+incompatible placement families coexist, the affected traces switch to a **dashed** style and the
+legend shows a compact "group view" state. Without that, a user reasonably reads the curves as
+channel responses — the more so because the whole point of the graph is to show what is heard. A
+GUI test covers Both + Mid + Left simultaneously.
 
 ### 3.1 Magnitude per block, honestly per mode
 
 Review P0-2 is right that "Linear draws the same as Min" is false in general: the min-phase
 magnitude is the kernel's *target*, and the finite Kaiser window changes what is realized -
-which is the very reason Resolution exists. FIR Brick is worse: in the min-phase path its slope
-maps to `nsec = 0`, i.e. **Off**, so drawing it from the min-phase helper would show no filter
-at all.
+which is the very reason Resolution exists.
+
+**FIR Brick precedence, pinned by phase** (rev-3 review P0-1). rev 3 said "a Brick slope must
+never draw as no filter" — that is wrong under `Phase = Min`, where Brick maps to `nsec = 0` and
+the audible response really *is* identity. Enforcing the rev-3 sentence would draw a cutoff that
+is not being heard, which is precisely the class of error this spec exists to avoid:
+
+- `act_phase = Min` + Brick → identity, exactly like Off.
+- `act_phase = Linear` + Brick → realized `fir_brick_kernel` magnitude.
+
+Both combinations go into the oracle matrix and the live checklist.
 
 | Block / mode | Magnitude source |
 |---|---|
 | Bands (Bell / Low Shelf / High Shelf) | TPT/ZDF SVF magnitude from `svf_make` coefficients |
 | HP/LP, Phase = Min | `hplp_digital_mag` |
 | HP/LP, Phase = Linear, ordinary slopes | magnitude of the **actual windowed kernel** at the ACTIVE `BD` (Normal 8192 / High 32768) |
-| HP/LP, Slope = FIR Brick | magnitude of `fir_brick_kernel`, never the min-phase helper |
+| HP/LP, **Min** + Slope = FIR Brick | **identity** — see below |
+| HP/LP, **Linear** + Slope = FIR Brick | magnitude of the realized `fir_brick_kernel` at the active BD |
 
 - **Band gain** is `bit_gain(Macro, Micro, BitRatio)` - the same expression as the audio path.
 - **Proportional-Q:** drawn width uses `band_qeff(b)`, the effective Q, not the knob Q.
@@ -89,13 +102,23 @@ at all.
 **This is new computation, not reuse** (Fable P0-2). rev 2 claimed the work "is already
 happening" in `lpk_build`; it is not. `lpk_build` computes the magnitude of the min-phase
 **target** and then windows in the *time* domain (`ktime[i] = desbuf[...] * inv * wink[i]`); it
-never evaluates the frequency response of the windowed kernel. Obtaining the realized curve needs
-a direct DTFT sum over `ktime` (BD = 8192 or 32768 samples) at each query point.
+never evaluates the frequency response of the windowed kernel.
 
-Cost, stated rather than assumed: **50-100 query points** per engine, log-spaced, interpolated
-for display. At BD = 32768 that is ~3.3 M multiply-adds per rebuild — significant, but rebuilds
-are already rate-limited to one per 100 ms per engine, and this must be confirmed to fit inside
-that budget during live verification.
+**Method: one native `fft()` of the windowed kernel — NOT a per-point DTFT** (rev-3 review P0-2).
+rev 3 proposed summing a DTFT at 50–100 query points: ~3.3 M interpreted multiply-adds per engine
+per rebuild, ~6.6 M for both. The danger there is not average CPU but **peak block time** — one
+`@block` can miss its deadline while the average still looks fine — and it runs with the GUI
+closed, so V1.0 would regress the audio-only case.
+
+Instead: copy `ktime` into the existing `desbuf` scratch as a complex array, run the **native
+`fft(BD)`** already proven at 32768 in V0.7 (same page-alignment rules), take bin magnitudes, and
+resample to the display grid. This is O(N log N) in native code rather than millions of
+interpreted operations, and it reuses a buffer that is already there. It also removes the sparse-
+grid accuracy problem (rev-3 review P1-2): the FFT grid is dense (BD/2 bins), so a narrow Brick
+transition or a resonant knee cannot fall between query points.
+
+**Interpolation, pinned:** linear in **log frequency**, on **magnitudes in bits** (i.e. after the
+log), which keeps a steep skirt straight on the drawn axes.
 
 **Where it runs and where it lands** (Fable P0-3). `@gfx` must **never** read `ktime`, `Hspec`,
 `fdlA` or `fdlB`: they live above `lp_base`, `@block` rewrites them mid-rebuild, and
@@ -133,24 +156,71 @@ conversion.
 `@gfx` is not an audio-path regression, and the bit-accuracy grep gate must be scoped to the DSP
 sections so this is not mistaken for one.
 
-### 3.3 Cache and invalidation
+### 3.3 Cache, publication and invalidation
 
-~1000 points x several blocks is too much per frame, so y-values are cached.
-
-**Memory (review P1-2):** the cache gets a **fixed region reserved before `lp_base` is aligned**,
-in the static layout beside `lp_rt`/`lp_geo`/`lp_off`. It must never live relative to `lp_top`:
+**Memory (rev-1 review P1-2).** The cache lives in a **fixed region reserved before `lp_base` is
+aligned**, beside `lp_rt`/`lp_geo`/`lp_off`. It must never live relative to `lp_top`:
 `lp_relayout()` clears that region and calls `freembuf(lp_top + 1)`, which would free or
-overwrite a cache above it - while `@gfx` runs on another thread. `@gfx` never allocates and
-never relocates audio memory. The memory-top tests gain the cache region.
+overwrite a cache above it — while `@gfx` runs on another thread. `@gfx` never allocates and
+never relocates audio memory. Confirmed by Fable against the real layout: a region before
+`lp_base` is untouched by the `memset`/`freembuf`, and V0.7's page alignment is unaffected
+because `lp_align` re-derives everything from `lp_base` itself.
 
-**Invalidation (review P1-3):** a weighted arithmetic signature like `hp_sig` is not
-collision-free, and a collision leaves a stale but plausible curve - precisely the silent failure
-the oracle-first policy exists to prevent. Instead `@slider` compares a **snapshot of each
-relevant value** and bumps a `curve_gen` counter on any difference. The watched set:
+**Exact inventory** (rev-3 review P1-4) — word counts, not "about 1000":
 
-- per band: Enable, Type, Freq, Q, Macro, Micro, Bit Ratio, Placement, Q Character
-- HP/LP: Slope, Freq, Resonance, Placement, plus **active** Phase and **active** Resolution
-- `srate` - every digital response is sample-rate dependent
+| Region | Words | Purpose |
+|---|---|---|
+| `gc_trace[2][5][CURVE_N]` | 2 × 5 × 512 = 5120 | display traces, **double-buffered**, 5 domains |
+| `gc_lin[2][2][LIN_N]` | 2 × 2 × 256 = 1024 | realized Linear/Brick magnitudes, per engine, double-buffered |
+| `gc_snap[SNAP_N]` | 128 | per-field snapshot for invalidation |
+| `gc_meta` | 8 | generation counters, active buffer index, publication flags |
+| **Total** | **6280** | |
+
+`lp_base` is pinned in the memory tests **before and after** the change: adding 6280 words must
+not push the static block across the next 65536 boundary, and the worst-case `freembuf` size at
+High+High is asserted exactly, not merely "it does not crash".
+
+**Publication protocol** (rev-3 review P0-3). Reserving memory does not make an array update
+atomic: `@block` can be writing while `@gfx` reads, producing a frame that mixes old and new
+bins and draws spikes belonging to neither kernel. So:
+
+1. `@block` fills the **inactive** buffer completely.
+2. Only after the final word is written does it publish — write the new generation and flip the
+   active index.
+3. `@gfx` snapshots (generation, index) **once** at frame start, reads only that buffer, and if
+   the publication changed mid-read, keeps the previous frame rather than drawing a mixture.
+
+A stress test rebuilds both kernels continuously while rendering and asserts no non-finite values
+and no single-frame discontinuity beyond a pinned bound.
+
+**Invalidation is two separate things** (rev-3 review P0-4). rev 3 bumped one counter from
+`@slider` — but `act_phase`/`act_hp_pl`/`act_lp_pl` change later, in `topo_commit` inside
+`@block`, and `@slider` is not guaranteed to run again afterwards. The graph could keep showing
+the superseded topology indefinitely. Therefore:
+
+- **`gen_target`** — bumped from `@slider` when any *requested* value changes (per-field
+  snapshot comparison, never a weighted arithmetic signature, which can collide and leave a
+  stale but plausible curve).
+- **`gen_active`** — bumped from wherever *audible* state actually commits: `topo_commit`, a
+  successful realized-kernel publication, and any immediate active-state path that bypasses
+  `topo_commit`.
+
+Keeping them separate is what stops the GUI presenting a *requested* topology as if it were
+committed.
+
+Watched fields for `gen_target`: per band Enable, Type, Freq, Q, Macro, Micro, Bit Ratio,
+Placement, Q Character; HP/LP Slope, Freq, Resonance, Placement; and `srate`.
+
+### 3.4 What the curve represents during a rebuild
+
+rev 3 alternated between "what is heard" and the freshly built target (rev-3 review P1-1). Pinned
+choice: **the curve is a TARGET display.** When a Linear kernel is rebuilt, the new magnitude is
+published as soon as it exists, so during V0.8's 50 ms crossfade — and inside the 100 ms rebuild
+coalescing window — the graph leads the sound.
+
+Why target rather than audible: blending two complex responses by the engine's crossfade progress
+would double the cache and the publication logic to chase a 50 ms visual discrepancy that no one
+can perceive. The cost is named here rather than left for someone to discover and call a bug.
 
 ## 4. Axes
 
@@ -208,15 +278,29 @@ base_target = effective_target / BitRatio      (BitRatio != 0)
   `BitRatio` is 1. Otherwise the snap applies to the base value and the readout shows the true
   effective figure.
 
-**Canonical Macro/Micro split** (review P1-6). Many pairs encode the same gain (`+0.95` bits is
-`Macro 0, Micro 95` or `Macro 1, Micro -5`), so one rule is pinned: **Macro = `floor`** of the
-base value (toward negative infinity, identical for positive and negative), **Micro = the
-remainder in %**, always in `[0, 100)`. The combined base is clamped to the representable range
-**before** splitting.
+**Canonical Macro/Micro split.** Many pairs encode the same gain (`+0.95` bits is
+`Macro 0, Micro 95` or `Macro 1, Micro -5`), so one rule is pinned: **truncation toward zero** —
+`Macro = int(base)`, `Micro = (base - Macro) * 100`, with Micro **signed**, in `(-100, +100)`.
 
-Two slider writes are not atomic, so: write Macro first, then Micro, then `slider_automate` both;
-and **call `slider_automate` only when the snapped pair actually changed** — writing every frame
-would otherwise flood automation with identical points.
+rev 3 specified `floor` with Micro in `[0,100)`; that silently lost part of the negative range
+(rev-3 review P1-3): `-16.5` would need `Macro = -17`, outside the slider's `[-16, +16]`, making
+the canonical range an asymmetric `[-16, +17)`. Truncation toward zero keeps the representable
+span symmetric at approximately `(-17, +17)` and treats positive and negative identically. The
+combined base is clamped to that span **before** splitting.
+
+Round-trip tests cover `-17`, `-16`, `0`, `+16`, `+17` and one Micro step either side of each.
+
+Two slider writes are not atomic (rev-3 review P1-3b). Writing Macro first at a boundary — say
+`0.95 → 1.00` — momentarily pairs the new Macro with the old Micro, i.e. `1.95` bits. Whether the
+DSP can ever observe that depends on JSFX coalescing both assignments before the next `@slider`,
+which is **host behaviour this spec would otherwise be relying on silently**.
+
+Pinned: write **Micro first, then Macro**, so the transient pairs the *old* Macro with the new
+Micro — bounded by one bit rather than by the size of the Macro step — then `slider_automate`
+both. **`slider_automate` fires only when the snapped pair actually changed**, so a stationary
+drag does not flood automation with identical points. The live checklist includes fast drags
+across positive and negative integer boundaries with automation recording, asserting the DSP
+never sees an outlier.
 
 **Numeric entry targets a named field, not "the node"** (review P1-7). One node carries Freq,
 Gain and Q, so "hover and type" is ambiguous. The readout strip at the bottom has three fields —
@@ -256,7 +340,13 @@ Size is declared on the section line — **`@gfx 900 500`** — which is the JSF
   bottom (frequency labels); the readout strip is the bottom 60 units.
 - **Minimum usable size** 480x280; below it the readout strip is dropped before the graph.
 - **Node hit radius** scales with the transform, minimum 8 logical units.
-- Long over-range labels are clipped to the plot rectangle, never drawn over the axis.
+- **Over-range label algorithm** (rev-3 review P2), pinned rather than left to taste: nodes
+  clamped to the same edge are ordered by band index; each subsequent label is offset downward
+  (top edge) or upward (bottom edge) by one text height; the **selected** node's label always
+  draws last, on top, and is never displaced. Labels stay fully inside the plot rectangle —
+  clipping them would hide the very number that keeps an out-of-range value visible. Tested with
+  identical frequency and identical value, with opposite-edge over-ranges, at minimum width and
+  at Retina scale.
 
 Whether REAPER shows its generic slider list below the custom graph or behind a UI toggle is
 confirmed **live**, not assumed.
@@ -336,13 +426,16 @@ plateaus on both sides, `fc`, near-Nyquist warping, proportional-Q, Brick, and b
   `slider_automate` gate).
 - Numeric entry: type, Enter, Esc, Backspace.
 - **Null test V0.9 vs V1.0** with the mouse untouched → digital silence.
-- **CPU with the GUI open vs closed** — measured, not assumed. V0.8's only real defect was found
-  by the CPU meter and by nothing else.
-- **The coarse-grid cost is unconditional** (Fable P1-2): it runs inside `@block` after every
-  kernel rebuild whether or not the GUI window is open, so "GUI closed == V0.9" is *not* exactly
-  true. It is expected to be small against the 100 ms rebuild limit — confirm it live at
-  High+High, the worst case. Gating it on `gfx_w > 0` was considered and rejected: reading
-  `@gfx`-owned state from `@block` is the same unsynchronised cross-thread hazard as P0-3.
+- **Primary CPU gate: V0.9 with GUI closed vs V1.0 with GUI closed** (rev-3 review P2). The
+  realized-magnitude FFT runs in `@block` whether or not the window is open, so "GUI closed ==
+  V0.9" is *not* exactly true, and comparing V1.0-open against V1.0-closed would mostly measure
+  drawing. Measure **peak block time and xruns**, not only average CPU — a deadline miss is the
+  failure mode, and an average hides it.
+- Worst case to test: **High + High**, both engines sweeping simultaneously, at 44.1 / 48 / 96
+  and, if available, 192 kHz, at small and normal audio buffers.
+- **GUI open vs closed** stays as a secondary measurement, of `@gfx` drawing cost.
+- Gating the FFT on `gfx_w > 0` was considered and rejected: reading `@gfx`-owned state from
+  `@block` is the same unsynchronised cross-thread hazard as the cache publication problem.
 - Placement colours match the actual placement of each band.
 
 ## 9. Method
@@ -396,3 +489,22 @@ now written into §3); Brick mapping to `nsec = 0` in the min path; 95 slider de
 below-`lp_base` cache being untouched by `lp_relayout`'s `memset`/`freembuf` and not disturbing
 V0.7's page alignment; and `Fable Eq Dynamic`'s numeric-entry pattern already using per-field
 identity, matching §5's design.
+
+## 12. Rev-3 weakness review disposition (rev 3 → rev 4)
+
+All findings accepted. One of them replaced my method with a better one.
+
+| Finding | Disposition |
+|---|---|
+| **P0** the Brick rule contradicts Min-phase topology | **Accepted** — precedence pinned by phase: Min + Brick draws **identity** (it really is Off, `nsec = 0`), Linear + Brick draws the realized kernel. rev 3's "must never draw as no filter" would have drawn a cutoff nobody hears (§3.1) |
+| **P0** per-point DTFT in `@block` is an unbounded real-time regression | **Accepted, and the method changed**: a single native `fft(BD)` of the windowed kernel — already proven at 32768 in V0.7 — replaces ~3.3 M interpreted operations per engine. The danger correctly identified is peak block time, not average CPU (§3.1) |
+| **P0** the cache has no safe publication protocol | **Accepted** — double buffering with publish-after-complete and a frame-start snapshot in `@gfx`; a torn read now cannot draw a mixture of two kernels (§3.3) |
+| **P0** invalidation runs in `@slider` but active topology commits in `@block` | **Accepted** — split into `gen_target` (requested, from `@slider`) and `gen_active` (audible, from `topo_commit` and cache publication). This is what stops the GUI showing a requested topology as committed (§3.3) |
+| **P1** "realized curve" undefined during rebuild and crossfade | **Accepted** — pinned as a **target display**, with the 50 ms lead stated openly rather than left to be found and called a bug (§3.4) |
+| **P1** the sparse 50–100 point grid has no accuracy bound | **Dissolved by the FFT change** — the grid is now BD/2 bins, so a narrow Brick knee cannot fall between points. Interpolation pinned: linear in log frequency, on values already in bits (§3.1) |
+| **P1** the canonical split loses part of the negative range | **Accepted** — truncation toward zero with a signed Micro, keeping the span symmetric at ≈`(-17, +17)`; `floor` would have made it `[-16, +17)` (§5) |
+| **P1** two slider writes are not one observable transaction | **Accepted** — write **Micro first**, so any transient is bounded by one bit instead of a full Macro step; the host-coalescing assumption is now stated and live-tested rather than relied on silently (§5) |
+| **P1** the cache has no exact memory inventory | **Accepted** — word-level table totalling 6280 words, with `lp_base` pinned before and after and the worst-case `freembuf` asserted exactly (§3.3) |
+| **P1** the mixed M/S + L/R limitation is invisible in the GUI | **Accepted** — affected traces go dashed with a legend state, plus a GUI test (§3) |
+| **P2** edge-label behaviour required but not designed | **Accepted** — ordering, offsets, selected-node priority and in-plot constraint pinned (§6) |
+| **P2** "GUI open vs closed" is not the important comparison | **Accepted** — primary gate is now V0.9-closed vs V1.0-closed, with peak block time and xruns (§8) |
