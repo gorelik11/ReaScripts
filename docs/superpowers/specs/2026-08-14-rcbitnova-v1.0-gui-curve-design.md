@@ -476,17 +476,27 @@ value is — a wrong curve is a silent, plausible-looking bug.
    implementation uses (otherwise the test only proves the code agrees with itself).
 5. Proportional-Q: with Q Character above zero, the drawn width follows `band_qeff`, not the
    knob Q.
-6. Bit-to-pixel mapping round-trips; the 0.05-bit snap always lands on a multiple.
+6. Bit-to-pixel mapping round-trips; the 0.05-bit snap always lands on a multiple. **One tie
+   policy** is pinned and implemented identically in Python and EEL2 — Python's `round()` is
+   ties-to-even while `floor(x/step + 0.5)` rounds ties upward, and they disagree at values like
+   `-0.075`. Table-driven test around `+-0.025`, `+-0.075`, integer boundaries and the edges.
 7. Clamping beyond +-4 bits does not wrap or invert — for individual nodes **and for the total
    curve**, which can exceed the viewport while every node is inside it (review P2-1).
-8. **Canonical split:** for a swept target, `floor`-based Macro plus Micro in `[0,100)`
-   reproduces the value exactly at every integer boundary, at +-0.05, at +-16, and for negative
-   values.
+8. **Canonical split:** for a swept target, **truncation toward zero** — `Macro = int(base)`
+   with a **signed** Micro in `(-100, +100)` — reproduces the value exactly at every integer
+   boundary, at +-0.05, at the representable edges, and identically for both signs. (`floor`
+   with Micro in `[0,100)` was rejected in rev 4: it needs `Macro = -17` for `-16.5`.)
+   Clamping happens **after** snapping, so the snap can never push Macro outside `[-16, 16]`.
 9. **Bit Ratio inversion:** for every Ratio step 0..3, the node follows the cursor within a
    stated tolerance or reports a constrained state; `Ratio = 0` is locked, not silently reset.
 10. **Realized Linear/Brick magnitude:** the drawn curve for Linear at Normal vs High differs in
-    the steep low-frequency case that motivated V0.7, and the Brick trace comes from
-    `fir_brick_kernel` — a Brick slope must never draw as "no filter".
+    the steep low-frequency case that motivated V0.7. **Brick precedence is by phase**:
+    `Linear + Brick` comes from the realized `fir_brick_kernel`, while `Min + Brick` draws
+    **identity** — it maps to `nsec = 0`, so the audible response really is no filter. (rev 3's
+    "a Brick slope must never draw as no filter" was corrected in rev 4; it would have drawn a
+    cutoff nobody hears.) Ordinary Linear kernels are covered as well as Brick: HP and LP at
+    several slopes, resonances, resolutions and sample rates, compared against a direct DTFT at
+    passband, cutoff, resonant peak, transition and stopband.
 11. **Log floor:** exact zeros, subnormals and a serial HP+LP with no passband all produce finite
     coordinates.
 12. **Curve-generation counter:** every watched field, changed alone, invalidates the cache; a
