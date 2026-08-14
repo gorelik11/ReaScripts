@@ -256,3 +256,42 @@ def freq_from_drag(x, x0, w):
     """Frequency follows the pointer along the log axis - the one gesture that is absolute,
     because the axis position IS the value and there is no scaling parameter in between."""
     return x_to_f(x, x0, w)
+
+
+def realized_bits_grid(kernel, sr, n_out=2048, fmin=FMIN, fmax=FMAX):
+    """(freq, bits) sampled from ONE FFT of the windowed kernel.
+
+    Mirrors exactly what the JSFX does in @block: copy the windowed kernel into the existing
+    desbuf scratch, fft(BD) + fft_permute, take |X[k]| for bins 0..BD/2 (the sequence is real,
+    so the upper half is the conjugate mirror), convert to bits and resample to a log grid.
+
+    Three things that would each produce a smooth, believable, WRONG curve if omitted, and are
+    therefore pinned in the spec for the EEL2 side: fft_permute (EEL2 returns bit-reversed
+    order), zeroing the imaginary lane (the prior ifft leaves rounding residue), and using only
+    the lower half of the spectrum.
+
+    The kernel's fftshift needs no correction: a half-period circular shift multiplies the
+    spectrum by (-1)^k, which |X[k]| removes.
+
+    n_out defaults to 2048, not 256: resampling BD/2 dense bins down to a coarse grid would
+    re-create the very sparse-grid problem the FFT was chosen to avoid, and a narrow Brick knee
+    could fall between stored points.
+    """
+    N = len(kernel)
+    X = dsp.lp_fft([complex(v, 0.0) for v in kernel])
+    half = N // 2
+    mags = [abs(X[k]) for k in range(half + 1)]
+    nyq = sr * 0.5
+    out = []
+    for i in range(n_out):
+        t = i / (n_out - 1)
+        f = min(fmin * (fmax / fmin) ** t, nyq)
+        b = f * N / sr
+        k0 = int(b)
+        if k0 >= half:
+            out.append((f, mag_to_bits(mags[half])))
+            continue
+        frac = b - k0
+        m = mags[k0] * (1.0 - frac) + mags[k0 + 1] * frac
+        out.append((f, mag_to_bits(m)))
+    return out

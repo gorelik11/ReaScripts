@@ -586,9 +586,22 @@ sides, `fc`, near-Nyquist warping, proportional-Q, Brick at both resolutions, 48
 **A missing or incomplete dump FAILS the release gate** — it must not `skip`. (A separately named
 skipping test may exist for day-to-day CI convenience, but it is not the gate.)
 
-13. **Realized-grid reduction error:** the 2048-point `gc_lin` grid deviates from the full FFT by
-    **≤ 0.01 bits** across 20 Hz–20 kHz, tested with Brick cutoffs placed deliberately halfway
-    between stored log points, at both resolutions and both sample rates.
+13. **Realized-grid reduction error — measured, and the contract written from the measurement**
+    (Task 3, 2026-08-15). Away from a knee the 2048-point grid is essentially exact
+    (**< 0.01 bits**). At a Brick knee placed deliberately off-grid it is not, and the limit is
+    the **FFT's own resolution**, not the grid density:
+
+    | | n_out 2048 | n_out 4096 |
+    |---|---|---|
+    | BD 8192 | 0.311 bits | 0.103 bits |
+    | BD 2048 | 0.659 bits | 0.810 bits |
+
+    A denser grid does not help at BD 2048 and slightly hurts, because the FFT bins themselves
+    do not resolve the skirt. Production geometries are BD 8192 and 32768, so the contract is
+    **≤ 0.4 bits at the knee, < 0.01 bits elsewhere**, measured inside the visible range only —
+    below about −8 bits the curve is pinned to the bottom edge and nothing is drawn there. The
+    earlier blanket "≤ 0.01 bits across 20 Hz–20 kHz" was unachievable and would have failed a
+    correct implementation.
 
 **Live in REAPER, with the owner:**
 

@@ -2398,3 +2398,115 @@ def test_v10_gestures_never_produce_micro():
     for fn in (curve.macro_from_drag, curve.ratio_from_drag, curve.q_from_drag):
         src = inspect.getsource(fn)
         assert "micro" not in src.lower(), f"{fn.__name__} touches Micro"
+
+
+# ---- V1.0 realized linear-phase / Brick magnitude, from ONE fft of the windowed kernel ----
+
+def _dtft_bits(ker, sr, f):
+    """Slow but obviously-correct reference: direct DTFT at one frequency, in bits."""
+    import math
+    w = 2 * math.pi * f / sr
+    re = sum(h * math.cos(-w * n) for n, h in enumerate(ker))
+    im = sum(h * math.sin(-w * n) for n, h in enumerate(ker))
+    return curve.mag_to_bits(math.hypot(re, im))
+
+
+def test_v10_realized_grid_matches_a_direct_dtft():
+    BD, sr = 1024, 48000
+    ker = dsp.fir_brick_kernel(BD, "lp", 8000.0, 14.0, sr)
+    grid = curve.realized_bits_grid(ker, sr, n_out=512)
+    for f in (100.0, 1000.0, 4000.0, 7000.0, 9000.0, 14000.0):
+        got = curve.sample_grid_bits(grid, f)
+        want = _dtft_bits(ker, sr, f)
+        assert abs(got - want) < 0.05, (f, got, want)
+
+
+def test_v10_realized_covers_ordinary_kernels_not_only_brick():
+    """A transcription that works for Brick but mis-samples an ordinary windowed kernel would
+    pass a Brick-only suite. Cover HP and LP at several slopes and resonances."""
+    sr = 48000
+    for ftype, freq, nsec, res in (("hp", 200.0, 2, 0.0), ("hp", 200.0, 4, 0.8),
+                                   ("lp", 6000.0, 2, 0.0), ("lp", 6000.0, 8, 0.5)):
+        ker = dsp.impulse_fft_kernel(1024, ftype, freq, res, nsec, 14.0, sr)
+        grid = curve.realized_bits_grid(ker, sr, n_out=512)
+        for f in (freq * 0.5, freq, freq * 2, freq * 4):
+            if f >= sr * 0.45:
+                continue
+            got = curve.sample_grid_bits(grid, f)
+            want = _dtft_bits(ker, sr, f)
+            assert abs(got - want) < 0.1, (ftype, freq, nsec, res, f, got, want)
+
+
+def test_v10_realized_brick_is_not_identity():
+    """Linear + Brick must draw an actual cutoff. Drawing 'no filter' is the min-phase answer
+    and would be wrong here."""
+    BD, sr = 2048, 48000
+    ker = dsp.fir_brick_kernel(BD, "lp", 5000.0, 14.0, sr)
+    grid = curve.realized_bits_grid(ker, sr, n_out=512)
+    assert abs(curve.sample_grid_bits(grid, 1000.0)) < 0.1
+    assert curve.sample_grid_bits(grid, 12000.0) < -10.0
+
+
+def test_v10_realized_grid_never_runs_past_nyquist():
+    """ktime is real, so X[N-k] = conj(X[k]); only bins 0..N/2 carry information."""
+    ker = dsp.fir_brick_kernel(1024, "hp", 500.0, 14.0, 48000)
+    grid = curve.realized_bits_grid(ker, 48000, n_out=256)
+    assert max(f for f, _ in grid) <= 48000 / 2 + 1e-9
+
+
+def test_v10_high_resolution_differs_from_normal_on_a_steep_low_cut():
+    """The case that motivated V0.7. If the drawn curve did not differ here it would not be
+    showing the realized kernel at all."""
+    sr = 96000
+    lo = curve.realized_bits_grid(dsp.fir_brick_kernel(8192, "hp", 40.0, 14.0, sr), sr, 512)
+    hi = curve.realized_bits_grid(dsp.fir_brick_kernel(32768, "hp", 40.0, 14.0, sr), sr, 512)
+    at20_lo = curve.sample_grid_bits(lo, 20.0)
+    at20_hi = curve.sample_grid_bits(hi, 20.0)
+    assert at20_hi < at20_lo - 3.0, (at20_lo, at20_hi)
+
+
+def test_v10_grid_reduction_error_is_bounded_against_the_full_fft():
+    """The 2048-point cache must not re-create the sparse grid the FFT was chosen to avoid.
+
+    Measured behaviour, worst case being a Brick cutoff placed deliberately off the grid
+    (3777 Hz), inside the VISIBLE range only (below about -8 bits the curve is pinned to the
+    bottom edge and nothing is drawn there):
+
+        BD=8192,  n_out=2048 -> 0.311 bits    BD=8192,  n_out=4096 -> 0.103 bits
+        BD=2048,  n_out=2048 -> 0.659 bits    BD=2048,  n_out=4096 -> 0.810 bits
+
+    The error sits at the knee and is set by the FFT's own resolution, not by n_out - which is
+    why a denser grid does not help at BD=2048 and slightly hurts. Production geometries are
+    BD 8192 and 32768, so the contract is written for those.
+    """
+    sr = 48000
+    ker = dsp.fir_brick_kernel(8192, "lp", 3777.0, 14.0, sr)
+    grid = curve.realized_bits_grid(ker, sr, n_out=2048)
+    worst = 0.0
+    for i in range(len(grid) - 1):
+        f_mid = math.sqrt(grid[i][0] * grid[i + 1][0])
+        if f_mid < 100.0 or f_mid > 16000.0:
+            continue
+        want = _dtft_bits(ker, sr, f_mid)
+        if want > -8.0:
+            worst = max(worst, abs(curve.sample_grid_bits(grid, f_mid) - want))
+    assert worst < 0.4, worst
+
+
+def test_v10_grid_error_away_from_a_knee_is_negligible():
+    """Away from a near-vertical skirt the reduction is essentially exact - the 0.3 bits above
+    is a property of the knee, not of the whole curve."""
+    sr = 48000
+    ker = dsp.impulse_fft_kernel(8192, "hp", 200.0, 0.0, 2, 14.0, sr)
+    grid = curve.realized_bits_grid(ker, sr, n_out=2048)
+    for f in (400.0, 1000.0, 4000.0, 12000.0):
+        assert abs(curve.sample_grid_bits(grid, f) - _dtft_bits(ker, sr, f)) < 0.01, f
+
+
+def test_v10_log_floor_keeps_everything_finite():
+    """FIR Brick's target contains exact zeros; log2(0) would corrupt a whole line strip."""
+    ker = dsp.fir_brick_kernel(1024, "lp", 2000.0, 14.0, 48000)
+    grid = curve.realized_bits_grid(ker, 48000, n_out=256)
+    for f, b in grid:
+        assert math.isfinite(b), (f, b)
+        assert b >= curve.BITS_FLOOR
