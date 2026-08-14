@@ -10,11 +10,14 @@
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-08-14-rcbitnova-v1.0-gui-curve-design.md` (**rev 5**). Section numbers below are that document's.
+- **Spec:** `docs/superpowers/specs/2026-08-14-rcbitnova-v1.0-gui-curve-design.md` (**rev 8**). Section numbers below are that document's.
 - **New file `JSFX/RCBitNova V1.0`, an exact copy of `JSFX/RCBitNova V0.9`.** V0.9 and earlier are frozen and tagged; `rcbitnova-v0.9` is the fallback.
 - **The GUI must not change the sound.** `@gfx` reads parameters and writes sliders; it touches no signal path. Gate: null test V0.9 vs V1.0 with the mouse untouched → digital silence.
 - **`slider_automate()` after every slider write**, and only when the snapped value actually changed.
-- **Write order for the Macro/Micro pair is chosen per write** — compute both candidate intermediates and write the field giving the smaller absolute intermediate gain first. A fixed order is unsafe: `16.95 → −16.95` with Micro first yields **+15.05 bits (×33923)**.
+- **ONE GESTURE WRITES EXACTLY ONE SLIDER.** Plain drag = Macro (whole bits); Shift+drag = Bit Ratio (0.05); Alt+drag or wheel = Q; horizontal = Freq; Micro is typed only. The write is atomic by construction, which is why this plan contains no canonical split, no write ordering, no fractional edge clamping and no rounding-tie parity — all of it was deleted in spec rev 6/7, together with the measured `16.95 → −16.95` transient of **+15.05 bits (×33923)** that motivated it. If any task starts reintroducing that machinery, the gesture rule has been violated somewhere.
+- **All drags are RELATIVE**, measured from mouse-down: Macro one bit / 24 logical units, Ratio one 0.05 step / 12 units, Q one step / 12 units (Ctrl halves it). A drag only begins after the pointer moves **4 logical units**; before that it is a click.
+- **Bit Ratio's slider step changes 0.1 → 0.05** (`slider(10*(b+1)+7)`) — at 0.1 the value 0.25 is unreachable, and that is a real gap in the parameter grid, not a GUI convenience.
+- **Rounding is half-away-from-zero**, one shared helper in Python and EEL2 (Python's `round()` is ties-to-even, EEL2's `floor(x+0.5)` is ties-toward-positive; they disagree at ±0.5, ±2.5).
 - **Placement source is phase-conditional:** `act_phase == 0` (Min) → read `slider134`/`slider138` live; `act_phase == 1` (Linear) → read `act_hp_pl`/`act_lp_pl`. In Min the `act_*` pair goes permanently stale, because `topo_changed` only fires for placement when `slider140 == 1`.
 - **FIR Brick precedence:** Min + Brick = **identity** (it maps to `nsec = 0`); Linear + Brick = realized `fir_brick_kernel` magnitude.
 - **Every `fft()` is followed by `fft_permute()`** — EEL2 returns bit-reversed order. All four existing calls in V0.9 do this.
@@ -281,7 +284,7 @@ git commit -m "test(rcbitnova): V1.0 curve maths - per-block magnitude and per-d
 
 ---
 
-### Task 2: Axis mapping, Macro/Micro split, Bit Ratio inversion, write order
+### Task 2: Axis mapping and the single-slider gesture solvers
 
 **Files:**
 - Modify: `tools/rcbitnova_curve.py`
@@ -290,12 +293,14 @@ git commit -m "test(rcbitnova): V1.0 curve maths - per-block magnitude and per-d
 **Interfaces:**
 - Consumes: Task 1's module.
 - Produces:
-  - `f_to_x(f, x0, w, fmin=20.0, fmax=20000.0) -> float` and `x_to_f(x, x0, w, ...) -> float`
-  - `bits_to_y(bits, y0, h, span=4.0) -> float` and `y_to_bits(y, y0, h, span=4.0) -> float`
-  - `snap_bits(bits, step=0.05) -> float`
-  - `split_macro_micro(base_bits) -> (int, float)` — truncation toward zero, signed Micro
-  - `invert_ratio(effective_bits, ratio) -> float | None` — `None` when `ratio == 0`
-  - `write_order(old_macro, old_micro, new_macro, new_micro, ratio) -> str` — `"macro"` or `"micro"`, whichever field to write FIRST
+  - `f_to_x(f, x0, w, fmin=20.0, fmax=20000.0)` / `x_to_f(x, x0, w, ...)`
+  - `bits_to_y(bits, y0, h, span=4.0)` / `y_to_bits(y, y0, h, span=4.0)`
+  - `round_half_away(x) -> int` — the ONE rounding rule, shared with the EEL2 side
+  - `macro_target(pointer_bits, micro, ratio) -> int | None` — `None` when `ratio == 0` (locked)
+  - `drag_steps(delta_units, units_per_step) -> int` — the relative-drag quantiser used by every gesture
+
+Deleted with spec rev 6/7 and deliberately absent: `split_macro_micro`, `write_order`,
+`snap_bits`, fractional `invert_ratio`. One gesture writes one slider, so none of them exist.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -310,63 +315,59 @@ def test_v10_bits_axis_round_trips_and_clamps():
     for b in (-4.0, -1.5, 0.0, 2.25, 4.0):
         y = curve.bits_to_y(b, 10, 400)
         assert abs(curve.y_to_bits(y, 10, 400) - b) < 1e-9, b
-    top = curve.bits_to_y(99.0, 10, 400)
-    bot = curve.bits_to_y(-99.0, 10, 400)
-    assert top == curve.bits_to_y(4.0, 10, 400), "over-range must clamp, not wrap"
-    assert bot == curve.bits_to_y(-4.0, 10, 400)
+    assert curve.bits_to_y(99.0, 10, 400) == curve.bits_to_y(4.0, 10, 400)
+    assert curve.bits_to_y(-99.0, 10, 400) == curve.bits_to_y(-4.0, 10, 400)
 
 
-def test_v10_snap_lands_on_multiples_of_five_hundredths():
-    for v in (0.0, 0.024, 0.026, -0.049, 1.234, -16.97):
-        s = curve.snap_bits(v)
-        assert abs(round(s / 0.05) - s / 0.05) < 1e-9, (v, s)
+def test_v10_rounding_is_half_away_from_zero_in_both_signs():
+    """Python's round() is ties-to-even and EEL2's floor(x+0.5) is ties-toward-positive; they
+    disagree at exactly these values, so one rule is pinned and shared."""
+    table = {0.5: 1, 1.5: 2, 2.5: 3, -0.5: -1, -1.5: -2, -2.5: -3,
+             0.4: 0, -0.4: 0, 2.6: 3, -2.6: -3}
+    for x, want in table.items():
+        assert curve.round_half_away(x) == want, (x, curve.round_half_away(x), want)
 
 
-def test_v10_split_truncates_toward_zero_and_round_trips():
-    """floor() would lose part of the negative range: -16.5 needs Macro -17, outside [-16,16]."""
-    for base in (0.0, 0.05, 0.95, 1.0, -0.05, -0.95, -1.0, 16.0, -16.0, 16.95, -16.95):
-        macro, micro = curve.split_macro_micro(base)
-        assert -16 <= macro <= 16, (base, macro)
-        assert -100.0 < micro < 100.0, (base, micro)
-        assert abs((macro + micro * 0.01) - base) < 1e-9, (base, macro, micro)
+def test_v10_macro_target_solves_through_bit_ratio():
+    assert curve.macro_target(2.0, 0.0, 1.0) == 2
+    assert curve.macro_target(2.0, 0.0, 2.0) == 1        # 2 effective bits at ratio 2
+    assert curve.macro_target(-3.0, 0.0, 0.5) == -6
+    assert curve.macro_target(1.0, 50.0, 1.0) == 1       # round(1 - 0.5) = round(0.5) = 1
 
 
-def test_v10_split_is_symmetric_between_signs():
-    for base in (0.35, 1.6, 12.4):
-        pm, pu = curve.split_macro_micro(base)
-        nm, nu = curve.split_macro_micro(-base)
-        assert nm == -pm and abs(nu + pu) < 1e-9, base
+def test_v10_macro_target_clamps_and_never_exceeds_the_slider_range():
+    for ratio in (0.05, 0.1, 0.5, 1.0, 2.0, 3.0):
+        for pointer in (-99.0, -4.0, 0.0, 4.0, 99.0):
+            m = curve.macro_target(pointer, 0.0, ratio)
+            assert -16 <= m <= 16, (ratio, pointer, m)
 
 
-def test_v10_ratio_inversion_and_the_zero_case():
-    assert abs(curve.invert_ratio(2.0, 1.0) - 2.0) < 1e-12
-    assert abs(curve.invert_ratio(2.0, 2.0) - 1.0) < 1e-12
-    assert abs(curve.invert_ratio(-3.0, 0.5) + 6.0) < 1e-12
-    assert curve.invert_ratio(2.0, 0.0) is None, "Ratio 0 has no inverse - the node must lock"
+def test_v10_ratio_zero_locks_the_node():
+    """Every Macro sounds at 0 bits when Ratio is 0, so there is no solution. The node must
+    lock rather than silently resetting a deliberate setting."""
+    assert curve.macro_target(2.0, 0.0, 0.0) is None
 
 
-def test_v10_write_order_always_errs_toward_silence():
-    """Neither fixed order is safe. Measured: 16.95 -> -16.95 with Micro first gives +15.05
-    bits (x33923); Macro first on a single-boundary move gives +1.95. Pick per write."""
-    assert curve.write_order(16, 95.0, -16, -95.0, 1.0) == "macro"
-    assert curve.write_order(0, 95.0, 1, 0.0, 1.0) == "micro"
+def test_v10_drag_is_relative_and_has_a_threshold():
+    assert curve.drag_steps(0.0, 24) == 0
+    assert curve.drag_steps(3.9, 24) == 0        # below the 4-unit threshold: still a click
+    assert curve.drag_steps(24.0, 24) == 1
+    assert curve.drag_steps(-48.0, 24) == -2
+    assert curve.drag_steps(12.0, 12) == 1       # Ratio and Q use 12 units per step
 
 
-def test_v10_write_order_intermediate_is_never_the_larger_one():
-    import itertools
-    for om, ou, nm, nu in itertools.product((-16, -1, 0, 1, 16), (-95.0, 0.0, 95.0),
-                                            (-16, -1, 0, 1, 16), (-95.0, 0.0, 95.0)):
-        first = curve.write_order(om, ou, nm, nu, 1.0)
-        inter_micro_first = abs(dsp.bit_gain(om, nu, 1.0))
-        inter_macro_first = abs(dsp.bit_gain(nm, ou, 1.0))
-        chosen = inter_micro_first if first == "micro" else inter_macro_first
-        assert chosen <= max(inter_micro_first, inter_macro_first) + 1e-12
-        assert chosen == min(inter_micro_first, inter_macro_first)
+def test_v10_gestures_do_not_touch_other_parameters():
+    """The rule that replaced the whole pair-write hazard: sweeping the pointer must leave
+    Micro untouched at any value. This test is what keeps the deleted machinery out."""
+    for micro in (0.0, 37.5, -62.5):
+        for pointer in (-4.0, -1.0, 0.0, 1.0, 4.0):
+            m = curve.macro_target(pointer, micro, 1.0)
+            assert isinstance(m, int)            # only Macro is produced; Micro is never an output
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "v10_frequency or v10_bits or v10_snap or v10_split or v10_ratio or v10_write"`
+Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "v10_frequency or v10_bits or v10_rounding or v10_macro_target or v10_ratio_zero or v10_drag or v10_gestures"`
 Expected: FAIL — `AttributeError: module 'tools.rcbitnova_curve' has no attribute 'f_to_x'`.
 
 - [ ] **Step 3: Append to `tools/rcbitnova_curve.py`**
@@ -376,6 +377,10 @@ Expected: FAIL — `AttributeError: module 'tools.rcbitnova_curve' has no attrib
 
 FMIN, FMAX = 20.0, 20000.0
 BITS_SPAN = 4.0                      # +-4 bits = +-24 dB viewport
+DRAG_THRESHOLD = 4.0                 # logical units before a click becomes a drag
+UNITS_PER_MACRO = 24.0
+UNITS_PER_RATIO = 12.0
+UNITS_PER_Q = 12.0
 
 
 def f_to_x(f, x0, w, fmin=FMIN, fmax=FMAX):
@@ -389,71 +394,52 @@ def x_to_f(x, x0, w, fmin=FMIN, fmax=FMAX):
 
 
 def bits_to_y(bits, y0, h, span=BITS_SPAN):
-    """Positive bits go UP, so y decreases. Over-range clamps to the edge; the caller draws the
-    numeric label so the value is never hidden."""
     b = min(max(bits, -span), span)
     return y0 + h * (0.5 - b / (2.0 * span))
 
 
 def y_to_bits(y, y0, h, span=BITS_SPAN):
-    t = (y - y0) / h
-    return (0.5 - t) * 2.0 * span
+    return (0.5 - (y - y0) / h) * 2.0 * span
 
 
-# --------------------------------------------------------------------- parameter mapping
+# --------------------------------------------------------------------- gesture solvers
 
-def snap_bits(bits, step=0.05):
-    return round(bits / step) * step
-
-
-def split_macro_micro(base_bits, macro_min=-16, macro_max=16):
-    """Canonical split: TRUNCATION TOWARD ZERO with a signed Micro in (-100, 100).
-
-    floor() with Micro in [0,100) was rejected: -16.5 would need Macro -17, outside the slider
-    range, making the canonical span an asymmetric [-16, +17). Truncation keeps it symmetric.
-    """
-    lo = macro_min - 0.999999
-    hi = macro_max + 0.999999
-    base = min(max(base_bits, lo), hi)
-    macro = int(base)                       # int() truncates toward zero for both signs
-    micro = (base - macro) * 100.0
-    return macro, micro
+def round_half_away(x):
+    """The ONE rounding rule, implemented identically in EEL2 as
+    `x < 0 ? -floor(-x + 0.5) : floor(x + 0.5)`."""
+    return int(math.floor(x + 0.5)) if x >= 0 else int(-math.floor(-x + 0.5))
 
 
-def invert_ratio(effective_bits, ratio):
-    """Base value that yields `effective_bits` after Bit Ratio scaling.
+def macro_target(pointer_bits, micro, ratio, macro_min=-16, macro_max=16):
+    """Macro that puts the node nearest the pointer, given Micro and Bit Ratio.
 
-    Returns None when ratio == 0: every Macro/Micro pair then sounds at 0 bits, so there is no
-    inverse and the node must lock rather than silently resetting a deliberate setting.
+    Returns None when ratio == 0: every Macro then sounds at 0 bits, so the node locks. It is
+    NOT silently reset - that would destroy a deliberate setting.
     """
     if ratio == 0.0:
         return None
-    return effective_bits / ratio
+    m = round_half_away(pointer_bits / ratio - micro * 0.01)
+    return min(max(m, macro_min), macro_max)
 
 
-def write_order(old_macro, old_micro, new_macro, new_micro, ratio):
-    """Which of the two sliders to write FIRST, so the transient errs toward silence.
-
-    The two writes are not atomic. A fixed order is unsafe in general: Micro-first is perfect
-    for a single-boundary drag (0.95 -> 1.00 gives 0.00 bits) and catastrophic on a jump
-    (16.95 -> -16.95 gives +15.05 bits, a 33923x bang - the same failure class as V0.8's
-    full-amplitude step). So evaluate both candidate intermediates and pick the quieter.
-    """
-    micro_first = abs(dsp.bit_gain(old_macro, new_micro, ratio))
-    macro_first = abs(dsp.bit_gain(new_macro, old_micro, ratio))
-    return "micro" if micro_first <= macro_first else "macro"
+def drag_steps(delta_units, units_per_step):
+    """Relative drag quantiser. Absolute solves were rejected: an absolute Ratio inverse
+    flips sign with negative gain and is undefined at zero base."""
+    if abs(delta_units) < DRAG_THRESHOLD:
+        return 0
+    return int(delta_units / units_per_step)
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 201 passed.
+Expected: 200 passed (193 + 7).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add tools/rcbitnova_curve.py tests/test_rcbitnova_dsp.py
-git commit -m "test(rcbitnova): V1.0 axis mapping, canonical split, ratio inversion, safe write order"
+git commit -m "test(rcbitnova): V1.0 axis mapping and single-slider gesture solvers"
 ```
 
 ---
@@ -611,7 +597,7 @@ def sample_grid(grid, f):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 207 passed.
+Expected: 214 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -640,13 +626,28 @@ def test_v10_reader_never_sees_a_half_written_buffer():
     a mixture. Reserving memory does not make an array update atomic."""
     c = curve.CurveCache(n_out=8)
     c.write_inactive(0, [(100.0, 1.0)] * 8)
-    c.publish()
+    c.publish(0)
     snap = c.snapshot()
-    before = list(c.read(snap)[0])
+    before = list(c.read(snap, 0))
     c.write_inactive(0, [(100.0, 0.0)] * 8)     # a new build lands, NOT yet published
-    assert list(c.read(snap)[0]) == before, "reader saw an unpublished write"
-    c.publish()
-    assert list(c.read(c.snapshot())[0]) != before
+    assert list(c.read(snap, 0)) == before, "reader saw an unpublished write"
+    c.publish(0)
+    assert list(c.read(c.snapshot(), 0)) != before
+
+
+def test_v10_one_engine_rebuild_leaves_the_other_untouched():
+    """The defect a shared active index causes: an HP-only rebuild flips the pair, so LP reads
+    a buffer nobody wrote - and a later LP-only rebuild resurrects the OLD HP grid."""
+    c = curve.CurveCache(n_out=4)
+    c.write_inactive(0, [(100.0, 1.0)] * 4); c.publish(0)
+    c.write_inactive(1, [(200.0, 2.0)] * 4); c.publish(1)
+    lp_before = list(c.read(c.snapshot(), 1))
+    for _ in range(3):                                   # HP rebuilds repeatedly
+        c.write_inactive(0, [(100.0, 9.0)] * 4); c.publish(0)
+        assert list(c.read(c.snapshot(), 1)) == lp_before, "LP grid changed on an HP-only rebuild"
+    hp_now = list(c.read(c.snapshot(), 0))
+    c.write_inactive(1, [(200.0, 3.0)] * 4); c.publish(1)
+    assert list(c.read(c.snapshot(), 0)) == hp_now, "HP grid resurrected by an LP-only rebuild"
 
 
 def test_v10_generation_changes_only_on_publish():
@@ -654,7 +655,7 @@ def test_v10_generation_changes_only_on_publish():
     g0 = c.snapshot()[0]
     c.write_inactive(0, [(100.0, 1.0)] * 4)
     assert c.snapshot()[0] == g0, "generation must not move before publication"
-    c.publish()
+    c.publish(0)
     assert c.snapshot()[0] != g0
 
 
@@ -713,25 +714,31 @@ class CurveCache:
     is accepted with a scoped worst case: a one-frame visual glitch, never signal corruption.
     """
 
-    def __init__(self, n_out=256, engines=2):
+    def __init__(self, n_out=2048, engines=2):
         self.n_out = n_out
-        self.buffers = [[[(0.0, 1.0)] * n_out for _ in range(engines)] for _ in range(2)]
-        self.active = 0
-        self.gen_active = 0
+        # [buffer][engine] - but the ACTIVE INDEX IS PER ENGINE, because HP and LP rebuild
+        # independently. A shared index means an HP-only rebuild flips the pair and the LP
+        # trace reads a half nobody wrote; a later LP-only rebuild flips back and resurrects
+        # the OLD HP grid.
+        self.buffers = [[[(0.0, 0.0)] * n_out for _ in range(engines)] for _ in range(2)]
+        self.active = [0] * engines
+        self.gen = [0] * engines
         self.gen_target = 0
+        self.gen_active = 0
 
     def write_inactive(self, engine, grid):
-        self.buffers[1 - self.active][engine] = list(grid)
+        self.buffers[1 - self.active[engine]][engine] = list(grid)
 
-    def publish(self):
-        self.active = 1 - self.active
-        self.gen_active += 1
+    def publish(self, engine):
+        self.active[engine] = 1 - self.active[engine]
+        self.gen[engine] += 1
 
     def snapshot(self):
-        return (self.gen_active, self.active)
+        """@gfx takes this ONCE at frame start and re-checks at frame end."""
+        return (tuple(self.gen), tuple(self.active))
 
-    def read(self, snap):
-        return self.buffers[snap[1]]
+    def read(self, snap, engine):
+        return self.buffers[snap[1][engine]][engine]
 
 
 def watched_fields(bands, filters, phase, res0, res1, srate):
@@ -751,7 +758,7 @@ def watched_fields(bands, filters, phase, res0, res1, srate):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 211 passed.
+Expected: 219 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -791,11 +798,14 @@ Find the static memory chain (`lp_rt = hplp_cf + 126;` … `lp_fs = lp_off + 32;
 // lp_base = 65536, leaving 27261 words of padding; this block ends the region at 44555, still
 // ~21000 short of the boundary, so lp_base does NOT move and page alignment is untouched.
 GC_N     = 512;                       // display points per trace
-GC_LIN_N = 512;                       // realized-kernel grid points PER ENGINE
+GC_LIN_N = 2048;                      // realized-kernel grid points PER ENGINE. NOT 256: rev 7
+                                      // claimed FFT density and then resampled it away, so a
+                                      // narrow Brick knee could still fall between points.
 gc_trace = lp_fs + 8;                 // [2 buffers][5 domains][GC_N]
 gc_lin   = gc_trace + 2*5*GC_N;       // [2 buffers][2 engines][GC_LIN_N]
 gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words: per-field snapshot
 gc_meta  = gc_snap + 128;             // 16 words, NAMED below - never index it numerically
+// Region total: 2*5*512 + 2*2*2048 + 128 + 16 = 13456 words.
 
 // Named metadata slots. Numeric indices caused a real defect in the first draft of this plan:
 // topo_commit bumped gc_meta[2] while its comment said "gen_active", which actually advanced
@@ -806,6 +816,10 @@ GCM_GEN0   = 2;    // published generation, engine 0
 GCM_GEN1   = 3;    // published generation, engine 1
 GCM_GTGT   = 4;    // gen_target: bumped from @slider on any watched-field change
 GCM_GACT   = 5;    // gen_active: bumped where audible state commits (topo_commit)
+// gc_trace has its OWN index and generation. Sharing one with gc_lin would let @block and @gfx
+// flip each other's buffers - they are different regions with different writers.
+GCM_TIDX   = 6;    // active buffer index for gc_trace   (written by @gfx)
+GCM_TGEN   = 7;    // generation for gc_trace            (written by @gfx)
 ```
 
 Then change the `lp_base` line to start from `gc_meta + 8` instead of `lp_fs + 8`:
@@ -1123,52 +1137,65 @@ loop(N_BANDS,
 );
 ```
 
-- [ ] **Step 2: Add drag with the safe write order**
+- [ ] **Step 2: Add the single-slider drag writers**
 
 ```eel2
-// Writing Macro and Micro is NOT atomic. Choose the order per write: compute both candidate
-// intermediates and write the one giving the smaller absolute gain first, so a transient always
-// errs toward silence. A fixed order is unsafe - 16.95 -> -16.95 with Micro first is +15.05
-// bits, a 33923x bang, the same failure class as V0.8's full-amplitude step.
-function gc_write_gain(b, eff_bits)
-  local(s, ratio, base, macro, micro, om, ou, im, ia) (
+// ONE GESTURE WRITES ONE SLIDER. This is what replaced the pair-write hazard entirely: there is
+// no ordering question, no intermediate pair, no canonical split and no fractional edge case,
+// because only ever one slider is touched.
+//
+// The modifier is sampled at MOUSE-DOWN (gc_mod) and held for the whole gesture - reading it
+// live would let a mid-drag key press redirect the write to a different slider, which is exactly
+// the two-parameter hazard coming back through the side door.
+
+function gc_round_ha(x) ( x < 0 ? -floor(-x + 0.5) : floor(x + 0.5); );   // half away from zero
+
+// plain drag: Macro only, whole bits
+function gc_drag_macro(b, pointer_bits) local(s, ratio, micro, m, cur) (
   s = 10 * (b + 1);
   ratio = slider(s + 7);
-  ratio == 0 ? ( 0; ) : (          // Ratio 0 has no inverse: the node is locked, not reset
-    base = eff_bits / ratio;
-    // SNAP FIRST, THEN CLAMP. Clamping to 16.999999 and snapping afterwards rounds to exactly
-    // 17.0, and truncation then yields Macro 17 - outside the slider's [-16, 16].
-    base = floor(base / 0.05 + 0.5) * 0.05;
-    base = min(max(base, -16.95), 16.95);            // largest representable multiple of 0.05
-    macro = base < 0 ? ceil(base) : floor(base);     // truncation toward zero
-    micro = (base - macro) * 100;
-    om = slider(s + 5); ou = slider(s + 6);
-    im = abs(pow(2, (om + micro * 0.01) * ratio));   // micro written first
-    ia = abs(pow(2, (macro + ou * 0.01) * ratio));   // macro written first
-    // Write and automate each field ONLY if it actually changed - the global rule. A
-    // stationary drag would otherwise write identical values every frame and flood automation.
-    im <= ia ? (
-      micro != ou ? ( slider(s + 6) = micro; slider_automate(slider(s + 6)); );
-      macro != om ? ( slider(s + 5) = macro; slider_automate(slider(s + 5)); );
-    ) : (
-      macro != om ? ( slider(s + 5) = macro; slider_automate(slider(s + 5)); );
-      micro != ou ? ( slider(s + 6) = micro; slider_automate(slider(s + 6)); );
-    );
+  ratio == 0 ? ( 0; ) : (          // locked: every Macro sounds at 0 bits
+    micro = slider(s + 6);
+    m = gc_round_ha(pointer_bits / ratio - micro * 0.01);
+    m = min(max(m, -16), 16);
+    cur = slider(s + 5);
+    m != cur ? ( slider(s + 5) = m; slider_automate(slider(s + 5)); );
   );
+);
+
+// Shift drag: Bit Ratio only, 0.05 per 12 logical units, relative to mouse-down
+function gc_drag_ratio(b, steps) local(s, v, cur) (
+  s = 10 * (b + 1);
+  cur = slider(s + 7);
+  v = gc_ratio_at_down + steps * 0.05;
+  v = min(max(v, 0), 3);
+  v = gc_round_ha(v / 0.05) * 0.05;                 // stay exactly on the 0.05 grid
+  v != cur ? ( slider(s + 7) = v; slider_automate(slider(s + 7)); );
+);
+
+// Alt drag / wheel: Q only
+function gc_drag_q(b, steps, fine) local(s, v, cur, st) (
+  s = 10 * (b + 1);
+  cur = slider(s + 4);
+  st = fine ? 0.005 : 0.01;
+  v = min(max(gc_q_at_down + steps * st, 0.1), 10);
+  v != cur ? ( slider(s + 4) = v; slider_automate(slider(s + 4)); );
 );
 ```
 
-Hit-testing, capture and the wheel follow the pinned semantics in spec §5: capture is held by the
-node grabbed at mouse-down until release even outside the graph; Shift held **at mouse-down**
-locks to the dominant axis; Shift pressed later switches to fine steps (0.01 bit / 1 Hz); wheel up
-raises Q; `Esc` during a drag restores the value from mouse-down.
+Note what is absent and must stay absent: any function that writes Macro and Micro together.
+Micro is only ever set by numeric entry (Step 3).
 
-- [ ] **Step 3: Numeric entry into the F / G / Q fields**
+- [ ] **Step 3: Numeric entry into the Freq / Macro / Micro / Ratio / Q fields**
 
 Adapt the `gfx_getchar` loop from `Fable Eq Dynamic.jsfx` (~lines 2160–2190): clicking a readout
-field gives it focus; digits, `-` and `.` accumulate into a buffer; Enter parses and commits via
-`gc_write_gain` (for G) or a direct `slider_automate` write (F, Q); Esc cancels; Backspace deletes.
-The field label shows the unit — Hz, bits, Q — so the number's meaning is never ambiguous.
+field gives it focus; digits, `-` and `.` accumulate into a buffer; Enter parses and writes **that
+one slider** directly, followed by its own `slider_automate`; Esc cancels; Backspace deletes.
+
+Fields are named for their actual sliders — **Freq (Hz), Macro (bits), Micro (% of a bit), Ratio,
+Q** — plus a read-only readout of the resulting effective gain in bits. rev 7 called one field
+"G", which was ambiguous: with `Ratio ≠ 1` or `Micro ≠ 0`, typing `2` could mean "Macro = 2" or
+"2 effective bits", and under the one-slider rule it must mean exactly one parameter.
 
 - [ ] **Step 4: Live verification**
 
@@ -1193,9 +1220,15 @@ git commit -m "feat(rcbitnova): V1.0 - draggable nodes, safe Macro/Micro writes,
 
 - [ ] **Step 1: Add a temporary curve dump to the JSFX**
 
-Behind a slider or a key press, write `gc_trace`'s first buffer to a file via `file_open`/
-`file_var`, for a pinned parameter matrix: shelf plateaus on both sides, `fc`, near-Nyquist,
-proportional-Q, Brick at both resolutions, at 48 kHz and 96 kHz.
+Behind a slider or a key press, dump **what the graph actually drew** (the published `gc_trace`
+buffer, not an unrelated array), one self-describing row per sample:
+
+```
+case_id  sample_rate  phase  resolution_hp  resolution_lp  domain  engine  freq_hz  bits
+```
+
+Matrix: shelf plateaus both sides, `fc`, near-Nyquist warping, proportional-Q, Brick at both
+resolutions, 48 and 96 kHz. Tolerance against the oracle: **0.01 bits**.
 
 - [ ] **Step 2: Compare the dump against the oracle**
 
@@ -1207,7 +1240,7 @@ def test_v10_jsfx_dump_matches_the_oracle(dump_path="/tmp/rcbitnova_curve_dump.t
     import os
     import pytest
     if not os.path.exists(dump_path):
-        pytest.skip("no dump present - run the JSFX debug export first")
+        pytest.fail("release gate: no JSFX dump present - run the debug export first")
     rows = [line.split() for line in open(dump_path) if line.strip()]
     worst = 0.0
     for f_s, m_s in rows:
@@ -1233,9 +1266,10 @@ python3 -m pytest tests/test_rcbitnova_dsp.py -q     # expected: all green
 - [ ] **Step 4: Live gates**
 
 - **Null test V0.9 vs V1.0**, mouse untouched, polarity inverted → digital silence.
-- **Primary CPU gate: V0.9 GUI-closed vs V1.0 GUI-closed**, measuring **peak block time and
-  xruns**, not only average — the realized-grid FFT runs whether the window is open or not.
-  Worst case: High+High, both engines sweeping, at 44.1 / 48 / 96 kHz, small and normal buffers.
+- **Primary CPU gate: V0.9 GUI-closed vs V1.0 GUI-closed.** Pass/fail, not observation:
+  buffer sizes **128 and 512**, **60 s** per configuration, continuous HP+LP sweep,
+  **zero xruns**, and peak block time within **+10 %** of V0.9 measured identically.
+  Worst case High+High, at 44.1 / 48 / 96 kHz and 192 kHz if the device supports it.
 - **GUI open vs closed** as a secondary measure of drawing cost.
 - Project reload with the GUI open; sample-rate change with the GUI open.
 
