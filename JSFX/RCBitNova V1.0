@@ -812,6 +812,96 @@ function setup_band_dyn(b)
   bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
 );
 
+// ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
+// definitions at file scope, and a definition inside a section is not reliable.
+function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );
+function gc_f_of_x(x)    ( 20 * pow(1000, min(max((x - gc_px) / gc_pw, 0), 1)); );
+function gc_y_of_bits(b) ( gc_py + gc_ph * (0.5 - min(max(b,-4),4) / 8); );
+function gc_bits_of_y(y) ( (0.5 - (y - gc_py) / gc_ph) * 8; );
+
+// ---- HP/LP contribution in bits. Placement is PHASE-CONDITIONAL: in Min the act_* pair is
+// never updated (topo_changed only fires for placement when slider140 == 1) while @sample uses
+// the raw slider, so reading act_* there would draw a domain abandoned minutes ago.
+function gc_hplp_placement(eng) ( act_phase == 0 ? (eng == 0 ? slider134 : slider138)
+                                                 : (eng == 0 ? act_hp_pl : act_lp_pl); );
+
+function gc_hplp_nsec(eng) local(sl) (
+  sl = eng == 0 ? slider131 : slider135;
+  sl == 6 ? 0 : sl == 5 ? 8 : sl;          // 6 = FIR Brick -> Off in the min path
+);
+
+function gc_hplp_audible(eng) local(sl) (
+  sl = eng == 0 ? slider131 : slider135;
+  sl == 6 ? act_phase == 1 : gc_hplp_nsec(eng) > 0;   // Min + Brick is identity, not a filter
+);
+
+function gc_hplp_bits(eng, f) local(nsec, base, k, acc, sl, idx, src, t, i, f0, f1, b0, b1) (
+  sl = eng == 0 ? slider131 : slider135;
+  !gc_hplp_audible(eng) ? ( 0; ) : (
+    act_phase == 0 ? (
+      // min-phase cascade: sum the staggered-Butterworth sections plus the resonance bell,
+      // reading the very coefficients @slider built for the audio path
+      nsec = gc_hplp_nsec(eng);
+      base = eng == 0 ? hplp_cf : hplp_cf + 63;
+      acc = 0; k = 0;
+      loop(nsec, acc += log(max(gc_svf_mag(base + k*7, f), 0.0000001)) / log(2); k += 1;);
+      acc += log(max(gc_svf_mag(base + 56, f), 0.0000001)) / log(2);
+      acc;
+    ) : (
+      // linear phase: the REALIZED windowed kernel, sampled from the published grid and
+      // interpolated in LOG frequency on values already in bits
+      idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
+      src = gc_lin + idx * (2*GC_LIN_N) + eng * GC_LIN_N;
+      t = log(min(max(f,20),20000) / 20) / log(1000) * (GC_LIN_N - 1);
+      i = floor(t);
+      i >= GC_LIN_N - 1 ? ( src[GC_LIN_N - 1]; ) : (
+        b0 = src[i]; b1 = src[i+1];
+        b0 + (b1 - b0) * (t - i);
+      );
+    );
+  );
+);
+
+function gc_applies(pl, dom) ( pl == 0 || pl == dom; );
+
+function gc_domain_bits(dom, f) local(acc, b) (
+  acc = 0;
+  gc_applies(gc_hplp_placement(0), dom) ? acc += gc_hplp_bits(0, f);
+  gc_applies(gc_hplp_placement(1), dom) ? acc += gc_hplp_bits(1, f);
+  b = 0;
+  loop(N_BANDS,
+    (slider(10*(b+1)+1) == 1 && gc_applies(slider(10*(b+1)+8), dom)) ?
+      acc += gc_band_bits(b, f);
+    b += 1;
+  );
+  acc;
+);
+
+function gc_dom_used(dom) local(u, b) (
+  u = 0;
+  (gc_hplp_audible(0) && gc_hplp_placement(0) == dom) ? u = 1;
+  (gc_hplp_audible(1) && gc_hplp_placement(1) == dom) ? u = 1;
+  b = 0;
+  loop(N_BANDS,
+    (slider(10*(b+1)+1) == 1 && slider(10*(b+1)+8) == dom) ? u = 1;
+    b += 1;
+  );
+  u;
+);
+
+function gc_draw_trace(dom, r, g, b, dashed) local(i, x, y, py, first) (
+  gfx_set(r, g, b, 1);
+  first = 1; i = 0;
+  loop(GC_N,
+    x = gc_px + gc_pw * i / (GC_N - 1);
+    y = gc_y_of_bits(gc_src[dom * GC_N + i]);
+    (first == 0 && (dashed == 0 || (i % 10) < 6)) ? gfx_line(x - gc_pw / (GC_N - 1), py, x, y);
+    py = y; first = 0;
+    i += 1;
+  );
+);
+
+
 @slider
 
 out_gain = pow(2, slider2 + slider3 * 0.01);
@@ -1378,82 +1468,12 @@ gc_ph = gfx_h - gc_py - 84 * gc_sc;
 gc_small = (gfx_w < 480 || gfx_h < 280);
 gc_small ? gc_ph = gfx_h - gc_py - 24 * gc_sc;    // below minimum size the readout strip goes first
 
-function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );
-function gc_f_of_x(x)    ( 20 * pow(1000, min(max((x - gc_px) / gc_pw, 0), 1)); );
-function gc_y_of_bits(b) ( gc_py + gc_ph * (0.5 - min(max(b,-4),4) / 8); );
-function gc_bits_of_y(y) ( (0.5 - (y - gc_py) / gc_ph) * 8; );
 
-// ---- HP/LP contribution in bits. Placement is PHASE-CONDITIONAL: in Min the act_* pair is
-// never updated (topo_changed only fires for placement when slider140 == 1) while @sample uses
-// the raw slider, so reading act_* there would draw a domain abandoned minutes ago.
-function gc_hplp_placement(eng) ( act_phase == 0 ? (eng == 0 ? slider134 : slider138)
-                                                 : (eng == 0 ? act_hp_pl : act_lp_pl); );
 
-function gc_hplp_nsec(eng) local(sl) (
-  sl = eng == 0 ? slider131 : slider135;
-  sl == 6 ? 0 : sl == 5 ? 8 : sl;          // 6 = FIR Brick -> Off in the min path
-);
-
-function gc_hplp_audible(eng) local(sl) (
-  sl = eng == 0 ? slider131 : slider135;
-  sl == 6 ? act_phase == 1 : gc_hplp_nsec(eng) > 0;   // Min + Brick is identity, not a filter
-);
-
-function gc_hplp_bits(eng, f) local(nsec, base, k, acc, sl, idx, src, t, i, f0, f1, b0, b1) (
-  sl = eng == 0 ? slider131 : slider135;
-  !gc_hplp_audible(eng) ? ( 0; ) : (
-    act_phase == 0 ? (
-      // min-phase cascade: sum the staggered-Butterworth sections plus the resonance bell,
-      // reading the very coefficients @slider built for the audio path
-      nsec = gc_hplp_nsec(eng);
-      base = eng == 0 ? hplp_cf : hplp_cf + 63;
-      acc = 0; k = 0;
-      loop(nsec, acc += log(max(gc_svf_mag(base + k*7, f), 0.0000001)) / log(2); k += 1;);
-      acc += log(max(gc_svf_mag(base + 56, f), 0.0000001)) / log(2);
-      acc;
-    ) : (
-      // linear phase: the REALIZED windowed kernel, sampled from the published grid and
-      // interpolated in LOG frequency on values already in bits
-      idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
-      src = gc_lin + idx * (2*GC_LIN_N) + eng * GC_LIN_N;
-      t = log(min(max(f,20),20000) / 20) / log(1000) * (GC_LIN_N - 1);
-      i = floor(t);
-      i >= GC_LIN_N - 1 ? ( src[GC_LIN_N - 1]; ) : (
-        b0 = src[i]; b1 = src[i+1];
-        b0 + (b1 - b0) * (t - i);
-      );
-    );
-  );
-);
 
 // ---- domain composition. Summing WITHIN a domain is exact; summing across domains is not,
 // because a selective block is a stereo matrix - hence one trace per domain, never one curve.
-function gc_applies(pl, dom) ( pl == 0 || pl == dom; );
 
-function gc_domain_bits(dom, f) local(acc, b) (
-  acc = 0;
-  gc_applies(gc_hplp_placement(0), dom) ? acc += gc_hplp_bits(0, f);
-  gc_applies(gc_hplp_placement(1), dom) ? acc += gc_hplp_bits(1, f);
-  b = 0;
-  loop(N_BANDS,
-    (slider(10*(b+1)+1) == 1 && gc_applies(slider(10*(b+1)+8), dom)) ?
-      acc += gc_band_bits(b, f);
-    b += 1;
-  );
-  acc;
-);
-
-function gc_dom_used(dom) local(u, b) (
-  u = 0;
-  (gc_hplp_audible(0) && gc_hplp_placement(0) == dom) ? u = 1;
-  (gc_hplp_audible(1) && gc_hplp_placement(1) == dom) ? u = 1;
-  b = 0;
-  loop(N_BANDS,
-    (slider(10*(b+1)+1) == 1 && slider(10*(b+1)+8) == dom) ? u = 1;
-    b += 1;
-  );
-  u;
-);
 
 // ---- frame: snapshot the published generations ONCE, compute into the inactive trace buffer,
 // then publish only if nothing landed mid-draw. Otherwise keep the previous completed frame -
@@ -1505,17 +1525,6 @@ loop(9,
 // reading the design document.
 gc_mixed = (gc_dom_used(1) || gc_dom_used(2)) && (gc_dom_used(3) || gc_dom_used(4));
 
-function gc_draw_trace(dom, r, g, b, dashed) local(i, x, y, py, first) (
-  gfx_set(r, g, b, 1);
-  first = 1; i = 0;
-  loop(GC_N,
-    x = gc_px + gc_pw * i / (GC_N - 1);
-    y = gc_y_of_bits(gc_src[dom * GC_N + i]);
-    (first == 0 && (dashed == 0 || (i % 10) < 6)) ? gfx_line(x - gc_pw / (GC_N - 1), py, x, y);
-    py = y; first = 0;
-    i += 1;
-  );
-);
 
 gc_dom_used(1) ? gc_draw_trace(1, 0.36, 0.75, 0.38, gc_mixed);   // Mid   green
 gc_dom_used(2) ? gc_draw_trace(2, 0.36, 0.93, 0.99, gc_mixed);   // Side  cyan
