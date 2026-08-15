@@ -2510,3 +2510,99 @@ def test_v10_log_floor_keeps_everything_finite():
     for f, b in grid:
         assert math.isfinite(b), (f, b)
         assert b >= curve.BITS_FLOOR
+
+
+# ---- V1.0 publication protocol: per-engine grids, target/active generations, trace frames ----
+
+def test_v10_reader_never_sees_an_unpublished_write():
+    """Reserving memory does not make an array update atomic. A frame must show one kernel or
+    the other, never a mixture."""
+    c = curve.CurveCache(n_out=8)
+    c.write_inactive("hp", [(100.0, 1.0)] * 8)
+    c.publish("hp")
+    snap = c.snapshot()
+    before = list(c.read(snap, "hp"))
+    c.write_inactive("hp", [(100.0, 0.0)] * 8)      # a new build lands, NOT yet published
+    assert list(c.read(snap, "hp")) == before, "reader saw an unpublished write"
+    c.publish("hp")
+    assert list(c.read(c.snapshot(), "hp")) != before
+
+
+def test_v10_one_engine_rebuild_leaves_the_other_byte_identical():
+    """The defect a SHARED active index causes: an HP-only rebuild flips the pair, so LP reads
+    a half nobody wrote - and a later LP-only rebuild resurrects the OLD HP grid."""
+    c = curve.CurveCache(n_out=4)
+    c.write_inactive("hp", [(100.0, 1.0)] * 4); c.publish("hp")
+    c.write_inactive("lp", [(200.0, 2.0)] * 4); c.publish("lp")
+    lp_before = list(c.read(c.snapshot(), "lp"))
+    for k in range(3):
+        c.write_inactive("hp", [(100.0, 9.0 + k)] * 4); c.publish("hp")
+        assert list(c.read(c.snapshot(), "lp")) == lp_before, "LP changed on an HP-only rebuild"
+    hp_now = list(c.read(c.snapshot(), "hp"))
+    c.write_inactive("lp", [(200.0, 3.0)] * 4); c.publish("lp")
+    assert list(c.read(c.snapshot(), "hp")) == hp_now, "HP resurrected by an LP-only rebuild"
+
+
+def test_v10_generation_moves_only_on_publish():
+    c = curve.CurveCache(n_out=4)
+    g0 = c.snapshot()[0]
+    c.write_inactive("hp", [(100.0, 1.0)] * 4)
+    assert c.snapshot()[0] == g0, "generation moved before publication"
+    c.publish("hp")
+    assert c.snapshot()[0] != g0
+
+
+def test_v10_frame_is_discarded_when_a_grid_publishes_mid_read():
+    """The reader half of the seqlock: @gfx snapshots once, draws, then re-checks. If anything
+    published while it was drawing, it keeps the previous completed frame rather than showing a
+    mixture of two kernels."""
+    c = curve.CurveCache(n_out=4)
+    c.write_inactive("hp", [(100.0, 1.0)] * 4); c.publish("hp")
+    c.begin_frame()
+    c.write_inactive("hp", [(100.0, 5.0)] * 4); c.publish("hp")     # lands mid-draw
+    assert c.commit_frame([1.0] * 4) is False, "a torn frame was published"
+    c.begin_frame()
+    assert c.commit_frame([2.0] * 4) is True
+    assert c.completed_trace() == [2.0] * 4
+
+
+def test_v10_target_and_active_generations_are_separate():
+    """act_* commits in @block and @slider may never run again afterwards, so one counter
+    cannot serve both: the graph would keep showing a superseded topology."""
+    c = curve.CurveCache(n_out=4)
+    t0, a0 = c.gen_target, c.gen_active
+    c.bump_target()
+    assert c.gen_target != t0 and c.gen_active == a0
+    c.bump_active()
+    assert c.gen_active != a0
+
+
+def test_v10_watched_fields_notice_every_single_field():
+    base = dict(bands=[_band()], filters=[_hp()], phase=0, res0=0, res1=0, srate=48000)
+    ref = curve.watched_fields(**base)
+    for v in (dict(base, bands=[_band(enable=0)]),
+              dict(base, bands=[_band(type="lowshelf")]),
+              dict(base, bands=[_band(freq=1001.0)]),
+              dict(base, bands=[_band(q=0.708)]),
+              dict(base, bands=[_band(macro=1)]),
+              dict(base, bands=[_band(micro=0.1)]),
+              dict(base, bands=[_band(ratio=1.05)]),
+              dict(base, bands=[_band(placement="mid")]),
+              dict(base, bands=[_band(qchar=0.5)]),
+              dict(base, filters=[_hp(slope=2)]),
+              dict(base, filters=[_hp(freq=101.0)]),
+              dict(base, filters=[_hp(res=0.5)]),
+              dict(base, filters=[_hp(placement="side")]),
+              dict(base, phase=1), dict(base, res0=1), dict(base, res1=1),
+              dict(base, srate=96000)):
+        assert curve.watched_fields(**v) != ref, v
+
+
+def test_v10_watched_fields_cannot_collide_like_an_arithmetic_signature():
+    """A weighted sum can merge two different configurations and leave a stale but entirely
+    plausible curve on screen. A tuple snapshot cannot."""
+    a = curve.watched_fields(bands=[_band(macro=1, micro=0.0)], filters=[], phase=0,
+                             res0=0, res1=0, srate=48000)
+    b = curve.watched_fields(bands=[_band(macro=0, micro=100.0)], filters=[], phase=0,
+                             res0=0, res1=0, srate=48000)
+    assert a != b, "two configurations with the same gain sum compared equal"

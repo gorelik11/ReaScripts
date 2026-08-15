@@ -295,3 +295,101 @@ def realized_bits_grid(kernel, sr, n_out=2048, fmin=FMIN, fmax=FMAX):
         m = mags[k0] * (1.0 - frac) + mags[k0 + 1] * frac
         out.append((f, mag_to_bits(m)))
     return out
+
+
+# --------------------------------------------------------------------------- publication
+#
+# Three independent publication layers, deliberately not one counter:
+#
+#   per-engine grids  @block writes, @gfx reads   - HP and LP rebuild independently
+#   gen_target        @slider bumps               - a REQUESTED value changed
+#   gen_active        topo_commit bumps           - an AUDIBLE value committed
+#
+# The last two must stay separate: act_phase/act_hp_pl/act_lp_pl commit inside @block, and
+# @slider is not guaranteed to run again afterwards, so a single counter would let the graph
+# keep drawing a superseded topology indefinitely.
+
+ENGINES = ("hp", "lp")
+
+
+class CurveCache:
+    """Double-buffered publication mirroring the JSFX design.
+
+    The ACTIVE INDEX IS PER ENGINE. A shared index is broken: an HP-only rebuild would flip the
+    pair, so the LP trace reads a half nobody wrote, and a later LP-only rebuild flips back and
+    resurrects the OLD HP grid.
+
+    This is a seqlock. On ARM it has no memory barrier (EEL2 has no primitive), so it is
+    accepted with a scoped worst case: a one-frame visual glitch, never signal corruption -
+    @gfx writes nothing the audio path reads.
+    """
+
+    def __init__(self, n_out=2048):
+        self.n_out = n_out
+        self.buffers = {e: [[(0.0, 0.0)] * n_out, [(0.0, 0.0)] * n_out] for e in ENGINES}
+        self.active = {e: 0 for e in ENGINES}
+        self.gen = {e: 0 for e in ENGINES}
+        self.gen_target = 0
+        self.gen_active = 0
+        self._trace = [None, None]
+        self._trace_active = 0
+        self._frame_snap = None
+
+    # ---- writer side (@block) ----
+    def write_inactive(self, engine, grid):
+        self.buffers[engine][1 - self.active[engine]] = list(grid)
+
+    def publish(self, engine):
+        """Flip the index, then bump the generation - only after the final word is written."""
+        self.active[engine] = 1 - self.active[engine]
+        self.gen[engine] += 1
+
+    def bump_target(self):
+        self.gen_target += 1
+
+    def bump_active(self):
+        self.gen_active += 1
+
+    # ---- reader side (@gfx) ----
+    def snapshot(self):
+        return (tuple(self.gen[e] for e in ENGINES), tuple(self.active[e] for e in ENGINES))
+
+    def read(self, snap, engine):
+        return self.buffers[engine][snap[1][ENGINES.index(engine)]]
+
+    def begin_frame(self):
+        """Snapshot every grid ONCE at frame start; the whole frame is drawn from these."""
+        self._frame_snap = self.snapshot()
+        return self._frame_snap
+
+    def commit_frame(self, trace):
+        """Publish a completed frame only if nothing published while it was being drawn.
+
+        Returns False when the frame is discarded - the caller keeps showing the previous
+        completed trace rather than a mixture of two kernels.
+        """
+        if self._frame_snap != self.snapshot():
+            return False
+        self._trace[1 - self._trace_active] = list(trace)
+        self._trace_active = 1 - self._trace_active
+        return True
+
+    def completed_trace(self):
+        return self._trace[self._trace_active]
+
+
+def watched_fields(bands, filters, phase, res0, res1, srate):
+    """Exact snapshot of everything the curve depends on.
+
+    A tuple comparison, never a weighted arithmetic signature: a signature can collide, and a
+    collision leaves a stale but entirely plausible curve on screen - the silent failure this
+    project's oracle-first policy exists to prevent.
+
+    Phase and both Resolutions are included because Phase selects which magnitude source applies
+    and Resolution selects which BD grid is read; srate is included because every digital
+    response is sample-rate dependent.
+    """
+    bt = tuple((b["enable"], b["type"], b["freq"], b["q"], b["macro"], b["micro"],
+                b["ratio"], b["placement"], b["qchar"]) for b in bands)
+    ft = tuple((h["ftype"], h["slope"], h["freq"], h["res"], h["placement"]) for h in filters)
+    return (bt, ft, phase, res0, res1, srate)
