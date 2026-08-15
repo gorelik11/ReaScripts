@@ -748,7 +748,8 @@ hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 // treated as ALREADY COMMITTED to whatever the project loaded: without this, reopening a project
 // saved as Linear/High/Mid would arm a mute AND play through the WRONG topology until the hold
 // expired - on every load, and again on every sample-rate change, which re-runs @init.
-memset(gc_trace, 0, 13456);          // V1.0 GUI region: indices, generations and grids start clean
+memset(gc_trace, 0, 13456);
+gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1;          // V1.0 GUI region: indices, generations and grids start clean
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
 mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
 mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
@@ -1460,13 +1461,19 @@ slider1 != 1 ? (
 
 // ---- one transform for BOTH drawing and hit-testing. On Retina these must agree, or nodes
 // render in one place and respond in another.
+// Retina: on macOS gfx_w/gfx_h and mouse_x/mouse_y are PHYSICAL pixels (2x logical). Drawing
+// and hit-testing must go through the SAME transform, or nodes render in one place and respond
+// in another.
+!gfx_ext_retina ? gfx_ext_retina = 1;
+gc_ret = gfx_ext_retina > 0 ? gfx_ext_retina : 1;
 gc_sc = min(gfx_w / 900, gfx_h / 500);
 gc_px = 40 * gc_sc;
 gc_py = 10 * gc_sc;
 gc_pw = gfx_w - gc_px - 10 * gc_sc;
 gc_ph = gfx_h - gc_py - 84 * gc_sc;
-gc_small = (gfx_w < 480 || gfx_h < 280);
+gc_small = (gfx_w / gc_ret < 480 || gfx_h / gc_ret < 280);
 gc_small ? gc_ph = gfx_h - gc_py - 24 * gc_sc;    // below minimum size the readout strip goes first
+gc_hit_r = max(8 * gc_sc, 6);                      // node hit radius, never smaller than a finger
 
 
 
@@ -1537,3 +1544,130 @@ gc_mixed ? (
   gfx_x = gc_px + 6 * gc_sc; gfx_y = gc_py + 4 * gc_sc;
   gfx_drawstr("group view - M/S and L/R mixed, traces are not channel responses");
 );
+
+// ---------------------------------------------------------------- nodes and interaction
+//
+// ONE GESTURE WRITES ONE SLIDER. The modifier is captured at MOUSE-DOWN and held for the whole
+// drag: reading it live would let a mid-drag Shift redirect the write to another slider, which
+// is the two-parameter hazard coming back through the side door.
+
+gc_click = (mouse_cap & 1) && !(gc_last_cap & 1);
+
+// find the node under the pointer (topmost by band index wins)
+gc_hover = -1;
+gc_b = 0;
+loop(N_BANDS,
+  slider(10*(gc_b+1)+1) == 1 ? (
+    gc_nx = gc_x_of_f(slider(10*(gc_b+1)+3));
+    gc_ny = gc_y_of_bits((slider(10*(gc_b+1)+5) + slider(10*(gc_b+1)+6) * 0.01) * slider(10*(gc_b+1)+7));
+    (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_hover = gc_b;
+  );
+  gc_b += 1;
+);
+
+// start a drag: capture the band, the origin, the modifier and every value we may write
+gc_click && gc_hover >= 0 ? (
+  gc_drag = gc_hover;
+  gc_dx = mouse_x; gc_dy = mouse_y;
+  gc_mod = mouse_cap & (8 | 16);                    // 8 = Shift -> Ratio, 16 = Alt -> Q
+  gc_s = 10 * (gc_drag + 1);
+  gc_at_macro = slider(gc_s + 5);
+  gc_at_ratio = slider(gc_s + 7);
+  gc_at_q     = slider(gc_s + 4);
+  gc_at_freq  = slider(gc_s + 3);
+  gc_sel = gc_drag;
+);
+
+!(mouse_cap & 1) ? gc_drag = -1;
+
+gc_drag >= 0 ? (
+  gc_s = 10 * (gc_drag + 1);
+  gc_dyu = (mouse_y - gc_dy) / gc_sc;               // vertical travel in LOGICAL units
+  gc_dxu = (mouse_x - gc_dx) / gc_sc;
+  // below the 4-unit threshold this is still a click, not a drag
+  (abs(gc_dyu) >= 4 || abs(gc_dxu) >= 4) ? (
+    abs(gc_dxu) > abs(gc_dyu) ? (
+      // horizontal: Frequency follows the pointer along the log axis
+      gc_v = gc_f_of_x(mouse_x);
+      gc_v != slider(gc_s + 3) ? ( slider(gc_s + 3) = gc_v; slider_automate(slider(gc_s + 3)); );
+    ) : (
+      gc_mod & 8 ? (
+        // Shift: Bit Ratio, one 0.05 step per 12 units, kept exactly on the grid
+        gc_st = -floor(gc_dyu / 12);
+        gc_v = gc_at_ratio + gc_st * 0.05;
+        gc_v = min(max(gc_v, 0), 3);
+        gc_v = (gc_v < 0 ? -floor(-gc_v / 0.05 + 0.5) : floor(gc_v / 0.05 + 0.5)) * 0.05;
+        gc_v != slider(gc_s + 7) ? ( slider(gc_s + 7) = gc_v; slider_automate(slider(gc_s + 7)); );
+      ) : gc_mod & 16 ? (
+        // Alt: Q
+        gc_st = -floor(gc_dyu / 12);
+        gc_v = min(max(gc_at_q + gc_st * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
+        gc_v != slider(gc_s + 4) ? ( slider(gc_s + 4) = gc_v; slider_automate(slider(gc_s + 4)); );
+      ) : (
+        // plain: Macro, whole bits, one per 24 units. Ratio 0 has no solution - the node locks
+        // rather than silently resetting a deliberate setting.
+        gc_at_ratio == 0 ? ( 0; ) : (
+          gc_st = -floor(gc_dyu / 24);
+          gc_v = min(max(gc_at_macro + gc_st, -16), 16);
+          gc_v != slider(gc_s + 5) ? ( slider(gc_s + 5) = gc_v; slider_automate(slider(gc_s + 5)); );
+        );
+      );
+    );
+  );
+);
+
+// wheel on a hovered node: Q, one step per notch
+gc_wd = mouse_wheel - gc_last_wheel;
+gc_last_wheel = mouse_wheel;
+(gc_wd != 0 && gc_hover >= 0) ? (
+  gc_s = 10 * (gc_hover + 1);
+  gc_v = min(max(slider(gc_s + 4) + (gc_wd > 0 ? 1 : -1) * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
+  slider(gc_s + 4) = gc_v; slider_automate(slider(gc_s + 4));
+);
+
+// ---- draw the nodes. Position uses the FULL effective gain including Bit Ratio, so a node
+// always sits where the audio actually is. A shelf node is a HANDLE at (fc, full gain) and
+// deliberately does not lie on its own curve, which reaches only half the gain at fc.
+gc_b = 0;
+loop(N_BANDS,
+  gc_s = 10 * (gc_b + 1);
+  gc_en = slider(gc_s + 1);
+  gc_bits = (slider(gc_s + 5) + slider(gc_s + 6) * 0.01) * slider(gc_s + 7);
+  gc_nx = gc_x_of_f(slider(gc_s + 3));
+  gc_ny = gc_y_of_bits(gc_bits);
+  gc_pl = slider(gc_s + 8);
+  gc_a = gc_en ? 1 : 0.3;
+  gc_pl == 0 ? gfx_set(1, 1, 1, gc_a) :
+  gc_pl == 1 ? gfx_set(0.36, 0.75, 0.38, gc_a) :
+  gc_pl == 2 ? gfx_set(0.36, 0.93, 0.99, gc_a) :
+  gc_pl == 3 ? gfx_set(0.94, 0.79, 0.11, gc_a) :
+               gfx_set(0.84, 0.25, 0.26, gc_a);
+  gfx_circle(gc_nx, gc_ny, 6 * gc_sc, gc_en ? 1 : 0, 1);
+  (gc_hover == gc_b || gc_drag == gc_b) ? gfx_circle(gc_nx, gc_ny, 9 * gc_sc, 0, 1);
+  // locked states, drawn so they do not read as an unresponsive GUI
+  slider(gc_s + 7) == 0 ? (
+    gfx_set(0.9, 0.5, 0.2, 1);
+    gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawstr("ratio 0");
+  );
+  abs(gc_bits) > 4 ? (
+    gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawnumber(gc_bits, 2);
+  );
+  gc_b += 1;
+);
+
+// ---- readout for the selected band
+gc_sel >= 0 ? (
+  gc_s = 10 * (gc_sel + 1);
+  gfx_set(0.8, 0.8, 0.82, 1);
+  gfx_x = gc_px; gfx_y = gc_py + gc_ph + 8 * gc_sc;
+  gfx_drawstr("B"); gfx_drawnumber(gc_sel + 1, 0);
+  gfx_drawstr("   Freq "); gfx_drawnumber(slider(gc_s + 3), 0);
+  gfx_drawstr(" Hz   Macro "); gfx_drawnumber(slider(gc_s + 5), 0);
+  gfx_drawstr("   Micro "); gfx_drawnumber(slider(gc_s + 6), 1);
+  gfx_drawstr("   Ratio "); gfx_drawnumber(slider(gc_s + 7), 2);
+  gfx_drawstr("   Q "); gfx_drawnumber(slider(gc_s + 4), 3);
+  gfx_drawstr("   = "); gfx_drawnumber((slider(gc_s+5) + slider(gc_s+6)*0.01) * slider(gc_s+7), 2);
+  gfx_drawstr(" bits");
+);
+
+gc_last_cap = mouse_cap;
