@@ -495,8 +495,19 @@ Size is declared on the section line — **`@gfx 900 500`** — which is the JSF
   identical frequency and identical value, with opposite-edge over-ranges, at minimum width and
   at Retina scale.
 
-Whether REAPER shows its generic slider list below the custom graph or behind a UI toggle is
-confirmed **live**, not assumed.
+**Sliders must be HIDDEN, and this was found the hard way** (live, 2026-08-16). rev 8 assumed
+REAPER would show the generic slider list *below* the custom graph, or behind a UI toggle. Both
+guesses were wrong: REAPER lays the visible sliders out **before** the canvas, so with 95 of them
+the graph rendered far below the parameter list and appeared to be missing entirely. `@gfx` had
+been compiling and running the whole time.
+
+Fix: every slider declaration gets the `-` prefix (`>-B1 Enable`), which hides it from the
+generic list while keeping the parameter fully active, automatable and reachable through
+`Param`. The custom GUI then owns the window.
+
+Recorded because the failure looked exactly like a broken `@gfx`: three plausible diagnoses
+(compile error, plugin cache, UI mode) were all wrong, and a diagnostic fill drawn inside the
+section was invisible for the same reason the graph was.
 
 ## 7. Explicitly out of scope
 

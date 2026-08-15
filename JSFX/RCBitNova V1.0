@@ -31,106 +31,106 @@ slider2:0<-16,16,1>-Output Macro (bits)
 slider3:0<-100,100,0.1>-Output Micro (% bit)
 slider4:2<0.1,10,0.1>-Lookahead (ms, Mode B)
 
-slider11:1<0,1,1{Off,On}>B1 Enable
-slider12:0<0,2,1{Bell,Low Shelf,High Shelf}>B1 Type
-slider13:100<20,20000,1>B1 Freq
-slider14:0.707<0.1,10,0.001>B1 Q
-slider15:0<-16,16,1>B1 Macro (bits)
-slider16:0<-100,100,0.1>B1 Micro (% bit)
-slider17:1<0,3,0.05>B1 Bit Ratio
-slider18:0<0,4,1{Both,Mid,Side,Left,Right}>B1 Placement
-slider19:0<0,1,0.001>B1 Q Character (0 Constant .. 1 Proportional)
+slider11:1<0,1,1{Off,On}>-B1 Enable
+slider12:0<0,2,1{Bell,Low Shelf,High Shelf}>-B1 Type
+slider13:100<20,20000,1>-B1 Freq
+slider14:0.707<0.1,10,0.001>-B1 Q
+slider15:0<-16,16,1>-B1 Macro (bits)
+slider16:0<-100,100,0.1>-B1 Micro (% bit)
+slider17:1<0,3,0.05>-B1 Bit Ratio
+slider18:0<0,4,1{Both,Mid,Side,Left,Right}>-B1 Placement
+slider19:0<0,1,0.001>-B1 Q Character (0 Constant .. 1 Proportional)
 
-slider21:0<0,1,1{Off,On}>B2 Enable
-slider22:0<0,2,1{Bell,Low Shelf,High Shelf}>B2 Type
-slider23:1000<20,20000,1>B2 Freq
-slider24:0.707<0.1,10,0.001>B2 Q
-slider25:0<-16,16,1>B2 Macro (bits)
-slider26:0<-100,100,0.1>B2 Micro (% bit)
-slider27:1<0,3,0.05>B2 Bit Ratio
-slider28:0<0,4,1{Both,Mid,Side,Left,Right}>B2 Placement
-slider29:0<0,1,0.001>B2 Q Character (0 Constant .. 1 Proportional)
+slider21:0<0,1,1{Off,On}>-B2 Enable
+slider22:0<0,2,1{Bell,Low Shelf,High Shelf}>-B2 Type
+slider23:1000<20,20000,1>-B2 Freq
+slider24:0.707<0.1,10,0.001>-B2 Q
+slider25:0<-16,16,1>-B2 Macro (bits)
+slider26:0<-100,100,0.1>-B2 Micro (% bit)
+slider27:1<0,3,0.05>-B2 Bit Ratio
+slider28:0<0,4,1{Both,Mid,Side,Left,Right}>-B2 Placement
+slider29:0<0,1,0.001>-B2 Q Character (0 Constant .. 1 Proportional)
 
-slider31:0<0,1,1{Off,On}>B3 Enable
-slider32:0<0,2,1{Bell,Low Shelf,High Shelf}>B3 Type
-slider33:3000<20,20000,1>B3 Freq
-slider34:0.707<0.1,10,0.001>B3 Q
-slider35:0<-16,16,1>B3 Macro (bits)
-slider36:0<-100,100,0.1>B3 Micro (% bit)
-slider37:1<0,3,0.05>B3 Bit Ratio
-slider38:0<0,4,1{Both,Mid,Side,Left,Right}>B3 Placement
-slider39:0<0,1,0.001>B3 Q Character (0 Constant .. 1 Proportional)
+slider31:0<0,1,1{Off,On}>-B3 Enable
+slider32:0<0,2,1{Bell,Low Shelf,High Shelf}>-B3 Type
+slider33:3000<20,20000,1>-B3 Freq
+slider34:0.707<0.1,10,0.001>-B3 Q
+slider35:0<-16,16,1>-B3 Macro (bits)
+slider36:0<-100,100,0.1>-B3 Micro (% bit)
+slider37:1<0,3,0.05>-B3 Bit Ratio
+slider38:0<0,4,1{Both,Mid,Side,Left,Right}>-B3 Placement
+slider39:0<0,1,0.001>-B3 Q Character (0 Constant .. 1 Proportional)
 
-slider41:0<0,1,1{Off,On}>B4 Enable
-slider42:0<0,2,1{Bell,Low Shelf,High Shelf}>B4 Type
-slider43:10000<20,20000,1>B4 Freq
-slider44:0.707<0.1,10,0.001>B4 Q
-slider45:0<-16,16,1>B4 Macro (bits)
-slider46:0<-100,100,0.1>B4 Micro (% bit)
-slider47:1<0,3,0.05>B4 Bit Ratio
-slider48:0<0,4,1{Both,Mid,Side,Left,Right}>B4 Placement
-slider49:0<0,1,0.001>B4 Q Character (0 Constant .. 1 Proportional)
+slider41:0<0,1,1{Off,On}>-B4 Enable
+slider42:0<0,2,1{Bell,Low Shelf,High Shelf}>-B4 Type
+slider43:10000<20,20000,1>-B4 Freq
+slider44:0.707<0.1,10,0.001>-B4 Q
+slider45:0<-16,16,1>-B4 Macro (bits)
+slider46:0<-100,100,0.1>-B4 Micro (% bit)
+slider47:1<0,3,0.05>-B4 Bit Ratio
+slider48:0<0,4,1{Both,Mid,Side,Left,Right}>-B4 Placement
+slider49:0<0,1,0.001>-B4 Q Character (0 Constant .. 1 Proportional)
 
-slider51:0<0,1,1{Off,On}>B1 Dyn
-slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>B1 Dyn Stereo (Both only)
-slider53:1<0,16,1>B1 Soft Ceiling Macro (bits below 0)
-slider54:0<-100,100,0.1>B1 Soft Ceiling Micro (% bit)
-slider55:1<0.05,50,0.01>B1 Attack (ms)
-slider56:80<1,500,1>B1 Release (ms)
-slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>B1 Dyn Mode
-slider58:1<0,1,1{Off,On}>B1 Soft
+slider51:0<0,1,1{Off,On}>-B1 Dyn
+slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B1 Dyn Stereo (Both only)
+slider53:1<0,16,1>-B1 Soft Ceiling Macro (bits below 0)
+slider54:0<-100,100,0.1>-B1 Soft Ceiling Micro (% bit)
+slider55:1<0.05,50,0.01>-B1 Attack (ms)
+slider56:80<1,500,1>-B1 Release (ms)
+slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>-B1 Dyn Mode
+slider58:1<0,1,1{Off,On}>-B1 Soft
 
-slider61:0<0,1,1{Off,On}>B2 Dyn
-slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>B2 Dyn Stereo (Both only)
-slider63:1<0,16,1>B2 Soft Ceiling Macro (bits below 0)
-slider64:0<-100,100,0.1>B2 Soft Ceiling Micro (% bit)
-slider65:1<0.05,50,0.01>B2 Attack (ms)
-slider66:80<1,500,1>B2 Release (ms)
-slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>B2 Dyn Mode
-slider68:1<0,1,1{Off,On}>B2 Soft
+slider61:0<0,1,1{Off,On}>-B2 Dyn
+slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B2 Dyn Stereo (Both only)
+slider63:1<0,16,1>-B2 Soft Ceiling Macro (bits below 0)
+slider64:0<-100,100,0.1>-B2 Soft Ceiling Micro (% bit)
+slider65:1<0.05,50,0.01>-B2 Attack (ms)
+slider66:80<1,500,1>-B2 Release (ms)
+slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>-B2 Dyn Mode
+slider68:1<0,1,1{Off,On}>-B2 Soft
 
-slider71:0<0,1,1{Off,On}>B3 Dyn
-slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>B3 Dyn Stereo (Both only)
-slider73:1<0,16,1>B3 Soft Ceiling Macro (bits below 0)
-slider74:0<-100,100,0.1>B3 Soft Ceiling Micro (% bit)
-slider75:1<0.05,50,0.01>B3 Attack (ms)
-slider76:80<1,500,1>B3 Release (ms)
-slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>B3 Dyn Mode
-slider78:1<0,1,1{Off,On}>B3 Soft
+slider71:0<0,1,1{Off,On}>-B3 Dyn
+slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B3 Dyn Stereo (Both only)
+slider73:1<0,16,1>-B3 Soft Ceiling Macro (bits below 0)
+slider74:0<-100,100,0.1>-B3 Soft Ceiling Micro (% bit)
+slider75:1<0.05,50,0.01>-B3 Attack (ms)
+slider76:80<1,500,1>-B3 Release (ms)
+slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>-B3 Dyn Mode
+slider78:1<0,1,1{Off,On}>-B3 Soft
 
-slider81:0<0,1,1{Off,On}>B4 Dyn
-slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>B4 Dyn Stereo (Both only)
-slider83:1<0,16,1>B4 Soft Ceiling Macro (bits below 0)
-slider84:0<-100,100,0.1>B4 Soft Ceiling Micro (% bit)
-slider85:1<0.05,50,0.01>B4 Attack (ms)
-slider86:80<1,500,1>B4 Release (ms)
-slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>B4 Dyn Mode
-slider88:1<0,1,1{Off,On}>B4 Soft
+slider81:0<0,1,1{Off,On}>-B4 Dyn
+slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B4 Dyn Stereo (Both only)
+slider83:1<0,16,1>-B4 Soft Ceiling Macro (bits below 0)
+slider84:0<-100,100,0.1>-B4 Soft Ceiling Micro (% bit)
+slider85:1<0.05,50,0.01>-B4 Attack (ms)
+slider86:80<1,500,1>-B4 Release (ms)
+slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>-B4 Dyn Mode
+slider88:1<0,1,1{Off,On}>-B4 Soft
 
-slider91:0<0,1,1{Off,On}>B1 Hard
-slider92:0<0,16,1>B1 Hard Ceiling Macro (bits below 0)
-slider93:0<-100,100,0.1>B1 Hard Ceiling Micro (% bit)
-slider101:0<0,1,1{Off,On}>B2 Hard
-slider102:0<0,16,1>B2 Hard Ceiling Macro (bits below 0)
-slider103:0<-100,100,0.1>B2 Hard Ceiling Micro (% bit)
-slider111:0<0,1,1{Off,On}>B3 Hard
-slider112:0<0,16,1>B3 Hard Ceiling Macro (bits below 0)
-slider113:0<-100,100,0.1>B3 Hard Ceiling Micro (% bit)
-slider121:0<0,1,1{Off,On}>B4 Hard
-slider122:0<0,16,1>B4 Hard Ceiling Macro (bits below 0)
-slider123:0<-100,100,0.1>B4 Hard Ceiling Micro (% bit)
+slider91:0<0,1,1{Off,On}>-B1 Hard
+slider92:0<0,16,1>-B1 Hard Ceiling Macro (bits below 0)
+slider93:0<-100,100,0.1>-B1 Hard Ceiling Micro (% bit)
+slider101:0<0,1,1{Off,On}>-B2 Hard
+slider102:0<0,16,1>-B2 Hard Ceiling Macro (bits below 0)
+slider103:0<-100,100,0.1>-B2 Hard Ceiling Micro (% bit)
+slider111:0<0,1,1{Off,On}>-B3 Hard
+slider112:0<0,16,1>-B3 Hard Ceiling Macro (bits below 0)
+slider113:0<-100,100,0.1>-B3 Hard Ceiling Micro (% bit)
+slider121:0<0,1,1{Off,On}>-B4 Hard
+slider122:0<0,16,1>-B4 Hard Ceiling Macro (bits below 0)
+slider123:0<-100,100,0.1>-B4 Hard Ceiling Micro (% bit)
 
-slider131:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>HP Slope (dB/oct)
-slider132:20<20,20000,1>HP Freq (Hz)
-slider133:0<0,1,0.001>HP Resonance
-slider134:0<0,4,1{Both,Mid,Side,Left,Right}>HP Placement
-slider135:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>LP Slope (dB/oct)
-slider136:20000<20,20000,1>LP Freq (Hz)
-slider137:0<0,1,0.001>LP Resonance
-slider138:0<0,4,1{Both,Mid,Side,Left,Right}>LP Placement
-slider140:0<0,1,1{Min,Linear}>Phase
-slider141:0<0,1,1{Normal,High}>HP Resolution (Linear only)
-slider142:0<0,1,1{Normal,High}>LP Resolution (Linear only)
+slider131:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>-HP Slope (dB/oct)
+slider132:20<20,20000,1>-HP Freq (Hz)
+slider133:0<0,1,0.001>-HP Resonance
+slider134:0<0,4,1{Both,Mid,Side,Left,Right}>-HP Placement
+slider135:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>-LP Slope (dB/oct)
+slider136:20000<20,20000,1>-LP Freq (Hz)
+slider137:0<0,1,0.001>-LP Resonance
+slider138:0<0,4,1{Both,Mid,Side,Left,Right}>-LP Placement
+slider140:0<0,1,1{Min,Linear}>-Phase
+slider141:0<0,1,1{Normal,High}>-HP Resolution (Linear only)
+slider142:0<0,1,1{Normal,High}>-LP Resolution (Linear only)
 
 @init
 
