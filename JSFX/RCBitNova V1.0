@@ -510,6 +510,56 @@ function lpk_build(eng, ftype, freq, res, nsec, brick)
   );
 );
 
+// ---- V1.0: sample the REALIZED windowed kernel with ONE native FFT ----
+// Not a per-point DTFT: 100 points over BD=32768 is ~3.3M interpreted operations per engine,
+// and the danger is PEAK BLOCK TIME - one @block missing its deadline - not average CPU.
+//
+// desbuf (ob[0], span BD*2) is free once lpk_build has finished: it is last written by the ifft
+// and only read by the ktime loop, and lpk_run never touches it. Same page-aligned span V0.7
+// already proved safe at 32768.
+//
+// Three details that would each yield a smooth, believable, WRONG curve:
+//   1. fft_permute is MANDATORY - EEL2's fft() returns bit-reversed order.
+//   2. the imaginary lane must be zeroed EXPLICITLY - the prior ifft left rounding residue.
+//   3. only bins 0..BD/2 carry information - ktime is real, so X[BD-k] = conj(X[k]).
+// The kernel's fftshift needs no correction: a half-period circular shift multiplies the
+// spectrum by (-1)^k, which |X[k]| removes.
+function gc_build_grid(eng)
+  local(ob, BD, desbuf, ktime, half, i, k, b, frac, dst, f, t, m0, m1, m, idx) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4];
+  desbuf = ob[0]; ktime = ob[1];
+  i = 0; loop(BD, desbuf[i*2] = ktime[i]; desbuf[i*2+1] = 0; i += 1;);
+  fft(desbuf, BD); fft_permute(desbuf, BD);
+  half = BD * 0.5;
+  idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
+  dst = gc_lin + (1 - idx) * (2*GC_LIN_N) + eng * GC_LIN_N;   // this engine's INACTIVE buffer
+  i = 0;
+  loop(GC_LIN_N,
+    t = i / (GC_LIN_N - 1);
+    f = min(20 * pow(1000, t), srate * 0.5);
+    b = f * BD / srate;
+    k = floor(b); frac = b - k;
+    k >= half ? ( k = half - 1; frac = 1; );
+    m0 = sqrt(desbuf[k*2]*desbuf[k*2] + desbuf[k*2+1]*desbuf[k*2+1]);
+    m1 = sqrt(desbuf[(k+1)*2]*desbuf[(k+1)*2] + desbuf[(k+1)*2+1]*desbuf[(k+1)*2+1]);
+    m = m0 * (1 - frac) + m1 * frac;
+    // store BITS: the graph composes by SUMMING bits, and the axis is in bits, so nothing
+    // converts between computing and plotting
+    dst[i] = log(max(m, 0.0000001)) / log(2);
+    i += 1;
+  );
+);
+
+// Publish ONE engine: flip its index, then bump its generation - only after the final word is
+// written. Per-engine on purpose: a shared index would mean an HP-only rebuild flips the pair
+// and the LP trace reads a half nobody wrote, and a later LP-only rebuild resurrects the OLD HP.
+function gc_publish(eng) local(ix, gn) (
+  ix = eng == 0 ? GCM_IDX_HP : GCM_IDX_LP;
+  gn = eng == 0 ? GCM_GEN_HP : GCM_GEN_LP;
+  gc_meta[ix] = 1 - gc_meta[ix];
+  gc_meta[gn] = gc_meta[gn] + 1;
+);
+
 // Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
 function lpk_run(eng, iA, iB)
   local(ob, KM, hspec, hspec2, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
@@ -698,6 +748,7 @@ hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 // treated as ALREADY COMMITTED to whatever the project loaded: without this, reopening a project
 // saved as Linear/High/Mid would arm a mute AND play through the WRONG topology until the hold
 // expired - on every load, and again on every sample-rate change, which re-runs @init.
+memset(gc_trace, 0, 13456);          // V1.0 GUI region: indices, generations and grids start clean
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
 mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
 mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
@@ -895,6 +946,9 @@ mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
   mt_pend = 0;
   mt_ready = 0;
   mt_state = 2;
+  gc_meta[GCM_GACT] = gc_meta[GCM_GACT] + 1;   // the graph must follow COMMITTED topology:
+                                                // act_* changes HERE, in @block, and @slider is
+                                                // not guaranteed to run again afterwards
   hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
 );
 
@@ -913,6 +967,7 @@ hp_dirty && lp_fs[0] == 0 ? (
       (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
     (lp_fs[3] == 0 || act_phase == 0) ? ( lpk_commit(0); ) : ( lp_fs[0] = 1; lp_fs[1] = 0; );
     hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();
+    act_phase == 1 ? ( gc_build_grid(0); gc_publish(0); );   // realized HP curve for the graph
   );
 );
 lp_dirty && lp_fs[4] == 0 ? (
@@ -921,6 +976,7 @@ lp_dirty && lp_fs[4] == 0 ? (
       (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
     (lp_fs[7] == 0 || act_phase == 0) ? ( lpk_commit(1); ) : ( lp_fs[4] = 1; lp_fs[5] = 0; );
     lp_dirty = 0; lp_fs[7] = 1; lp_tbuild = time_precise();
+    act_phase == 1 ? ( gc_build_grid(1); gc_publish(1); );   // realized LP curve for the graph
   );
 );
 
