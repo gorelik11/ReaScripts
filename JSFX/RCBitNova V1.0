@@ -488,6 +488,12 @@ function gc_publish(eng) local(ix, gn) (
   gc_meta[gn] = gc_meta[gn] + 1;
 );
 
+function lpk_commit(eng) local(ob, KM) (
+  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
+  memcpy(ob[3], ob[15], KM * lpPB2);
+  lp_fs[eng*4] = 0;
+);
+
 // Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
 function lpk_run(eng, iA, iB)
   local(ob, KM, hspec, hspec2, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
@@ -744,11 +750,6 @@ function topo_pdc() (
   ext_tail_size = act_phase == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
 );
 
-function lpk_commit(eng) local(ob, KM) (
-  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
-  memcpy(ob[3], ob[15], KM * lpPB2);
-  lp_fs[eng*4] = 0;
-);
 
 // Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
 // brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
