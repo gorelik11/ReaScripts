@@ -394,6 +394,7 @@ locked style with a readout saying why — silence here would read as a bug:
 |---|---|
 | `BitRatio == 0` | every Macro sounds at 0 bits, so a Macro drag cannot move the node |
 | `Macro == 0` and `Micro == 0` | Bit Ratio multiplies `(Macro + Micro/100)`, so scaling zero stays zero and a Shift drag cannot move the node |
+| `BitRatio < 0` | **mirrored, not locked** — raising Macro lowers the effective gain, so the node moves opposite to the parameter. The Macro gesture is mirrored to match, and the node is labelled `ratio<0 inverted`. Found live (2026-08-16): a project had one band at a negative Ratio and only that band appeared to drag backwards. The slider declares `0..3`, so this value cannot be produced by the GUI or by the slider itself — it arrives from a stored project or a value typed past the declared range — but the plugin must render and handle it honestly rather than looking broken |
 
 **How fine the Shift gesture is depends on Macro**, which is the honest behaviour of a
 proportion rather than a defect: one 0.05 step is 0.05 bits (≈0.3 dB) at Macro 1, 0.20 bits
