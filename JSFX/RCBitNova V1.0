@@ -1622,21 +1622,21 @@ gc_drag >= 0 ? (
     ) : (
       gc_mod & 8 ? (
         // Shift: Bit Ratio, one 0.05 step per 12 units, kept exactly on the grid
-        gc_st = floor(gc_dyu / 12);
+        gc_st = -floor(gc_dyu / 12);
         gc_v = gc_at_ratio + gc_st * 0.05;
         gc_v = min(max(gc_v, 0), 3);
         gc_v = (gc_v < 0 ? -floor(-gc_v / 0.05 + 0.5) : floor(gc_v / 0.05 + 0.5)) * 0.05;
         gc_v != slider(gc_s + 7) ? ( slider(gc_s + 7) = gc_v; slider_automate(slider(gc_s + 7)); );
       ) : gc_mod & 16 ? (
         // Alt: Q
-        gc_st = floor(gc_dyu / 12);
+        gc_st = -floor(gc_dyu / 12);
         gc_v = min(max(gc_at_q + gc_st * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
         gc_v != slider(gc_s + 4) ? ( slider(gc_s + 4) = gc_v; slider_automate(slider(gc_s + 4)); );
       ) : (
         // plain: Macro, whole bits, one per 24 units. Ratio 0 has no solution - the node locks
         // rather than silently resetting a deliberate setting.
         gc_at_ratio == 0 ? ( 0; ) : (
-          gc_st = floor(gc_dyu / 24);
+          gc_st = -floor(gc_dyu / 24);
           gc_v = min(max(gc_at_macro + gc_st, -16), 16);
           gc_v != slider(gc_s + 5) ? ( slider(gc_s + 5) = gc_v; slider_automate(slider(gc_s + 5)); );
         );
@@ -1726,6 +1726,17 @@ gfx_drawstr("B"); gfx_drawnumber(gc_sel + 1, 0);
 gfx_drawstr("   effective ");
 gfx_drawnumber((slider(gc_s+5) + slider(gc_s+6)*0.01) * slider(gc_s+7), 2);
 gfx_drawstr(" bits");
+// TEMPORARY: raw drag telemetry, so the direction question is settled by numbers rather than
+// by my reasoning about which way screen y grows. Remove once confirmed.
+gc_drag >= 0 ? (
+  gfx_drawstr("    [drag dy=");
+  gfx_drawnumber(mouse_y - gc_dy, 0);
+  gfx_drawstr(" units=");
+  gfx_drawnumber(gc_dyu, 1);
+  gfx_drawstr(" steps=");
+  gfx_drawnumber(-floor(gc_dyu / 24), 0);
+  gfx_drawstr("]");
+);
 
 // click a field to focus it
 gc_click ? (
