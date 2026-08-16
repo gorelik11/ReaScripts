@@ -687,7 +687,7 @@ hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 // expired - on every load, and again on every sample-rate change, which re-runs @init.
 memset(gc_trace, 0, 13512);
 gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1;
-gc_edit = -1; gc_elen = 0;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
+gc_edit = -1; gc_elen = 0; gc_fdrag = -1; gc_fnode = -1;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
 mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
 mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
@@ -1689,6 +1689,115 @@ loop(N_BANDS,
     gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawnumber(gc_bits, 2);
   );
   gc_b += 1;
+);
+
+
+// ---------------------------------------------------------------- HP / LP filters
+// Square handles, so they read as a different kind of control from the round band nodes.
+// Each gesture still writes exactly ONE slider.
+//   drag horizontally -> cutoff frequency
+//   Shift + vertical  -> resonance
+//   right-click       -> slope and placement menu
+// Sitting on the zero line keeps them out of the way of the band nodes.
+
+function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
+
+gc_fnode = -1;
+gc_e = 0;
+loop(2,
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
+  gc_e += 1;
+);
+
+// right-click menu: slope, then placement. One menu, one write.
+gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);
+gc_rclick && gc_fnode >= 0 ? (
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  gc_mres = gfx_showmenu(
+    "Off|12 dB/oct|24 dB/oct|36 dB/oct|48 dB/oct|96 dB/oct|FIR Brick||>Placement|Both|Mid|Side|Left|Right|<");
+  gc_mres > 0 ? (
+    gc_mres <= 7 ? (
+      gc_fnode == 0 ? ( slider131 = gc_mres - 1; slider_automate(slider131); )
+                    : ( slider135 = gc_mres - 1; slider_automate(slider135); );
+    ) : (
+      gc_fnode == 0 ? ( slider134 = gc_mres - 8; slider_automate(slider134); )
+                    : ( slider138 = gc_mres - 8; slider_automate(slider138); );
+    );
+  );
+);
+
+// start a filter drag
+gc_click && gc_fnode >= 0 ? (
+  gc_fdrag = gc_fnode;
+  gc_fdx = mouse_x; gc_fdy = mouse_y;
+  gc_fmod = mouse_cap & 8;
+  gc_at_fres = gc_fdrag == 0 ? slider133 : slider137;
+);
+!(mouse_cap & 1) ? gc_fdrag = -1;
+
+gc_fdrag >= 0 ? (
+  gc_fdyu = (mouse_y - gc_fdy) / gc_sc;
+  gc_fmod ? (
+    // Shift: resonance, 0.05 per 12 logical units
+    gc_v = min(max(gc_at_fres - floor(gc_fdyu / 12) * 0.05, 0), 1);
+    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = gc_v; slider_automate(slider133); ); )
+                  : ( gc_v != slider137 ? ( slider137 = gc_v; slider_automate(slider137); ); );
+  ) : (
+    // plain: cutoff follows the pointer along the log axis
+    gc_v = gc_f_of_x(mouse_x);
+    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = gc_v; slider_automate(slider132); ); )
+                  : ( gc_v != slider136 ? ( slider136 = gc_v; slider_automate(slider136); ); );
+  );
+);
+
+// draw the two handles
+gc_e = 0;
+loop(2,
+  gc_sl = gc_e == 0 ? slider131 : slider135;
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  gc_on = gc_hplp_audible(gc_e);
+  gfx_set(0.75, 0.75, 0.8, gc_on ? 1 : 0.35);
+  gfx_rect(gc_nx - 5 * gc_sc, gc_ny - 5 * gc_sc, 10 * gc_sc, 10 * gc_sc, gc_on ? 1 : 0);
+  (gc_fnode == gc_e || gc_fdrag == gc_e) ? (
+    gfx_rect(gc_nx - 8 * gc_sc, gc_ny - 8 * gc_sc, 16 * gc_sc, 16 * gc_sc, 0);
+    gfx_x = gc_nx + 12 * gc_sc; gfx_y = gc_ny - 6 * gc_sc;
+    gfx_drawstr(gc_e == 0 ? "HP " : "LP ");
+    gfx_drawnumber(gc_e == 0 ? slider132 : slider136, 0);
+    gfx_drawstr(" Hz  ");
+    gfx_drawstr(gc_sl == 0 ? "Off" : gc_sl == 6 ? "FIR Brick" : "");
+    gc_sl > 0 && gc_sl < 6 ? ( gfx_drawnumber(gc_sl == 5 ? 96 : gc_sl * 12, 0); gfx_drawstr(" dB/oct"); );
+  );
+  gc_e += 1;
+);
+
+// ---- global switches: Phase and per-engine Resolution. Click to toggle.
+function gc_button(bx, by, bw, label, on) local(hot) (
+  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
+  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
+  hot ? gfx_set(0.3, 0.5, 0.36, 1);
+  gfx_rect(bx, by, bw, 18 * gc_sc);
+  gfx_set(0.85, 0.85, 0.9, 1);
+  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
+  gfx_drawstr(label);
+  hot;
+);
+
+gc_by = gc_py + 4 * gc_sc;
+gc_bw = 110 * gc_sc;
+gc_hb0 = gc_button(gc_px + gc_pw - 3 * gc_bw - 16 * gc_sc, gc_by, gc_bw,
+                   slider140 == 1 ? "Phase: Linear" : "Phase: Min", slider140 == 1);
+gc_hb1 = gc_button(gc_px + gc_pw - 2 * gc_bw - 8 * gc_sc, gc_by, gc_bw,
+                   slider141 == 1 ? "HP res: High" : "HP res: Norm", slider141 == 1);
+gc_hb2 = gc_button(gc_px + gc_pw - gc_bw, gc_by, gc_bw,
+                   slider142 == 1 ? "LP res: High" : "LP res: Norm", slider142 == 1);
+
+gc_click ? (
+  gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); ) :
+  gc_hb1 ? ( slider141 = 1 - slider141; slider_automate(slider141); ) :
+  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); );
 );
 
 // ---- readout strip: five FIELDS, each named for the slider it edits.
