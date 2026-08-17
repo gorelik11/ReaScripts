@@ -797,3 +797,46 @@ Six P0s, all accepted; two were mistakes I introduced while editing rather than 
 | **P1** CPU acceptance has no limit | **Accepted** — zero xruns, +10 % peak-block-time ceiling, pinned buffers, duration and sweep |
 | **P2** "dominant axis at mouse-down" undefined | **Accepted** — 4-unit threshold; until then it is a click, not a drag |
 | **P2** Alt-drag Q mapping incomplete | **Accepted** — 12 units per step, Ctrl halves it, clamped to the slider's own range |
+
+## 16. As-shipped outcome (2026-08-18)
+
+**Shipped: the EQ curve GUI works.** Per-domain traces, draggable band nodes, HP/LP handles with
+a slope menu, Phase/Resolution buttons, and five numeric-entry fields.
+
+**Bit-accuracy: null test against V0.9 is a clean digital zero** (owner, live). Verified
+structurally as well: `@sample` and `@slider` are byte-identical to V0.9, `lp_base` is unmoved,
+and `@block` gains exactly three lines (the curve grid build and the active-generation bump).
+
+### What went wrong, and what it cost
+
+Seven live defects, none of which any review or test caught. They are recorded because every one
+of them is a property of the JSFX/REAPER environment rather than of this design, and the next GUI
+in this project will meet all seven again.
+
+| Defect | Symptom | Cause |
+|---|---|---|
+| **The GUI did not render at all** | only the slider list; a diagnostic fill was invisible too | REAPER lays visible sliders out **before** the canvas. With 95 of them the graph was far below the parameter list. `@gfx` had been running the whole time. Fix: `-` prefix on every slider declaration |
+| **Writes never reached the audio** | readout moved, sound and `Param` did not | writes went through `slider(index)` with a **computed index**. That updates the value the GUI reads back but not the parameter. Fix: `sliderN` by name, as ReEQ, Fable Eq and EQall all do |
+| **Changes needed a plugin reload** | LP slope applied only after reloading | `@slider` is **not** guaranteed to run after `slider_automate`. Fix: recompute the dependants inline. None of the three reference plugins trusts an automatic `@slider` |
+| **The curve ignored the nodes** | node and readout moved, curve stayed flat | the graph read `cf` / `hplp_cf`, the live coefficient arrays, which only `@slider` refreshes. Fix: the GUI builds its own coefficients with the same `svf_set` / `hplp_coef`, into its own scratch. Writing into `cf` from `@gfx` was never an option — another thread |
+| **Null test left −62 dB** | "identical" settings differed | the GUI wrote **continuous** values: a drag produced 59.752306 Hz on a slider declared with step 1. Fix: mouse gestures quantise to the declared step; typed values stay exact, as the owner requires |
+| **One band dragged backwards** | three nodes fine, the second inverted | that band had a **negative Bit Ratio**, which mirrors the node. Not a GUI bug — the GUI exposed a stored state the slider's `0..3` range cannot produce. Fix: mirror the gesture with the sign and label the node |
+| **Three broken builds** | compile errors | EEL2 resolves functions in **file order**, and text-level edits moved definitions below their callers — once dragging `lpk_commit` out of the audio path with them |
+
+### The debugging lesson worth keeping
+
+The −62 dB residue took an hour of hypotheses — linear engines, kernel crossfades, duplicated
+`@slider` logic, filter state resets — and a fix written for each. The owner then suggested
+reading the parameters programmatically. A five-line `reapy` script compared all **97** parameters
+of both instances and found **one** difference. Screenshots could not have shown it: the two
+tracks displayed different subsets of knobs.
+
+**Rule for the next session: when two versions differ, compare parameters with `reapy` first.**
+Reasoning about the code comes after the data, not before it.
+
+### Still open
+
+- CPU gate: V0.9 vs V1.0 with the window **closed** (the curve grid builds in `@block` either
+  way), peak block time and xruns.
+- Fable's final review.
+- Deferred as designed: spectrum analyser (V1.1) and the dynamics display (V1.2).
