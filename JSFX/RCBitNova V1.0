@@ -868,8 +868,8 @@ function setup_band_dyn(b)
 // versions differed by ~0.08% (-62 dB on a null test). Found live 2026-08-18.
 function gc_q_step(v, st) ( floor(v / st + 0.5) * st; );
 
-function gc_w_freq(b, v) (
-  v = gc_q_step(v, 1);                      // slider step: 1 Hz
+function gc_w_freq(b, v, qz) (
+  qz ? v = gc_q_step(v, 1);                      // slider step: 1 Hz
   b == 0 ? ( slider13 = v; slider_automate(slider13); ) :
   b == 1 ? ( slider23 = v; slider_automate(slider23); ) :
   b == 2 ? ( slider33 = v; slider_automate(slider33); ) :
@@ -877,8 +877,8 @@ function gc_w_freq(b, v) (
   setup_band(b); setup_band_dyn(b);
 );
 
-function gc_w_macro(b, v) (
-  v = gc_q_step(v, 1);                      // whole bits
+function gc_w_macro(b, v, qz) (
+  qz ? v = gc_q_step(v, 1);                      // whole bits
   b == 0 ? ( slider15 = v; slider_automate(slider15); ) :
   b == 1 ? ( slider25 = v; slider_automate(slider25); ) :
   b == 2 ? ( slider35 = v; slider_automate(slider35); ) :
@@ -886,8 +886,8 @@ function gc_w_macro(b, v) (
   setup_band(b); setup_band_dyn(b);
 );
 
-function gc_w_micro(b, v) (
-  v = gc_q_step(v, 0.1);                    // slider step: 0.1 % of a bit
+function gc_w_micro(b, v, qz) (
+  qz ? v = gc_q_step(v, 0.1);                    // slider step: 0.1 % of a bit
   b == 0 ? ( slider16 = v; slider_automate(slider16); ) :
   b == 1 ? ( slider26 = v; slider_automate(slider26); ) :
   b == 2 ? ( slider36 = v; slider_automate(slider36); ) :
@@ -895,8 +895,8 @@ function gc_w_micro(b, v) (
   setup_band(b); setup_band_dyn(b);
 );
 
-function gc_w_ratio(b, v) (
-  v = gc_q_step(v, 0.05);                   // slider step: 0.05
+function gc_w_ratio(b, v, qz) (
+  qz ? v = gc_q_step(v, 0.05);                   // slider step: 0.05
   b == 0 ? ( slider17 = v; slider_automate(slider17); ) :
   b == 1 ? ( slider27 = v; slider_automate(slider27); ) :
   b == 2 ? ( slider37 = v; slider_automate(slider37); ) :
@@ -904,8 +904,8 @@ function gc_w_ratio(b, v) (
   setup_band(b); setup_band_dyn(b);
 );
 
-function gc_w_q(b, v) (
-  v = gc_q_step(v, 0.001);                  // slider step: 0.001
+function gc_w_q(b, v, qz) (
+  qz ? v = gc_q_step(v, 0.001);                  // slider step: 0.001
   b == 0 ? ( slider14 = v; slider_automate(slider14); ) :
   b == 1 ? ( slider24 = v; slider_automate(slider24); ) :
   b == 2 ? ( slider34 = v; slider_automate(slider34); ) :
@@ -1725,7 +1725,7 @@ gc_drag >= 0 ? (
     abs(gc_dxu) > abs(gc_dyu) ? (
       // horizontal: Frequency follows the pointer along the log axis
       gc_v = gc_f_of_x(mouse_x);
-      gc_v != slider(gc_s + 3) ? gc_w_freq(gc_drag, gc_v);
+      gc_v != slider(gc_s + 3) ? gc_w_freq(gc_drag, gc_v, 1);
     ) : (
       gc_mod & 8 ? (
         // Shift: Bit Ratio, one 0.05 step per 12 units, kept exactly on the grid
@@ -1733,12 +1733,12 @@ gc_drag >= 0 ? (
         gc_v = gc_at_ratio + gc_st * 0.05;
         gc_v = min(max(gc_v, 0), 3);
         gc_v = (gc_v < 0 ? -floor(-gc_v / 0.05 + 0.5) : floor(gc_v / 0.05 + 0.5)) * 0.05;
-        gc_v != slider(gc_s + 7) ? gc_w_ratio(gc_drag, gc_v);
+        gc_v != slider(gc_s + 7) ? gc_w_ratio(gc_drag, gc_v, 1);
       ) : gc_mod & 16 ? (
         // Alt: Q
         gc_st = -floor(gc_dyu / 12);
         gc_v = min(max(gc_at_q + gc_st * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
-        gc_v != slider(gc_s + 4) ? gc_w_q(gc_drag, gc_v);
+        gc_v != slider(gc_s + 4) ? gc_w_q(gc_drag, gc_v, 1);
       ) : (
         // plain: Macro, whole bits, one per 24 units. Ratio 0 has no solution - the node locks
         // rather than silently resetting a deliberate setting.
@@ -1749,7 +1749,7 @@ gc_drag >= 0 ? (
           // negative Ratio, and only that one band appeared to drag backwards.
           gc_st = -floor(gc_dyu / 24) * (gc_at_ratio < 0 ? -1 : 1);
           gc_v = min(max(gc_at_macro + gc_st, -16), 16);
-          gc_v != slider(gc_s + 5) ? gc_w_macro(gc_drag, gc_v);
+          gc_v != slider(gc_s + 5) ? gc_w_macro(gc_drag, gc_v, 1);
         );
       );
     );
@@ -1762,7 +1762,7 @@ gc_last_wheel = mouse_wheel;
 (gc_wd != 0 && gc_hover >= 0) ? (
   gc_s = 10 * (gc_hover + 1);
   gc_v = min(max(slider(gc_s + 4) + (gc_wd > 0 ? 1 : -1) * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
-  gc_w_q(gc_hover, gc_v);
+  gc_w_q(gc_hover, gc_v, 1);
 );
 
 // ---- draw the nodes. Position uses the FULL effective gain including Bit Ratio, so a node
@@ -1977,11 +1977,13 @@ gc_edit >= 0 ? (
       );
       gc_neg ? gc_val = -gc_val;
       gc_elen > 0 ? (
-        gc_edit == 0 ? gc_w_freq (gc_sel, min(max(gc_val,20),20000)) :
-        gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16))   :
-        gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100)) :
-        gc_edit == 3 ? gc_w_ratio(gc_sel, min(max(gc_val,0),3))      :
-                       gc_w_q    (gc_sel, min(max(gc_val,0.1),10));
+        // typed values are NOT quantised: the owner asked to be able to enter any number.
+        // Mouse gestures snap to the slider grid; the keyboard is the precision path.
+        gc_edit == 0 ? gc_w_freq (gc_sel, min(max(gc_val,20),20000), 0) :
+        gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16),   0) :
+        gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100), 0) :
+        gc_edit == 3 ? gc_w_ratio(gc_sel, min(max(gc_val,0),3),      0) :
+                       gc_w_q    (gc_sel, min(max(gc_val,0.1),10),   0);
       );
       gc_edit = -1; gc_elen = 0;
     ) : gc_key == 27 ? ( gc_edit = -1; gc_elen = 0; )
