@@ -931,6 +931,12 @@ function gc_apply_hplp(eng) local(kk) (
       kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
       hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
     );
+    // @slider does this too, and omitting it was the null-test defect: the filter state was
+    // never reset on a slope/placement change from the GUI, and prev_* stayed stale so @slider
+    // would reset it again later, out of step with the other instance.
+    (slider131 != prev_hp_slope || slider134 != prev_hp_pl) ? (
+      memset(hplp_state + 0, 0, 36); prev_hp_slope = slider131; prev_hp_pl = slider134;
+    );
     hp_dirty = 1;
   ) : (
     lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;
@@ -938,6 +944,9 @@ function gc_apply_hplp(eng) local(kk) (
     lp_nsec > 0 ? (
       kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
       hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+    );
+    (slider135 != prev_lp_slope || slider138 != prev_lp_pl) ? (
+      memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
     );
     lp_dirty = 1;
   );
