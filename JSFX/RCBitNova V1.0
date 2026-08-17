@@ -862,7 +862,14 @@ function setup_band_dyn(b)
 //    Fable Eq updates its derived variables inline. None of the three trusts an automatic
 //    @slider.
 
+// Every writer QUANTISES to its slider's declared step. Without this the GUI wrote continuous
+// values - a drag produced 3247.83 Hz on a slider declared with step 1 - so a setting made in
+// the GUI could not be reproduced from the slider, and the same "identical" settings in two
+// versions differed by ~0.08% (-62 dB on a null test). Found live 2026-08-18.
+function gc_q_step(v, st) ( floor(v / st + 0.5) * st; );
+
 function gc_w_freq(b, v) (
+  v = gc_q_step(v, 1);                      // slider step: 1 Hz
   b == 0 ? ( slider13 = v; slider_automate(slider13); ) :
   b == 1 ? ( slider23 = v; slider_automate(slider23); ) :
   b == 2 ? ( slider33 = v; slider_automate(slider33); ) :
@@ -871,6 +878,7 @@ function gc_w_freq(b, v) (
 );
 
 function gc_w_macro(b, v) (
+  v = gc_q_step(v, 1);                      // whole bits
   b == 0 ? ( slider15 = v; slider_automate(slider15); ) :
   b == 1 ? ( slider25 = v; slider_automate(slider25); ) :
   b == 2 ? ( slider35 = v; slider_automate(slider35); ) :
@@ -879,6 +887,7 @@ function gc_w_macro(b, v) (
 );
 
 function gc_w_micro(b, v) (
+  v = gc_q_step(v, 0.1);                    // slider step: 0.1 % of a bit
   b == 0 ? ( slider16 = v; slider_automate(slider16); ) :
   b == 1 ? ( slider26 = v; slider_automate(slider26); ) :
   b == 2 ? ( slider36 = v; slider_automate(slider36); ) :
@@ -887,6 +896,7 @@ function gc_w_micro(b, v) (
 );
 
 function gc_w_ratio(b, v) (
+  v = gc_q_step(v, 0.05);                   // slider step: 0.05
   b == 0 ? ( slider17 = v; slider_automate(slider17); ) :
   b == 1 ? ( slider27 = v; slider_automate(slider27); ) :
   b == 2 ? ( slider37 = v; slider_automate(slider37); ) :
@@ -895,6 +905,7 @@ function gc_w_ratio(b, v) (
 );
 
 function gc_w_q(b, v) (
+  v = gc_q_step(v, 0.001);                  // slider step: 0.001
   b == 0 ? ( slider14 = v; slider_automate(slider14); ) :
   b == 1 ? ( slider24 = v; slider_automate(slider24); ) :
   b == 2 ? ( slider34 = v; slider_automate(slider34); ) :
@@ -1838,13 +1849,13 @@ gc_fdrag >= 0 ? (
   gc_fmod ? (
     // Shift: resonance, 0.05 per 12 logical units
     gc_v = min(max(gc_at_fres - floor(gc_fdyu / 12) * 0.05, 0), 1);
-    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = gc_v; slider_automate(slider133); gc_apply_hplp(0); ); )
-                  : ( gc_v != slider137 ? ( slider137 = gc_v; slider_automate(slider137); gc_apply_hplp(1); ); );
+    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = floor(gc_v / 0.001 + 0.5) * 0.001; slider_automate(slider133); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider137 ? ( slider137 = floor(gc_v / 0.001 + 0.5) * 0.001; slider_automate(slider137); gc_apply_hplp(1); ); );
   ) : (
     // plain: cutoff follows the pointer along the log axis
     gc_v = gc_f_of_x(mouse_x);
-    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = gc_v; slider_automate(slider132); gc_apply_hplp(0); ); )
-                  : ( gc_v != slider136 ? ( slider136 = gc_v; slider_automate(slider136); gc_apply_hplp(1); ); );
+    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = floor(gc_v + 0.5); slider_automate(slider132); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider136 ? ( slider136 = floor(gc_v + 0.5); slider_automate(slider136); gc_apply_hplp(1); ); );
   );
 );
 
