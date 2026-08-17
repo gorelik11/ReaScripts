@@ -650,15 +650,21 @@ lp_fs  = lp_off + 32;     // 8 words  (2 engines * 4: fading, fade_pos, fade_len
 // @gfx reads it on another thread. @gfx never allocates and never relocates audio memory.
 //
 // Verified fit: the static chain ends at 38275 words and lp_base = 65536, leaving 27261 words
-// of padding. This block is 13456 words, ending the region at 51731 - still ~13800 short of the
-// boundary, so lp_base does NOT move and V0.7's page alignment is untouched.
+// of padding. This block is 13638 words (5120+8192+128+16+32+126+24), ending the region at
+// 51913 - still ~13600 short of the boundary, so lp_base does NOT move and V0.7's page
+// alignment is untouched. NOTE the formula's input changed (lp_fs+8 -> gc_ebuf+24); lp_base is
+// unmoved because the region still fits under the page, not because the expression is the same.
 GC_N     = 512;                       // display points per trace
 GC_LIN_N = 2048;                      // realized-kernel points PER ENGINE. Not 256: resampling
                                       // BD/2 dense bins to a coarse grid would re-create the
                                       // sparse-grid problem the FFT was chosen to avoid.
 gc_trace = lp_fs + 8;                 // [2 buffers][5 domains][GC_N]      = 5120
 gc_lin   = gc_trace + 2*5*GC_N;       // [2 buffers][2 engines][GC_LIN_N]  = 8192
-gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words: per-field invalidation snapshot
+gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words RESERVED for a per-field invalidation
+                                      // snapshot. NOT used in V1.0: the curve is recomputed every
+                                      // frame, which measured free (0.51% vs 0.52% against V0.9
+                                      // with the window closed). Kept so adding it later cannot
+                                      // move lp_base.
 gc_meta  = gc_snap + 128;             // 16 words, NAMED below - never index it numerically
 gc_kc    = gc_meta + 16;              // 32 words: the GUI's OWN band coefficients (4 x 8)
 gc_fc    = gc_kc + 32;                // 126 words: the GUI's OWN HP/LP coefficients (2 x 63)
@@ -950,6 +956,46 @@ function gc_apply_hplp(eng) local(kk) (
     );
     lp_dirty = 1;
   );
+);
+
+function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
+
+gc_fnode = -1;
+gc_e = 0;
+loop(2,
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
+  gc_e += 1;
+);
+function gc_button(bx, by, bw, label, on) local(hot) (
+  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
+  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
+  hot ? gfx_set(0.3, 0.5, 0.36, 1);
+  gfx_rect(bx, by, bw, 18 * gc_sc);
+  gfx_set(0.85, 0.85, 0.9, 1);
+  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
+  gfx_drawstr(label);
+  hot;
+);
+function gc_field(i, label, value, dec) local(fx, hot) (
+  fx = gc_px + i * (gc_fw + 8 * gc_sc);
+  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
+  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
+  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
+  gfx_set(0.6, 0.6, 0.65, 1);
+  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
+  gfx_drawstr(label);
+  gfx_set(0.9, 0.9, 0.95, 1);
+  gc_edit == i ? (
+    // show what is being typed, with a cursor
+    gc_ci = 0;
+    loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
+    gfx_drawstr("_");
+  ) : (
+    gfx_drawnumber(value, dec);
+  );
+  hot;
 );
 
 // ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
@@ -1816,16 +1862,6 @@ loop(N_BANDS,
 //   right-click       -> slope and placement menu
 // Sitting on the zero line keeps them out of the way of the band nodes.
 
-function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
-
-gc_fnode = -1;
-gc_e = 0;
-loop(2,
-  gc_nx = gc_filt_x(gc_e);
-  gc_ny = gc_y_of_bits(0);
-  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
-  gc_e += 1;
-);
 
 // right-click menu: slope, then placement. One menu, one write.
 gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);
@@ -1890,16 +1926,6 @@ loop(2,
 );
 
 // ---- global switches: Phase and per-engine Resolution. Click to toggle.
-function gc_button(bx, by, bw, label, on) local(hot) (
-  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
-  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
-  hot ? gfx_set(0.3, 0.5, 0.36, 1);
-  gfx_rect(bx, by, bw, 18 * gc_sc);
-  gfx_set(0.85, 0.85, 0.9, 1);
-  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
-  gfx_drawstr(label);
-  hot;
-);
 
 gc_by = gc_py + 4 * gc_sc;
 gc_bw = 110 * gc_sc;
@@ -1926,25 +1952,6 @@ gc_fy = gc_py + gc_ph + 6 * gc_sc;
 gc_fh = 20 * gc_sc;
 gc_fw = 150 * gc_sc;
 
-function gc_field(i, label, value, dec) local(fx, hot) (
-  fx = gc_px + i * (gc_fw + 8 * gc_sc);
-  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
-  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
-  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
-  gfx_set(0.6, 0.6, 0.65, 1);
-  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
-  gfx_drawstr(label);
-  gfx_set(0.9, 0.9, 0.95, 1);
-  gc_edit == i ? (
-    // show what is being typed, with a cursor
-    gc_ci = 0;
-    loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
-    gfx_drawstr("_");
-  ) : (
-    gfx_drawnumber(value, dec);
-  );
-  hot;
-);
 
 gc_h0 = gc_field(0, "Freq ",  slider(gc_s + 3), 0);
 gc_h1 = gc_field(1, "Macro ", slider(gc_s + 5), 0);

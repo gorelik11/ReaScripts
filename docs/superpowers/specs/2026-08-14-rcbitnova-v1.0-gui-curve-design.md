@@ -230,7 +230,10 @@ because `lp_align` re-derives everything from `lp_base` itself.
 | `gc_lin[2][2][LIN_N]` | 2 × 2 × 2048 = 8192 | realized Linear/Brick magnitudes, per engine, double-buffered |
 | `gc_snap[SNAP_N]` | 128 | per-field snapshot for invalidation |
 | `gc_meta` | 16 | per-engine and per-trace indices + generations (named constants, never numeric) |
-| **Total** | **13456** | |
+| `gc_kc` | 32 | the GUI's own band coefficients (4 x 8) — added during implementation |
+| `gc_fc` | 126 | the GUI's own HP/LP coefficients (2 x 63) — added during implementation |
+| `gc_ebuf` | 24 | numeric-entry character buffer — added during implementation |
+| **Total** | **13638** | ends the static region at 51913, `lp_base` unmoved at 65536 |
 
 **It fits, with the numbers rather than a promise** (Fable rev-4 P2-7). Tracing the static chain
 from `cf = 0`: `hplp_state = 37932`, `hplp_cf = 38004`, `lp_rt = 38130`, `lp_kc = 38146`,
@@ -789,7 +792,7 @@ Six P0s, all accepted; two were mistakes I introduced while editing rather than 
 | **P0** publication unit for two engines undefined | **Accepted** — one engine is the unit, each with its own index and generation. The fix existed only in the plan; the design now carries it |
 | **P0** `gc_lin` and `gc_trace` cannot share one index | **Accepted** — separate metadata, writers and generations, tabulated by region |
 | **P1** integer rounding tie still cross-language | **Accepted** — pinned as half-away-from-zero with one shared helper and a two-sign expected table |
-| **P1** "dense FFT" contradicted by a 256-point cache | **Accepted** — `LIN_N` raised to 2048 (≈0.34 % spacing) with a ≤0.01-bit reduction-error test; memory recomputed to 13456 words, still ~13800 short of the page boundary |
+| **P1** "dense FFT" contradicted by a 256-point cache | **Accepted** — `LIN_N` raised to 2048 (≈0.34 % spacing) with a ≤0.01-bit reduction-error test; memory recomputed (13638 words as shipped, ~13600 short of the page boundary) |
 | **P1** "enabled domain" undefined for Off / Min+Brick | **Accepted** — audible-activity table added |
 | **P1** target-display timeline inaccurate during coalescing | **Accepted** — three explicit states; before the rebuild the graph shows the previous curve and leads nothing |
 | **P1** verification misses the new gestures | **Accepted** — a full one-gesture-one-slider matrix over all nine band sliders |
@@ -834,9 +837,28 @@ tracks displayed different subsets of knobs.
 **Rule for the next session: when two versions differ, compare parameters with `reapy` first.**
 Reasoning about the code comes after the data, not before it.
 
-### Still open
+### Gates, all passed
 
-- CPU gate: V0.9 vs V1.0 with the window **closed** (the curve grid builds in `@block` either
-  way), peak block time and xruns.
-- Fable's final review.
+- **Null test V0.9 vs V1.0 at matched settings: clean digital zero** (owner, live).
+- **CPU with the window closed: 0.51 % vs 0.52 %** (owner, live) — the `@block` curve-grid build
+  is effectively free, which was the risk the design worried about most.
+- **Fable's final review: READY TO TAG, no P0.** She independently confirmed `@sample`/`@slider`
+  byte-identity, that `svf_set`'s new signature is exactly equivalent at both call sites, that
+  `desbuf` reuse cannot race (`lpk_run` never touches `ob[0..2]`), and that the gc_* block cannot
+  overlap anything. Her three findings were documentation defects, all fixed before tagging:
+  a stale "13456 words" comment (the block is 13638), three helper functions defined inside
+  `@gfx` in contradiction of the file's own stated rule, and `gc_snap` described as an active
+  mechanism when it is reserved-but-unused.
+
+**Thread safety, judged and accepted.** `@gfx` writes `cf`/`hplp_cf` while `@sample` reads them.
+Fable's analysis: a torn read mixes two *valid* coefficient sets, never a valid and a garbage
+one, because every field is individually clamped by its slider range — so the exposure is a
+single bounded wrong sample that self-corrects, not instability. Both reference plugins do the
+same. Deferring the writes to `@block` is reasonable V1.1 hardening, not a tag blocker.
+
+### Follow-up for V1.1
+
+- Extract one shared `build_hp()`/`build_lp()` used by both `@slider` and the GUI. Today they are
+  two copies, and one omission in the copy already cost a live debugging session.
+- Optionally defer GUI parameter writes to `@block` to close the one-sample window above.
 - Deferred as designed: spectrum analyser (V1.1) and the dynamics display (V1.2).
