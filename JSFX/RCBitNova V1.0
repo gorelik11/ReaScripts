@@ -1842,7 +1842,6 @@ gfx_drawstr("B"); gfx_drawnumber(gc_sel + 1, 0);
 gfx_drawstr("   effective ");
 gfx_drawnumber((slider(gc_s+5) + slider(gc_s+6)*0.01) * slider(gc_s+7), 2);
 gfx_drawstr(" bits");
-);
 
 // click a field to focus it
 gc_click ? (
