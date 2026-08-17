@@ -852,6 +852,86 @@ function setup_band_dyn(b)
   bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
 );
 
+// ---- V1.0 GUI writers. Two lessons from ReEQ, Fable Eq and EQall, learned the hard way:
+//
+// 1. Write sliderN BY NAME. Assigning through slider(index) with a computed index updated the
+//    value the GUI read back - so the readout moved and everything looked right - but it did
+//    not reach the actual parameter, so neither the audio nor the Param list ever changed.
+// 2. Do NOT rely on @slider running after slider_automate. Recompute whatever depends on the
+//    parameter right here. ReEQ keeps its truth in internal arrays and syncs sliders backwards;
+//    Fable Eq updates its derived variables inline. None of the three trusts an automatic
+//    @slider.
+
+function gc_w_freq(b, v) (
+  b == 0 ? ( slider13 = v; slider_automate(slider13); ) :
+  b == 1 ? ( slider23 = v; slider_automate(slider23); ) :
+  b == 2 ? ( slider33 = v; slider_automate(slider33); ) :
+           ( slider43 = v; slider_automate(slider43); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_macro(b, v) (
+  b == 0 ? ( slider15 = v; slider_automate(slider15); ) :
+  b == 1 ? ( slider25 = v; slider_automate(slider25); ) :
+  b == 2 ? ( slider35 = v; slider_automate(slider35); ) :
+           ( slider45 = v; slider_automate(slider45); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_micro(b, v) (
+  b == 0 ? ( slider16 = v; slider_automate(slider16); ) :
+  b == 1 ? ( slider26 = v; slider_automate(slider26); ) :
+  b == 2 ? ( slider36 = v; slider_automate(slider36); ) :
+           ( slider46 = v; slider_automate(slider46); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_ratio(b, v) (
+  b == 0 ? ( slider17 = v; slider_automate(slider17); ) :
+  b == 1 ? ( slider27 = v; slider_automate(slider27); ) :
+  b == 2 ? ( slider37 = v; slider_automate(slider37); ) :
+           ( slider47 = v; slider_automate(slider47); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_q(b, v) (
+  b == 0 ? ( slider14 = v; slider_automate(slider14); ) :
+  b == 1 ? ( slider24 = v; slider_automate(slider24); ) :
+  b == 2 ? ( slider34 = v; slider_automate(slider34); ) :
+           ( slider44 = v; slider_automate(slider44); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_enable(b, v) (
+  b == 0 ? ( slider11 = v; slider_automate(slider11); ) :
+  b == 1 ? ( slider21 = v; slider_automate(slider21); ) :
+  b == 2 ? ( slider31 = v; slider_automate(slider31); ) :
+           ( slider41 = v; slider_automate(slider41); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+// HP/LP: recompute the cascade exactly as @slider does, and mark the linear kernel dirty so
+// @block rebuilds it. Without this a slope change only took effect after reloading the plugin.
+function gc_apply_hplp(eng) local(kk) (
+  eng == 0 ? (
+    hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;
+    hp_fe = min(slider132, srate * 0.49);
+    hp_nsec > 0 ? (
+      kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
+      hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
+    );
+    hp_dirty = 1;
+  ) : (
+    lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;
+    lp_fe = min(slider136, srate * 0.49);
+    lp_nsec > 0 ? (
+      kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
+      hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+    );
+    lp_dirty = 1;
+  );
+);
+
 // ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
 // definitions at file scope, and a definition inside a section is not reliable.
 function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );
@@ -1608,10 +1688,7 @@ loop(N_BANDS,
 
 // a click on a DISABLED band's node switches it on - otherwise the only way to enable a band
 // would be the Param list, which defeats the point of having a graph
-gc_click && gc_hover >= 0 && slider(10*(gc_hover+1)+1) == 0 ? (
-  slider(10*(gc_hover+1)+1) = 1;
-  slider_automate(slider(10*(gc_hover+1)+1));
-);
+gc_click && gc_hover >= 0 && slider(10*(gc_hover+1)+1) == 0 ? gc_w_enable(gc_hover, 1);
 
 // start a drag: capture the band, the origin, the modifier and every value we may write
 gc_click && gc_hover >= 0 ? (
@@ -1637,7 +1714,7 @@ gc_drag >= 0 ? (
     abs(gc_dxu) > abs(gc_dyu) ? (
       // horizontal: Frequency follows the pointer along the log axis
       gc_v = gc_f_of_x(mouse_x);
-      gc_v != slider(gc_s + 3) ? ( slider(gc_s + 3) = gc_v; slider_automate(slider(gc_s + 3)); );
+      gc_v != slider(gc_s + 3) ? gc_w_freq(gc_drag, gc_v);
     ) : (
       gc_mod & 8 ? (
         // Shift: Bit Ratio, one 0.05 step per 12 units, kept exactly on the grid
@@ -1645,12 +1722,12 @@ gc_drag >= 0 ? (
         gc_v = gc_at_ratio + gc_st * 0.05;
         gc_v = min(max(gc_v, 0), 3);
         gc_v = (gc_v < 0 ? -floor(-gc_v / 0.05 + 0.5) : floor(gc_v / 0.05 + 0.5)) * 0.05;
-        gc_v != slider(gc_s + 7) ? ( slider(gc_s + 7) = gc_v; slider_automate(slider(gc_s + 7)); );
+        gc_v != slider(gc_s + 7) ? gc_w_ratio(gc_drag, gc_v);
       ) : gc_mod & 16 ? (
         // Alt: Q
         gc_st = -floor(gc_dyu / 12);
         gc_v = min(max(gc_at_q + gc_st * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
-        gc_v != slider(gc_s + 4) ? ( slider(gc_s + 4) = gc_v; slider_automate(slider(gc_s + 4)); );
+        gc_v != slider(gc_s + 4) ? gc_w_q(gc_drag, gc_v);
       ) : (
         // plain: Macro, whole bits, one per 24 units. Ratio 0 has no solution - the node locks
         // rather than silently resetting a deliberate setting.
@@ -1661,7 +1738,7 @@ gc_drag >= 0 ? (
           // negative Ratio, and only that one band appeared to drag backwards.
           gc_st = -floor(gc_dyu / 24) * (gc_at_ratio < 0 ? -1 : 1);
           gc_v = min(max(gc_at_macro + gc_st, -16), 16);
-          gc_v != slider(gc_s + 5) ? ( slider(gc_s + 5) = gc_v; slider_automate(slider(gc_s + 5)); );
+          gc_v != slider(gc_s + 5) ? gc_w_macro(gc_drag, gc_v);
         );
       );
     );
@@ -1674,7 +1751,7 @@ gc_last_wheel = mouse_wheel;
 (gc_wd != 0 && gc_hover >= 0) ? (
   gc_s = 10 * (gc_hover + 1);
   gc_v = min(max(slider(gc_s + 4) + (gc_wd > 0 ? 1 : -1) * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
-  slider(gc_s + 4) = gc_v; slider_automate(slider(gc_s + 4));
+  gc_w_q(gc_hover, gc_v);
 );
 
 // ---- draw the nodes. Position uses the FULL effective gain including Bit Ratio, so a node
@@ -1738,8 +1815,8 @@ gc_rclick && gc_fnode >= 0 ? (
     "Off|12 dB/oct|24 dB/oct|36 dB/oct|48 dB/oct|96 dB/oct|FIR Brick||>Placement|Both|Mid|Side|Left|Right|<");
   gc_mres > 0 ? (
     gc_mres <= 7 ? (
-      gc_fnode == 0 ? ( slider131 = gc_mres - 1; slider_automate(slider131); )
-                    : ( slider135 = gc_mres - 1; slider_automate(slider135); );
+      gc_fnode == 0 ? ( slider131 = gc_mres - 1; slider_automate(slider131); gc_apply_hplp(0); )
+                    : ( slider135 = gc_mres - 1; slider_automate(slider135); gc_apply_hplp(1); );
     ) : (
       gc_fnode == 0 ? ( slider134 = gc_mres - 8; slider_automate(slider134); )
                     : ( slider138 = gc_mres - 8; slider_automate(slider138); );
@@ -1761,13 +1838,13 @@ gc_fdrag >= 0 ? (
   gc_fmod ? (
     // Shift: resonance, 0.05 per 12 logical units
     gc_v = min(max(gc_at_fres - floor(gc_fdyu / 12) * 0.05, 0), 1);
-    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = gc_v; slider_automate(slider133); ); )
-                  : ( gc_v != slider137 ? ( slider137 = gc_v; slider_automate(slider137); ); );
+    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = gc_v; slider_automate(slider133); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider137 ? ( slider137 = gc_v; slider_automate(slider137); gc_apply_hplp(1); ); );
   ) : (
     // plain: cutoff follows the pointer along the log axis
     gc_v = gc_f_of_x(mouse_x);
-    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = gc_v; slider_automate(slider132); ); )
-                  : ( gc_v != slider136 ? ( slider136 = gc_v; slider_automate(slider136); ); );
+    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = gc_v; slider_automate(slider132); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider136 ? ( slider136 = gc_v; slider_automate(slider136); gc_apply_hplp(1); ); );
   );
 );
 
@@ -1889,11 +1966,11 @@ gc_edit >= 0 ? (
       );
       gc_neg ? gc_val = -gc_val;
       gc_elen > 0 ? (
-        gc_edit == 0 ? ( slider(gc_s+3) = min(max(gc_val,20),20000); slider_automate(slider(gc_s+3)); ) :
-        gc_edit == 1 ? ( slider(gc_s+5) = min(max(gc_val,-16),16);   slider_automate(slider(gc_s+5)); ) :
-        gc_edit == 2 ? ( slider(gc_s+6) = min(max(gc_val,-100),100); slider_automate(slider(gc_s+6)); ) :
-        gc_edit == 3 ? ( slider(gc_s+7) = min(max(gc_val,0),3);      slider_automate(slider(gc_s+7)); ) :
-                       ( slider(gc_s+4) = min(max(gc_val,0.1),10);   slider_automate(slider(gc_s+4)); );
+        gc_edit == 0 ? gc_w_freq (gc_sel, min(max(gc_val,20),20000)) :
+        gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16))   :
+        gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100)) :
+        gc_edit == 3 ? gc_w_ratio(gc_sel, min(max(gc_val,0),3))      :
+                       gc_w_q    (gc_sel, min(max(gc_val,0.1),10));
       );
       gc_edit = -1; gc_elen = 0;
     ) : gc_key == 27 ? ( gc_edit = -1; gc_elen = 0; )
