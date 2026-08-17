@@ -661,7 +661,8 @@ gc_lin   = gc_trace + 2*5*GC_N;       // [2 buffers][2 engines][GC_LIN_N]  = 819
 gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words: per-field invalidation snapshot
 gc_meta  = gc_snap + 128;             // 16 words, NAMED below - never index it numerically
 gc_kc    = gc_meta + 16;              // 32 words: the GUI's OWN band coefficients (4 x 8)
-gc_ebuf  = gc_kc + 32;                // 24 words: numeric-entry character buffer
+gc_fc    = gc_kc + 32;                // 126 words: the GUI's OWN HP/LP coefficients (2 x 63)
+gc_ebuf  = gc_fc + 126;               // 24 words: numeric-entry character buffer
 
 // Named metadata slots. Numeric indices already caused one real defect during planning:
 // topo_commit bumped gc_meta[2] while its comment said "gen_active", which actually advanced
@@ -685,7 +686,7 @@ hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 // treated as ALREADY COMMITTED to whatever the project loaded: without this, reopening a project
 // saved as Linear/High/Mid would arm a mute AND play through the WRONG topology until the hold
 // expired - on every load, and again on every sample-rate change, which re-runs @init.
-memset(gc_trace, 0, 13512);
+memset(gc_trace, 0, 13638);
 gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1;
 gc_edit = -1; gc_elen = 0; gc_fdrag = -1; gc_fnode = -1;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
@@ -734,6 +735,23 @@ function gc_band_setup(b) local(s, ty, glin) (
   ty = slider(s + 2); (ty > 2 || ty < 0) ? ty = 0;
   glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
   svf_set(gc_kc + b * 8, ty, slider(s + 3), band_qeff(b), glin);
+);
+
+// Same fix as the bands, which I left half-done: reading hplp_cf meant reading coefficients
+// that only @slider refreshes, so a cutoff written from @gfx never reached the drawn curve and
+// the filter skirt stayed put while the handle moved.
+function gc_hplp_setup(eng) local(nsec, fe, base, k, sl) (
+  // slope enum -> sections, inline: gc_hplp_nsec is defined further down and EEL2 resolves
+  // functions in file order
+  sl = eng == 0 ? slider131 : slider135;
+  nsec = sl == 6 ? 0 : sl == 5 ? 8 : sl;
+  base = gc_fc + eng * 63;
+  nsec > 0 ? (
+    fe = min(eng == 0 ? slider132 : slider136, srate * 0.49);
+    k = 0;
+    loop(nsec, hplp_coef(base + k*7, eng == 0 ? 3 : 4, fe, butter_q(k, nsec)); k += 1;);
+    hplp_bell(base + 56, fe, 1 + (eng == 0 ? slider133 : slider137) * 5);
+  );
 );
 
 function gc_band_bits(b, f) (
@@ -864,7 +882,7 @@ function gc_hplp_bits(eng, f) local(nsec, base, k, acc, sl, idx, src, t, i, f0, 
       // min-phase cascade: sum the staggered-Butterworth sections plus the resonance bell,
       // reading the very coefficients @slider built for the audio path
       nsec = gc_hplp_nsec(eng);
-      base = eng == 0 ? hplp_cf : hplp_cf + 63;
+      base = gc_fc + eng * 63;
       acc = 0; k = 0;
       loop(nsec, acc += log(max(gc_svf_mag(base + k*7, f), 0.0000001)) / log(2); k += 1;);
       acc += log(max(gc_svf_mag(base + 56, f), 0.0000001)) / log(2);
@@ -1508,6 +1526,7 @@ gc_hit_r = max(8 * gc_sc, 6);                      // node hit radius, never sma
 // a torn read would draw a mixture of two kernels.
 gc_b = 0;
 loop(N_BANDS, gc_band_setup(gc_b); gc_b += 1;);   // GUI coefficients, fresh every frame
+gc_hplp_setup(0); gc_hplp_setup(1);
 
 gc_snap_hp = gc_meta[GCM_GEN_HP];
 gc_snap_lp = gc_meta[GCM_GEN_LP];
