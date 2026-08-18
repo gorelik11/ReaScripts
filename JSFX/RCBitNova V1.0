@@ -958,45 +958,6 @@ function gc_apply_hplp(eng) local(kk) (
   );
 );
 
-function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
-
-gc_fnode = -1;
-gc_e = 0;
-loop(2,
-  gc_nx = gc_filt_x(gc_e);
-  gc_ny = gc_y_of_bits(0);
-  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
-  gc_e += 1;
-);
-function gc_button(bx, by, bw, label, on) local(hot) (
-  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
-  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
-  hot ? gfx_set(0.3, 0.5, 0.36, 1);
-  gfx_rect(bx, by, bw, 18 * gc_sc);
-  gfx_set(0.85, 0.85, 0.9, 1);
-  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
-  gfx_drawstr(label);
-  hot;
-);
-function gc_field(i, label, value, dec) local(fx, hot) (
-  fx = gc_px + i * (gc_fw + 8 * gc_sc);
-  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
-  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
-  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
-  gfx_set(0.6, 0.6, 0.65, 1);
-  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
-  gfx_drawstr(label);
-  gfx_set(0.9, 0.9, 0.95, 1);
-  gc_edit == i ? (
-    // show what is being typed, with a cursor
-    gc_ci = 0;
-    loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
-    gfx_drawstr("_");
-  ) : (
-    gfx_drawnumber(value, dec);
-  );
-  hot;
-);
 
 // ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
 // definitions at file scope, and a definition inside a section is not reliable.
@@ -1087,6 +1048,46 @@ function gc_draw_trace(dom, r, g, b, dashed) local(i, x, y, py, first) (
   );
 );
 
+
+function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
+
+gc_fnode = -1;
+gc_e = 0;
+loop(2,
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
+  gc_e += 1;
+);
+function gc_button(bx, by, bw, label, on) local(hot) (
+  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
+  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
+  hot ? gfx_set(0.3, 0.5, 0.36, 1);
+  gfx_rect(bx, by, bw, 18 * gc_sc);
+  gfx_set(0.85, 0.85, 0.9, 1);
+  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
+  gfx_drawstr(label);
+  hot;
+);
+function gc_field(i, label, value, dec) local(fx, hot) (
+  fx = gc_px + i * (gc_fw + 8 * gc_sc);
+  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
+  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
+  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
+  gfx_set(0.6, 0.6, 0.65, 1);
+  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
+  gfx_drawstr(label);
+  gfx_set(0.9, 0.9, 0.95, 1);
+  gc_edit == i ? (
+    // show what is being typed, with a cursor
+    gc_ci = 0;
+    loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
+    gfx_drawstr("_");
+  ) : (
+    gfx_drawnumber(value, dec);
+  );
+  hot;
+);
 
 @slider
 
