@@ -413,6 +413,12 @@ inserting the B5–B8 loop between the existing band loop and the Mode-B pass is
 Mode B captures its input after the static pass by design, so there is no feedback or
 lookahead-ring conflict.
 
-**One item Fable could not verify without REAPER:** that `slider189` actually registers. The file
-already goes to 142, well past the classic 64-slider limit, so it is very likely fine — but it is
-the first thing to check live, before any other work, because everything else depends on it.
+**The one item Fable could not verify — now measured (2026-08-19, live via reapy).** A throwaway
+probe declared sliders 1, 142, 151, 159, 189, 200 and 256 with distinct defaults. **All seven
+registered, with correct values.** So 151–189 is safe and there is headroom to 256.
+
+The probe also settled something the migration section depends on: **the host numbers parameters
+densely (0, 1, 2 …) in DECLARATION ORDER**, not by slider number. Therefore the 36 new
+declarations must be placed **after** every existing one in the file, which is what keeps V1.0's
+host-parameter list an exact prefix of V1.1's (§6.7). Had they been interleaved by slider number,
+every existing automation envelope would have shifted.
