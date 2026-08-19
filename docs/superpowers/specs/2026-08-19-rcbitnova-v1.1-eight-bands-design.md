@@ -1,6 +1,6 @@
 # RCBitNova V1.1 — Eight EQ bands, four of them dynamic
 
-**Date:** 2026-08-19 (**rev 3**, after two weakness reviews — dispositions in §9 and §10)
+**Date:** 2026-08-19 (**rev 4**, after two weakness reviews and Fable — dispositions in §9, §10, §11)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.1` (copy of V1.0). `rcbitnova-v1.0` remains the fallback tag;
 V1.0 and earlier are frozen.
@@ -53,7 +53,7 @@ implementation that destroys `st` entirely:
 ```
 cf + N_BANDS * 8 == st   == 64
 st + N_BANDS * 4 == det  == 96
-bp + N_BANDS * 3 <= eg   == 256
+bp + N_DYN * 3   <= eg   == 256
 ```
 
 with sentinel values written either side of every expanded array, checked after coefficient setup
@@ -131,7 +131,44 @@ A source audit enforces that list against the B5–B8 loop body. That is a stron
 Test that distinguishes the orders: enable a B5 boost that pushes a B1 Mode-B band over its
 ceiling. In the chosen order Mode B reacts to it; in the rejected order it does not.
 
-### 3.2 Every `N_BANDS` site is classified before any code is written (review P0-3)
+### 3.2 Every `N_BANDS` site, enumerated (review P0-3, Fable P0)
+
+Fable's finding: **`@init` computes every downstream address by multiplying the literal
+`N_BANDS`**, so `N_BANDS = 8` alone silently relocates the entire map. Missing `mb_peak`/`mb_end`
+alone shifts everything after them by **16384 words** — including `hplp_state`, the GUI block and
+`lp_base` — with no crash and no error, just a plugin whose memory map no longer matches the one
+this spec calls "unchanged".
+
+rev 3 called this "several address calculations". It is 28 sites, listed here so the
+implementation is transcription rather than judgement:
+
+| Line | Section | Site | Becomes |
+|---|---|---|---|
+| 138 | `@init` | `N_BANDS = 4` | `N_BANDS = 8; N_DYN = 4;` |
+| 141 | `@init` | `memset(st, …)` | **`N_BANDS`** (static state) |
+| 151, 152 | `@init` | `memset(dst)`, `memset(cst)` | `N_DYN` |
+| 153 | `@init` | `eg` init | `N_DYN` |
+| 159, 160 | `@init` | `mb_peak`, `mb_end` | `N_DYN` ← **the 16384-word one** |
+| 163, 164, 165 | `@init` | `mbmode`, `mbwpos`, `bus_dry` | `N_DYN` |
+| 168, 169, 172 | `@init` | `mbenv`, `mbwpos`, `mbgc` init | `N_DYN` |
+| 173, 174, 176 | `@init` | `mbeh`, `hc`, `egh` bases | `N_DYN` |
+| 175, 177 | `@init` | `mbeh`, `egh` init | `N_DYN` |
+| 185 | `@init` | `hplp_state = egh + …` | `N_DYN` |
+| 1019, 1032 | helpers | `gc_domain_bits`, `gc_dom_used` | **`N_BANDS`** |
+| 1096 | `@slider` | `setup_band(b); setup_band_dyn(b);` | **split**: `setup_band` over `N_BANDS`, `setup_band_dyn` over `N_DYN` |
+| 1103 | `@slider` | Mode-B scan (`hc`, `mbmode`) | `N_DYN` |
+| 1290 | `@sample` | the band loop | **split** into the two loops of §3.1 |
+| 1489 | `@sample` | Mode-B pass | `N_DYN` |
+| 1675, 1749, 1828 | `@gfx` | coefficients, hit-test, node drawing | **`N_BANDS`** |
+
+Seventeen sites become `N_DYN`, eight stay `N_BANDS`, two split. Anything not on this list keeps
+its current meaning.
+
+**Confirmed safe to run at eight bands** (Fable, verified in code): `setup_band` and `band_qeff`
+read only sliders and touch no dynamic array, so they need nothing beyond routing their internal
+`10*(b+1)` through `band_slider_base`.
+
+### 3.3 Runtime canaries
 
 `N_BANDS` currently drives allocation, initialisation, `setup_band`, `setup_band_dyn`, the
 `@slider` Mode-B scan, Mode-A processing, Mode-B processing, envelope resets and several address
@@ -334,7 +371,7 @@ step; and check function definition order — EEL2 resolves in file order, which
 | **P1** `mb_end` alone does not prove the layout stayed flat | **Accepted** — every downstream base address asserted byte-equal (§6) |
 | **P1** the helper is tested but its adoption is not | **Accepted** — source audit rejects open-coded `10*(b+1)` outside the helper, with named writes exempt (§4) |
 | **P1** eight nodes make overlap a reachability problem | **Accepted** — selected-node priority, click cycling, and a B1…B8 selector strip (§5) |
-| **P1** the CPU check has no pass/fail contract | **Accepted** — fixture, zero xruns, +10 % peak-block ceiling (§6) |
+| **P1** the CPU check has no pass/fail contract | **Accepted** — fixture, zero xruns, peak-block ceiling (rev 3 tightened this to +5 % and split regression from feature cost — see §6.5, which is authoritative) |
 | **P2** outline thickness is a fragile cue | **Accepted** — plus a `DYN`/`STATIC` tag in the readout (§5) |
 | **P2** "ninth band node"; "151–189" implies contiguity | **Accepted** — reworded; the four ranges are listed explicitly (§1, §4) |
 
@@ -355,3 +392,27 @@ without checking.
 | **P1** the null fixture has no executable comparator | **Accepted** — fixed rate/block/duration, render to file, zero-tolerance sample comparison, and cases covering Mode A, Mode B, Min and Linear (§6.4) |
 | **P1** the CPU ceiling mixes regression with feature cost | **Accepted** — split into two comparisons, median of five runs after a discarded warm-up, zero xruns absolute (§6.5) |
 | **P2** coincident-node cycling is not operationally defined | **Accepted** — hit set, order, 400 ms reset, and precedence over selected-node priority (§5) |
+
+## 11. Fable review disposition (rev 3 → rev 4)
+
+| Finding | Disposition |
+|---|---|
+| **P0** the spec verifies half the memory map; `@init` computes every downstream address from the literal `N_BANDS` | **Accepted.** rev 3 called this "several address calculations" — it is **28 sites**, and missing `mb_peak`/`mb_end` alone relocates everything after them by 16384 words silently. §3.2 now enumerates every line with its target constant, so implementing this is transcription rather than judgement |
+| **P1** the acceptance block still sized `bp` by `N_BANDS`, contradicting the paragraph above it | **Accepted** — the leftover line now reads `bp + N_DYN * 3`. Exactly the "stated as fact, contradicted two lines up" pattern this spec has already been burned by |
+| **P2** §9's historical table quotes a +10 % CPU ceiling that §6.5 tightened to +5 % | **Accepted** — the historical row now points at §6.5 as authoritative |
+
+**Verified independently by Fable against the shipped code, no change needed:** `cf + 8*8 == st == 64`
+and `st + 8*4 == det == 96` exactly, with zero slack; `gc_kc`/`gc_fc`/`gc_ebuf` sizes and the
+13638 → 13670 clear span; `lp_base` is computed rather than hardcoded, so it legitimately stays
+65536; `bp` is written only by `setup_band_dyn`; the static loop really does read `dp`/`dm` before
+filtering, so the dedicated loop is the only sound fix; `setup_band` and `band_qeff` are purely
+static; the open-coded `10*(b+1)` appears in exactly the sites §4 lists, and today reads the wrong
+sliders for `b ≥ 4`; every `gc_w_*` writer falls through to B4 for any band ≥ 3 and calls
+`setup_band_dyn` unconditionally; sliders 151–189 are free (highest declared is 142); and
+inserting the B5–B8 loop between the existing band loop and the Mode-B pass is hazard-free —
+Mode B captures its input after the static pass by design, so there is no feedback or
+lookahead-ring conflict.
+
+**One item Fable could not verify without REAPER:** that `slider189` actually registers. The file
+already goes to 142, well past the classic 64-slider limit, so it is very likely fine — but it is
+the first thing to check live, before any other work, because everything else depends on it.
