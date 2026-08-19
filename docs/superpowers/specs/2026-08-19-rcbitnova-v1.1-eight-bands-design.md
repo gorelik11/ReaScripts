@@ -1,6 +1,6 @@
 # RCBitNova V1.1 — Eight EQ bands, four of them dynamic
 
-**Date:** 2026-08-19 (**rev 2**, after the weakness review — disposition in §9)
+**Date:** 2026-08-19 (**rev 3**, after two weakness reviews — dispositions in §9 and §10)
 **Branch:** `rcbitnova`
 **New file:** `JSFX/RCBitNova V1.1` (copy of V1.0). `rcbitnova-v1.0` remains the fallback tag;
 V1.0 and earlier are frozen.
@@ -37,8 +37,12 @@ zero slack** — rev 1 said `cf` had "64 words of 96 available", which was wrong
 |---|---|---|---|---|---|
 | `cf` @0 | 8 | 64 | 0…63 | `st` @**64** | **zero** |
 | `st` @64 | 4 | 32 | 64…95 | `det` @**96** | **zero** |
-| `bp` @216 | 3 | 24 | 216…239 | `eg` @256 | 16 words |
-| `dp` @192 | 4 | — | unchanged | `dm` @208 | stays at 4 bands |
+| `dp` @192, `dm` @208, `bp` @216 | — | unchanged | — | — | stay at 4 bands |
+
+**`bp` is dynamic, not static** (rev-2 review P0-2). rev 2 put it in the eight-band column; the
+code says otherwise — it is written only by `setup_band_dyn` and read only by Mode A and Mode B,
+never by the static SVF path. Expanding it would have allocated 12 words that nothing writes and
+nothing reads.
 
 Eight bands is therefore the **maximum this layout supports without moving anything**. A ninth
 band would silently overwrite `st`, and `st` at nine would overwrite the detector coefficients.
@@ -64,10 +68,25 @@ allocation takes whichever applies:
 |---|---|
 | `cf` static coefficients | `det`, `dst` detector coefficients and state |
 | `st` static state | `cst` Mode-A cut state |
-| `bp` band params | `dp`, `dm` dynamics params and stereo mode |
-| `setup_band`, the `@sample` static loop | `eg`, `egh` Mode-A envelopes |
-| the GUI's nodes and traces | `mb_band`/`mb_peak`/`mb_end` Mode-B rings |
+| `gc_kc` GUI coefficients (see §2.1) | `bp` band params — **written by `setup_band_dyn` only** |
+| `setup_band`, the static pass | `dp`, `dm` dynamics params and stereo mode |
+| the GUI's nodes, traces and readout | `eg`, `egh` Mode-A envelopes |
+| | `mb_band`/`mb_peak`/`mb_end` Mode-B rings |
 | | `mbenv`, `mbgc`, `mbeh`, `mbwpos`, `hc` |
+
+### 2.1 The GUI scratch must grow, and that moves two bases (rev-2 review P0-1)
+
+`gc_kc` holds the GUI's own band coefficients — 8 words per band, 32 today — and `gc_fc` starts
+immediately after it. At eight bands `gc_kc + b*8` for B5–B8 would overwrite the first 32 words
+of `gc_fc`, i.e. the GUI's HP/LP coefficients. I checked every audio array for this and missed the
+scratch I added in V1.0.
+
+Pinned: **`gc_kc` grows to 64 words; `gc_fc` and `gc_ebuf` shift up by 32**, and the initialiser's
+clear span goes from 13638 to **13670**. So verification cannot ask that *every* `gc_*` base be
+unchanged — it asks that:
+
+- every **audio** base is unchanged (§6.3), and `lp_base` stays 65536;
+- the `gc_*` region stays wholly below `lp_base` and internally non-overlapping.
 
 Bands 5–8 have no detector, no Mode-B ring and no ceilings — not disabled ones, but none
 allocated. That is what keeps the memory flat.
@@ -94,6 +113,20 @@ input
 *is* seen by B1–B4's Mode-B detection and limiting. That is the consistent reading — Mode B has
 always operated on whatever the static EQ produced — and it is what makes an 8-band EQ behave
 like one EQ rather than two stages with a limiter wedged between them.
+
+**The split must be STRUCTURAL, not conditional** (rev-2 review P0-3). V1.0's "static" section is
+not actually free of dynamics: before any filtering it evaluates `dp[b*4+3] == 1 && dm[b] == 2`
+to decide whether Placement Both means L/R or M/S. Simply raising the loop bound to 8 would read
+past the four-band arrays *before* B5's filter ever runs — a read overrun, not a write one, and
+therefore invisible to write canaries.
+
+So bands 5–8 get their **own loop**, in which:
+
+- Placement Both always means **L/R** (there is no dynamics mode that could make it M/S);
+- **no expression mentions** `dp`, `dm`, `mbmode`, `bp`, `det`, `dst`, `cst`, `eg`, `egh` or `hc`.
+
+A source audit enforces that list against the B5–B8 loop body. That is a stronger guarantee than
+"we guarded the dynamics branch", and it is checkable mechanically.
 
 Test that distinguishes the orders: enable a B5 boost that pushes a B1 Mode-B band over its
 ceiling. In the chosen order Mode B reacts to it; in the rejected order it does not.
@@ -164,55 +197,110 @@ constant. Two additions:
 
 - The readout names the band (`B5`), and the numeric fields address it through the same
   `band_slider_base` helper.
+- **A right-click menu on a band node** for the parameters gestures cannot reach (rev-2 review
+  P0-4): **Enable/Disable, Type (Bell / Low Shelf / High Shelf), Placement (Both / Mid / Side /
+  Left / Right), Q Character**. V1.0's GUI reaches only six of a band's nine parameters, and has
+  no way to switch a band *off* — clicking a disabled node enables it, and that gesture has no
+  inverse. Without this, B5–B8 would be usable only as Bell / Both / constant-Q bands, which
+  contradicts the whole premise that the graph removed the reachability blocker. The menu mirrors
+  the HP/LP one that already exists, and every write is an explicit named-slider branch.
 - Bands without dynamics are visually distinguishable by a **thinner node outline** **and** a
   textual `DYN` / `STATIC` tag in the selected-band readout (review P2-1). Outline thickness alone
   is fragile: it can vanish under Retina scaling, disabled styling or reduced contrast.
 - **Overlapping nodes need a way out** (review P1-7). Spread defaults only prevent overlap on
   first load; with eight bands, coincident nodes are likely, and V1.0's loop-based hit-test makes
-  only one of them reachable. Pinned: the selected node wins the hit-test, and repeated clicks at
-  the same position cycle through the coincident nodes in band order. A compact **B1…B8 selector
+  only one of them reachable. Pinned precisely (rev-2 review P2): the hit set is every node within the hit radius of the
+  pointer, **including disabled ones**; the first click selects the lowest-numbered band in that
+  set, and each subsequent click **at the same position within 400 ms** advances to the next in
+  band order, wrapping. Pointer movement beyond the hit radius, or the timeout, resets to the
+  lowest. Cycling overrides selected-node priority — otherwise the selected node would trap the
+  cursor and the others stay unreachable. A compact **B1…B8 selector
   strip** beside the readout gives a deterministic way to reach any band regardless of overlap.
 
 ## 6. Verification
 
-**Oracle:**
+### 6.1 Oracle
 
 1. `band_slider_base` returns 10/20/30/40 for bands 0–3 and 150/160/170/180 for bands 4–7.
-2. **Adjacency, not upper bounds** (§2): `cf + 8*8 == st`, `st + 8*4 == det`, `bp + 8*3 <= eg`,
-   with sentinels either side of each expanded array checked after setup and after processing.
-3. **Every downstream base address is byte-equal to V1.0** (review P1-6): `mb_band`, `mb_peak`,
-   `mb_end`, `mbenv`, `mbmode`, `mbwpos`, `bus_dry`, `mbgc`, `mbeh`, `hc`, `egh`, `hplp_state`,
-   `hplp_cf`, `lp_rt`, every `gc_*` base, and `lp_base`. `mb_end` alone proves nothing — sizing
-   any one of the small arrays by 8 shifts everything after it.
+2. **Adjacency, not upper bounds**: `cf + 8*8 == st == 64`, `st + 8*4 == det == 96`.
+3. The `gc_*` region: `gc_kc` is 64 words, `gc_fc`/`gc_ebuf` follow without overlap, the clear
+   span equals the region size (13670), and the whole region ends below `lp_base`.
 4. A curve over 8 bands equals the curve over the same 4 when bands 5–8 are disabled.
-5. **Each new band is mathematically correct on its own** (review P1-5): for B5, B6, B7 and B8
-   individually, compare the response against the oracle across Bell / Low Shelf / High Shelf,
-   every placement, positive and negative gains, and constant vs proportional Q. Then a
-   multi-band case, to catch cascade addressing and cross-band mix-ups — "eight nodes change the
-   sound" would pass with B5 controlling B8.
+5. **Each new band is correct on its own**: for B5…B8 individually, compare the response against
+   the oracle across Bell / Low Shelf / High Shelf, every placement, positive and negative gains,
+   constant vs proportional Q — then a multi-band case. "Eight nodes change the sound" would pass
+   with B5 controlling B8.
 
-**Live in REAPER:**
+### 6.2 Three kinds of memory test, kept distinct (rev-2 review P1-1)
 
-- **Null test V1.0 vs V1.1, bands 5–8 disabled → bit-identical audio.** Reproducible fixture
-  (review P1-3): old-parameter state transferred programmatically rather than dialled by hand,
-  GUI closed, fresh instances, fixed sample rate and block size, deterministic input, no
-  automation. Worded as *bit-identical audio*, not "costs nothing" — four extra enable checks are
-  not literally free, and disabled-band CPU is measured separately.
-- **Signal-order test** (§3.1): a B5 boost pushing a B1 Mode-B band over its ceiling must be
-  *seen* by Mode B.
-- **Parameter manifest** (review P1-2): capture V1.0's host parameter list through REAPER — index,
-  name, min, max, step, default, round-trip value — and assert V1.1 begins with that exact prefix,
-  with the 36 new parameters appended after it, never interleaved.
-- **Migration** (review P1-1): V1.1 is a new file, so an old project simply reopens V1.0. The
-  supported operation is therefore stated and tested: copy the V1.0 instance's state to a V1.1
-  instance (preset or FX-chain copy), including off-grid values and automation envelopes, and
-  confirm every old parameter keeps its value.
-- **Eight nodes** drag, select and edit correctly; overlapping nodes cycle; `DYN`/`STATIC` reads
-  correctly for each band.
-- **CPU, with a pass/fail contract** (review P1-9): 48 kHz, block 128 and 512, 60 s, deterministic
-  material, GUI closed. Three configurations — B5–B8 disabled, four extra Bell bands enabled, and
-  the worst case (8 bands with all four Mode-B dynamics active). Require **zero xruns** and peak
-  block time within **+10 %** of V1.0 measured identically.
+The corrected arithmetic means `cf` ends exactly where `st` begins and `st` exactly where `det`
+begins. **There is no spare word for a guard**: a sentinel at `cf[64]` *is* `st[0]`, which audio
+legitimately changes. rev 2 asked for canaries either side of every array, which is impossible
+here — so:
+
+| Test | Where |
+|---|---|
+| exact address arithmetic | source-level assertions against the production layout |
+| bounds / overrun detection | an **instrumented shadow layout** in the Python model, with real guard words |
+| invariants | on the real compact layout, checking values rather than sentinels |
+
+### 6.3 Every audio base address, in order, unchanged (rev-2 review P1-2)
+
+Word indices — not "byte-equal", which is wrong for EEL2 memory:
+
+`mb_band`, `mb_peak`, `mb_end`, `mbenv`, `mbmode`, `mbwpos`, `bus_dry`, `mbgc`, `mbeh`, `hc`,
+`egh`, `hplp_state`, `hplp_cf`, `lp_rt`, `lp_kc`, `lp_ks`, `lp_geo`, `lp_off`, `lp_fs`, `lp_base`.
+
+rev 2 omitted `lp_kc`, `lp_ks`, `lp_geo`, `lp_off`, `lp_fs`, any of which can invalidate the
+packed-engine geometry while the listed endpoints still match. The `gc_*` bases are exempt by
+§2.1 but must stay below `lp_base` and non-overlapping.
+
+### 6.4 Null test — an executable contract (rev-2 review P1-4)
+
+**48 kHz, block 512, 30 s of deterministic material, GUI closed, fresh instances, no automation.**
+State is transferred programmatically, not dialled by hand. Render both versions to file and
+compare **sample for sample with zero tolerance**; a length or reported-latency mismatch is a
+failure, not a caveat. Cases: default state; all four original bands active in **Mode A**; the
+same in **Mode B**; and both **Min** and **Linear** topologies — a single default-state null does
+not exercise the loops being edited.
+
+Wording: **bit-identical audio while B5–B8 are disabled**. Not "costs nothing" — four extra
+enable checks are not free, and that cost is measured separately below.
+
+### 6.5 CPU — regression and feature cost are different questions (rev-2 review P1-5)
+
+| Comparison | Question |
+|---|---|
+| V1.1 with B5–B8 **disabled** vs V1.0 | **regression** — must be within +5 % |
+| V1.1 eight bands enabled vs V1.1 four enabled | **feature cost** — informational, no ceiling |
+
+48 kHz, blocks 128 and 512, five 60-second runs each, first discarded as warm-up, compare the
+**median** of the per-run peak block time rather than one maximum — a single 60 s max is decided
+by one unrelated OS spike. **Zero xruns is an absolute gate** in every configuration.
+
+### 6.6 Migration — one mechanism, not a list (rev-2 review P1-3)
+
+rev 2 offered "preset or FX-chain copy" and claimed automation survives. Those are different
+operations with different semantics, and the claim was untested. Also, §4 said an old project
+"opens with four extra bands" while §6 said it reopens V1.0 — both cannot be true. **V1.1 is a
+new file, so an old project reopens V1.0 and is unaffected.**
+
+The single supported operation: a **ReaScript/reapy migration script** that inserts a V1.1
+instance, copies all 95 old parameter values by host index, leaves the 36 new ones at their
+defaults, and removes the V1.0 instance. Automation envelopes are **explicitly out of scope** —
+if a parameter is automated, the script reports it and leaves that instance alone rather than
+silently dropping the envelope.
+
+### 6.7 Live in REAPER
+
+- Eight nodes drag, select and edit; overlapping nodes cycle; `DYN`/`STATIC` reads correctly.
+- **Reachability matrix**: every one of the nine parameters of B5–B8 can be set and read back
+  from the graph alone, without opening the parameter list.
+- **Signal order** (§3.1): a B5 boost pushing a B1 Mode-B band over its ceiling must be seen by
+  Mode B.
+- **Parameter manifest**: V1.0's host parameter list (index, name, min, max, step, default,
+  round-trip value) is a strict prefix of V1.1's, with the 36 new parameters appended, never
+  interleaved.
 
 ## 7. Out of scope
 
@@ -249,3 +337,21 @@ step; and check function definition order — EEL2 resolves in file order, which
 | **P1** the CPU check has no pass/fail contract | **Accepted** — fixture, zero xruns, +10 % peak-block ceiling (§6) |
 | **P2** outline thickness is a fragile cue | **Accepted** — plus a `DYN`/`STATIC` tag in the readout (§5) |
 | **P2** "ninth band node"; "151–189" implies contiguity | **Accepted** — reworded; the four ranges are listed explicitly (§1, §4) |
+
+## 10. Rev-2 weakness review disposition (rev 2 → rev 3)
+
+Four P0s, all accepted. Three of them are facts about the shipped V1.0 code that I asserted
+without checking.
+
+| Finding | Disposition |
+|---|---|
+| **P0** eight GUI coefficient sets cannot fit while every `gc_*` base stays unchanged | **Accepted, verified.** `gc_kc` is 32 words and `gc_fc` starts immediately after it, so B5–B8 would overwrite the GUI's HP/LP coefficients. I checked every audio array for this and missed the scratch I added myself in V1.0. `gc_kc` grows to 64, `gc_fc`/`gc_ebuf` shift, the clear span becomes 13670, and verification now demands unchanged **audio** bases rather than all bases (§2.1) |
+| **P0** `bp` is dynamic state, not an eight-band static array | **Accepted, verified.** Written only by `setup_band_dyn`, read only by Mode A/B. rev 2 would have allocated 12 words nothing writes and nothing reads (§2) |
+| **P0** the "static" loop reads `dp` and `dm` before filtering | **Accepted, verified.** V1.0 evaluates `dp[b*4+3] == 1 && dm[b] == 2` to choose the domain, so raising the loop bound alone is a **read** overrun — invisible to write canaries. Bands 5–8 get their own loop that mentions no dynamic array, enforced by a source audit (§3.1) |
+| **P0** the GUI cannot reach a new band's full contract | **Accepted.** V1.0 reaches six of nine parameters and has **no way to switch a band off** — the enable gesture has no inverse. A right-click menu adds Enable/Disable, Type, Placement and Q Character (§5). Without it the premise "the graph removed the reachability blocker" is only two-thirds true |
+| **P1** canaries either side are impossible at zero-slack boundaries | **Accepted** — three distinct kinds of memory test; guard words live in an instrumented shadow layout, never in the production one (§6.2) |
+| **P1** the downstream manifest is incomplete and uses the wrong unit | **Accepted** — full ordered list including `lp_kc`/`lp_ks`/`lp_geo`/`lp_off`/`lp_fs`, compared as word indices (§6.3) |
+| **P1** migration is an unresolved alternative, and two sections contradict | **Accepted** — one mechanism (a reapy script), automation explicitly out of scope, and the contradiction removed: an old project reopens V1.0 and is unaffected (§6.6) |
+| **P1** the null fixture has no executable comparator | **Accepted** — fixed rate/block/duration, render to file, zero-tolerance sample comparison, and cases covering Mode A, Mode B, Min and Linear (§6.4) |
+| **P1** the CPU ceiling mixes regression with feature cost | **Accepted** — split into two comparisons, median of five runs after a discarded warm-up, zero xruns absolute (§6.5) |
+| **P2** coincident-node cycling is not operationally defined | **Accepted** — hit set, order, 400 ms reset, and precedence over selected-node priority (§5) |

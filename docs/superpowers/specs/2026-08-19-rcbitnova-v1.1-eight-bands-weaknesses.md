@@ -1,132 +1,155 @@
-# RCBitNova V1.1 Eight Bands Design: Weakness Review
+# RCBitNova V1.1 Eight Bands Design Rev 2: Weakness Review
 
-**Reviewed:** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`
-**Review posture:** adversarial memory-layout review, parameter ABI compatibility, DSP topology, GUI reachability, and acceptance-test completeness
+**Reviewed:** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`, revision 2
+**Review posture:** adversarial memory-layout review, static/dynamic ownership, GUI reachability, migration semantics, and executable release gates
 
 ## Overall Assessment
 
-The central split is sound: eight static bands with dynamics limited to the original four avoids the expensive Mode-B memory re-layout and gives the GUI a useful next step. Keeping the old slider IDs and allocating new static controls above the existing range are also the right instincts.
+Rev 2 resolves the original review's main conceptual defects. The fixed-address boundaries are now stated correctly, the Mode-B order is normative, computed reads and named writes are separated, the host-parameter prefix is treated as an ABI, and the verification section is much closer to a release contract.
 
-The specification is not implementation-ready yet. One proposed memory test has the wrong boundary, the current four-band GUI writers cannot be generalized through the read helper, and the audio ordering of the new static bands relative to nonlinear Mode B is undefined. Those gaps can produce memory corruption, edits to the wrong band, or two conforming implementations that sound different.
+The specification is still not implementation-ready. Two memory claims now contradict the shipped V1.0 layout, one array is assigned to the wrong ownership count, and the proposed "static-only" path does not explicitly remove dynamic reads embedded in V1.0's static loop. The GUI also still cannot configure all nine parameters of a new band or turn an enabled band off, so the reachability premise is only partially true.
 
 ## Findings
 
-### P0. The `cf` memory acceptance bound is wrong and would permit an overlap
+### P0. Eight GUI coefficient sets cannot fit while every `gc_*` base remains unchanged
 
-The layout table correctly says that `cf` occupies 64 words at eight bands and that `st` begins at address 64. Verification item 2 instead accepts `cf <= 96`. That test would pass an implementation in which `cf` overwrites all of `st[64..95]`.
-
-This is the tightest boundary alongside `st`, so a loose upper bound defeats the purpose of the memory test.
-
-**Required resolution:** assert adjacent addresses, not unrelated constants:
+V1.0 lays out the GUI scratch contiguously:
 
 ```text
-cf + N_BANDS * 8 == st          == 64
-st + N_BANDS * 4 == det         == 96
-bp + N_BANDS * 3 <= eg          == 256
+gc_meta + 16 -> gc_kc, 32 words (4 bands x 8)
+gc_kc + 32   -> gc_fc
+gc_fc + 126  -> gc_ebuf
 ```
 
-Add sentinels on both sides of every expanded static array and exercise coefficient setup plus audio processing before checking them.
+At eight bands, `gc_kc` needs 64 words. The direct parameterized implementation `gc_kc + b * 8` therefore overwrites the first 32 words of `gc_fc` for B5-B8. Expanding `gc_kc` normally shifts `gc_fc` and `gc_ebuf` by 32 words, contradicting verification item 3's requirement that "every `gc_*` base" remain byte-equal to V1.0.
 
-### P0. The current named GUI writers map every band above B3 to B4
+The initializer also hard-codes `memset(gc_trace, 0, 13638)`. A 32-word expansion requires recalculating that span; otherwise part of the enlarged region remains stale.
 
-V1.0's `gc_w_freq`, `gc_w_macro`, `gc_w_micro`, `gc_w_ratio`, `gc_w_q`, and `gc_w_enable` each have explicit branches for B1-B3 followed by a final B4 fallback. After `N_BANDS` becomes 8, dragging B5-B8 will therefore write B4 unless every writer is expanded.
+**Required resolution:** choose and document one layout:
 
-The proposed `band_slider_base` helper cannot solve this write path: V1.0 already established that computed `slider(index)` writes do not update the real parameter reliably. The helper is appropriate for reads only.
+- expand contiguous `gc_kc` to 64 words, move `gc_fc`/`gc_ebuf`, update the clear span from 13638 to 13670, and assert only the audio-critical bases plus `lp_base == 65536` remain unchanged; or
+- keep the old bases and place B5-B8 coefficients in a separately named 32-word region, with a `gc_band_coef_base(b)` helper and explicit ownership of the currently reserved `gc_snap` space if it is reused.
 
-There is a second hazard in the same functions: every writer currently calls both `setup_band(b)` and `setup_band_dyn(b)`. Calling the dynamic builder for B5-B8 writes beyond `det`, `dp`, and `dm` and into neighboring arrays.
+Add non-overlap assertions for `gc_kc`, `gc_fc`, and `gc_ebuf`, plus a GUI curve test with all eight bands enabled and both HP/LP coefficient regions populated.
 
-**Required resolution:** specify eight-way named writes for every editable static field, with `setup_band_dyn(b)` guarded by `b < N_DYN`. Add a gesture matrix for B1-B8 that snapshots all slider values and dynamic-memory sentinels, then proves exactly one named slider changed and no static-only edit touched dynamic memory.
+### P0. `bp` is dynamic state, not an eight-band static array
 
-### P0. The dynamic/static split has no exhaustive transcription gate
+Rev 2 classifies `bp` under `N_BANDS` and tests `bp + N_BANDS * 3 <= eg`. In V1.0, however:
 
-In V1.0, `N_BANDS` controls much more than the allocation declarations: initialization, `setup_band_dyn`, the `@slider` Mode-B scan, Mode-A processing, Mode-B processing, envelope resets, and several address calculations. Leaving even one of these sites at eight can reinterpret hard-ceiling sliders as B5 dynamic controls or overwrite the arrays immediately following the four-band dynamic regions.
+- only `setup_band_dyn(b)` writes `bp`;
+- Mode A and Mode B are its only readers;
+- the static SVF path never reads it.
 
-Verification item 3 checks array sizes and `mb_end`, but it does not prove that every dynamic loop is bounded by `N_DYN` or that no B5-B8 path calls a dynamic function.
+The same revision correctly requires `setup_band_dyn(b)` to be skipped for B5-B8. Their proposed `bp` slots would therefore be uninitialized and unused. Expanding this array contradicts the core rule that everything dynamic remains at `N_DYN = 4`.
 
-**Required resolution:** inventory every current `N_BANDS` use and classify it as static or dynamic in the design. Add source-level assertions for the expected loop bounds and runtime canaries around `det`, `dst`, `cst`, `dp`, `dm`, `eg`, `mbenv`, `mbmode`, `mbwpos`, `mbgc`, `mbeh`, `hc`, and `egh` while all four new bands are exercised.
+**Required resolution:** move `bp` to the `N_DYN` column, keep it at 12 words, and remove the eight-band `bp` boundary assertion. If `bp` is intentionally being promoted to shared static state, specify which static code writes and reads all three fields and why that refactor is needed.
 
-### P0. DSP order relative to Mode B is undefined
+### P0. V1.0's "static" loop reads `dp` and `dm` before entering a dynamics branch
 
-The existing processor does not have one simple per-band cascade. Static filtering and Mode A happen in the first pass; Mode B is a later nonlinear pass. There are therefore at least two plausible placements for B5-B8:
+The current first pass does not isolate static filtering from dynamics cleanly. For every enabled band with Placement Both, it evaluates:
 
-- process their static filters in the first pass, before the B1-B4 Mode-B stage;
-- process them after the Mode-B stage.
+```text
+dp[b*4+3] == 1 && dm[b] == 2
+```
 
-These placements are not equivalent. In the first topology, B5-B8 alter the signal seen by Mode-B detection and limiting. In the second, they do not. Both fit the phrase "bands 4-7 run static filtering only."
+to decide whether the static SVF should run in L/R or M/S. The later Mode-A conditions also read `dp` and `mbmode`. Merely changing the outer loop to `N_BANDS` and guarding `setup_band_dyn` is not enough: B5 immediately reads past the four-band arrays before its static filter runs.
 
-**Required resolution:** add a normative stage diagram and state the exact order of HP/LP, B1-B4 static/Mode A, B5-B8 static, B1-B4 Mode B, and output trim. Add an audio test in which an enabled B5 boost crosses a B1 Mode-B ceiling; the expected result must distinguish the chosen order.
+**Required resolution:** make the two paths structural, not just conditional prose:
 
-### P1. The old-project compatibility test does not describe a migration
+1. B1-B4 retain the existing domain selection and Mode-A code.
+2. B5-B8 use a dedicated static-only path in which Placement Both always means L/R and no expression mentions `dp`, `dm`, `mbmode`, `bp`, `det`, `dst`, `cst`, `eg`, `egh`, or `hc`.
 
-V1.1 is a new JSFX filename while V1.0 remains frozen. An existing project containing `RCBitNova V1.0` will simply reopen V1.0; that proves nothing about whether the same state loads correctly into V1.1.
+Add read canaries or an instrumented bounds model, not only write canaries, and exercise Placement Both on every new band. The source audit should reject dynamic-array identifiers inside the B5-B8 path.
 
-**Required resolution:** define the supported migration operation: preset transfer, state-chunk substitution, or manual replacement. Test that operation with non-default and off-grid values on every old parameter, including automation envelopes. Confirm that the old 95 host parameters retain their index, name, range, and value, and that only the 36 new parameters are appended with defaults.
+### P0. The custom GUI still does not expose the complete new-band contract
 
-### P1. Preserving slider IDs alone is not a complete parameter-ABI test
+Each new band has nine sliders, but the inherited V1.0 GUI can reach only six:
 
-The specification correctly avoids renumbering existing `sliderNN` declarations, but REAPER-facing compatibility also depends on exposed parameter order and the serialized state shape. A source-level check of IDs cannot catch an accidental declaration reorder, duplicate ID, changed range, or changed default.
+- Enable, indirectly, by clicking a disabled node;
+- Frequency, Q, Macro, Micro, and Bit Ratio through gestures or fields.
 
-**Required resolution:** capture V1.0's host parameter manifest through REAPER and compare it with the V1.1 prefix. The manifest should include host index, JSFX slider ID where recoverable, display name, minimum, maximum, step, default, and a round-trip value. Assert that the new B5-B8 parameters follow the complete V1.0 prefix rather than appearing inside it.
+There is no band control for Type, Placement, or Q Character in V1.0's custom GUI. There is also no inverse of the enable gesture: clicking a disabled node turns it on, but an enabled band cannot be turned off. The new B1-B8 selector and `DYN`/`STATIC` label do not address these missing operations.
 
-### P1. The null gate is under-specified and "cost nothing" is too strong
+This undercuts the stated reason that the graph removes the 131-slider reachability blocker. B5-B8 would be usable only as Bell/Both/constant-Q bands unless the user returns to REAPER's parameter machinery, and once enabled they cannot be disabled from the custom UI.
 
-Digital zero with B5-B8 disabled is the right audio regression gate, but it does not follow merely from matching visible settings. V1.0 already exposed how sub-step parameter values, state-reset timing, and GUI-originated writes can defeat a null while the controls look identical.
+**Required resolution:** define a selected-band control surface or context menu for Enable/Disable, Type, Placement, and Q Character. All writes must use explicit named-slider branches and preserve the one-gesture-one-slider rule. Add a 9-parameter reachability matrix for B5-B8 and prove every declared value can be set and read back without opening the generic parameter list.
 
-Also, four extra enable checks and additional setup/GUI work are not literally zero cost. A null test proves output identity, not zero CPU cost.
+### P1. Runtime canaries "either side" are impossible at the two zero-slack boundaries
 
-**Required resolution:** define a reproducible null fixture: identical old-parameter state transferred programmatically, GUI closed, equal latency, fresh/reset instances, fixed sample rate and block size, deterministic input, no automation, and a stated residual threshold or exact-bit comparator. Reword the promise as "bit-identical audio while B5-B8 are disabled" and measure disabled CPU overhead separately.
+The corrected arithmetic proves that `cf` ends exactly where `st` starts and `st` ends exactly where `det` starts. There is no spare word in which to place a guard. A sentinel at `cf[64]` is `st[0]`, which legitimately changes during audio processing; a sentinel at `st[96]` is `det[0]`, which coefficient setup legitimately owns.
 
-### P1. Verification never proves that an enabled new band is mathematically correct
+The same problem occurs at several adjacent dynamic regions. Writing production-layout canaries "either side of every expanded array" either corrupts valid state or observes expected state changes as false failures.
 
-The oracle only checks that disabled B5-B8 contribute identity. The live test that eight nodes "change the sound" can pass with the wrong frequency, wrong placement, wrong Q Character, or B5 controlling B8.
+**Required resolution:** distinguish three tests explicitly:
 
-**Required resolution:** for each of B5-B8, enable that band alone and compare JSFX output or an impulse-derived response against the existing oracle across Bell, Low Shelf, High Shelf, all placements, representative positive/negative gains, and constant/proportional Q. Include a multi-band case to verify cascade addressing and channel-domain behavior.
+- compile/source arithmetic assertions for exact production addresses;
+- an instrumented shadow layout with guard words for bounds testing;
+- value/invariant tests on the real compact layout without inserting sentinels into neighboring arrays.
 
-### P1. `mb_end` alone does not prove that the dynamic memory layout stayed flat
+Do not claim that physical red-zone canaries exist in a layout whose safety property is zero slack.
 
-Even if `mb_end` remains unchanged, accidentally sizing `mbenv`, `mbmode`, `mbwpos`, `mbgc`, `mbeh`, `hc`, or `egh` by eight shifts every downstream address, including HP/LP and GUI memory. The design promises that `lp_base` and the low layout remain unchanged, but the stated test covers only the two large rings.
+### P1. The downstream address manifest is incomplete and uses the wrong unit
 
-**Required resolution:** snapshot every V1.0 dynamic and downstream base address and require exact equality in V1.1. At minimum cover `mb_end`, `mbenv`, `mbmode`, `mbwpos`, `bus_dry`, `mbgc`, `mbeh`, `hc`, `egh`, `hplp_state`, `hplp_cf`, the GUI cache bases, and `lp_base`.
+Verification item 3 says every downstream base is preserved but omits `lp_kc`, `lp_ks`, `lp_geo`, `lp_off`, and `lp_fs`, all of which sit between `lp_rt` and the GUI block. A shift in any of them can invalidate packed-engine geometry even when the listed endpoints happen to match.
 
-### P1. The helper is tested, but its adoption is not
+The phrase "byte-equal" is also inaccurate for EEL2 memory: these are word indices, not byte addresses.
 
-Testing `band_slider_base()` outputs does not prove that all static read sites use it. V1.0 open-codes `10 * (b + 1)` in coefficient setup, curve construction, domain visibility, hit-testing, node drawing, drag initialization, wheel handling, and the readout. One missed site makes B5-B8 read nonexistent old-range sliders while other parts of the UI appear correct.
+**Required resolution:** list every base from `hplp_state` through `lp_base` in order and compare exact word indices. Exempt the GUI bases that must move under the chosen `gc_kc` solution, while requiring their ranges to remain below `lp_base` and non-overlapping.
 
-**Required resolution:** list the required call sites and add a source audit that rejects the old open-coded band-slider formulas outside the helper. Keep explicit named-slider assignments exempt because writes must not use the computed helper.
+### P1. The supported migration operation is still an unresolved alternative
 
-### P1. Eight nodes make overlap a reachability problem again
+The spec says state is transferred by "preset or FX-chain copy" and includes automation envelopes. Those are not one operation with equivalent semantics:
 
-Spread-out defaults prevent overlap only on first load. Users can place several bands at the same frequency and gain. V1.0's loop-based hit-testing can leave only one coincident node reachable; doubling the nodes makes that substantially more likely. A thinner outline identifies capability but does not provide a way to select an occluded band.
+- a preset is plugin-identity-specific and normally carries parameter state, not track automation envelopes;
+- copying an FX instance normally copies the original V1.0 identity rather than translating it into a V1.1 instance;
+- automation envelopes live at the track/FX parameter level and need an explicit remapping procedure.
 
-**Required resolution:** define overlap selection behavior, such as selected-node priority plus repeated-click cycling, or add a compact B1-B8 selector tied to the readout. Test exact overlap and near-overlap at normal and Retina scale.
+Section 4 also still says "an old project therefore opens with four inaudible extra bands," while section 6 correctly says an old project simply reopens V1.0. Both cannot be true.
 
-### P1. The CPU check has no pass/fail contract
+**Required resolution:** choose one tested migration mechanism. If it is a ReaScript/state-chunk migration, specify how it replaces the FX identity, copies the old 95 values, appends the 36 defaults, and preserves or recreates each automation envelope by host parameter index. If no migration tool ships, narrow the compatibility claim to manual preset recreation and remove automation preservation and the "old project opens" statement.
 
-"CPU with 8 bands vs 4" names a measurement, not a release gate. It does not fix sample rate, block size, duration, signal, enabled filter types, placement, GUI state beyond closed, acceptable regression, or xrun count.
+### P1. The exact-null fixture is still missing an executable comparator contract
 
-**Required resolution:** pin the benchmark fixture and require zero xruns plus a maximum regression or minimum deadline margin. Measure at least disabled B5-B8, four new enabled Bell bands, and the stated worst case with all original Mode-B dynamics active.
+Rev 2 pins the broad conditions but not the actual sample rate, block size, input duration, pre-roll/state reset, output capture path, or comparison command. "Bit-identical" implies a zero-tolerance sample comparator, but the test could still be implemented as a meter observation or a floating-point threshold and be reported as passing.
 
-### P2. Outline thickness alone is a fragile capability cue
+**Required resolution:** name the render/capture method and exact comparator, fix the numeric fixture values, compare both channels sample-for-sample, and fail on a length or latency mismatch. Include at least one non-default state with all old bands active, both Mode A and Mode B cases, and Min plus Linear topology cases; a single default-state null does not cover the loops being edited.
 
-A one-stroke thickness difference can disappear on Retina scaling, under disabled/selected styling, or for users with reduced contrast. It also has no textual confirmation in the specified readout.
+### P1. The CPU ceiling lacks a stable measurement protocol
 
-**Required resolution:** retain the outline distinction but add a compact capability label in the selected-band readout, for example `DYN` for B1-B4 and `STATIC` for B5-B8. Specify logical stroke widths and verify both selected and disabled states.
+The fixture now has sample rate, block sizes, duration, configurations, zero xruns, and a +10% limit, which is a substantial improvement. It still does not say how peak block time is captured, how many repetitions run, whether the first run is warm-up, or how background scheduling noise is handled. A single 60-second maximum is dominated by one unrelated OS scheduling spike and is not a reproducible +10% metric.
 
-### P2. A few statements overclaim or obscure the actual range
+Comparing V1.1 with eight enabled filters against V1.0 with only four also mixes feature cost with regression. That can be a product budget, but it should not be described as a like-for-like regression.
 
-"A ninth band node" is inconsistent with an eight-band product and may be counting unrelated HP/LP nodes. Likewise, "151-189" looks contiguous even though the intended IDs are `151-159`, `161-169`, `171-179`, and `181-189`. These are minor editorial issues, but parameter-map prose should be exact.
+**Required resolution:** separate two comparisons: V1.1 with B5-B8 disabled versus V1.0 for regression, and V1.1 eight-enabled versus V1.1 four-enabled for feature cost. Pin the measurement source, warm-up, repetition count, aggregation statistic, and allowed variance; retain zero xruns as an absolute gate.
 
-**Required resolution:** say "each additional band node" and list the four explicit slider ranges.
+### P2. Coincident-node cycling is not operationally defined
+
+"Selected node wins" and "repeated clicks cycle" conflict unless the cycling rule explicitly overrides selected-node priority. The spec also does not define the coincidence tolerance, whether cycling resets after pointer movement or time, or whether disabled nodes participate.
+
+The B1-B8 selector strip provides a deterministic escape, so this is not blocking.
+
+**Required resolution:** define the hit set, cycle order, reset condition, and precedence over selected-node priority. Test exact and near overlap with enabled and disabled mixtures at normal and Retina scale.
+
+## Rev-1 Findings Resolved In Rev 2
+
+The following original findings are substantively closed and should remain preserved:
+
+- `cf` and `st` now use correct adjacency assertions rather than the unsafe `cf <= 96` bound.
+- Signal order is normative: B5-B8 run before Mode B, and a discriminating test is specified.
+- Computed slider reads and explicit named writes are correctly separated.
+- Writers are required to guard `setup_band_dyn` for static-only bands.
+- The old host-parameter prefix, enabled-band oracle coverage, overlap escape, capability label, and CPU budget are now explicit verification concerns.
+- The misleading "ninth node," contiguous slider-range wording, and literal "costs nothing" audio claim were corrected.
 
 ## Strengths To Preserve
 
-- Keeping dynamics at four bands avoids the large Mode-B ring expansion and protects the existing `lp_base` page.
-- New static slider IDs sit above the existing map, which is the correct direction for compatibility.
-- Disabled defaults make the added bands audibly inert on first instantiation.
-- Separating `N_BANDS` from `N_DYN` is clearer than scattering special cases through DSP code.
-- A single helper for computed reads is appropriate, provided named writes remain explicit.
-- Carrying forward quantized GUI writes, inline dependency recomputation, and function-order checks directly addresses defects found live in V1.0.
+- Eight static/four dynamic remains the correct scope for the current memory budget.
+- The zero-slack `cf`/`st` layout is now documented honestly, including the eight-band maximum.
+- The Mode-B ordering decision is clear and testable rather than being left to implementation taste.
+- Eight-way named writes respect the live V1.0 discovery that computed slider writes are not host-safe.
+- Per-band enabled response oracles, a host manifest, an exact-null intent, and downstream-layout checks are the right release gates once made executable.
+- A deterministic B1-B8 selector is a good fallback for overlapping nodes.
 
 ## Recommended Gate Before Planning
 
-Resolve the four P0 findings first: correct the `cf` boundary, specify named B5-B8 writers with guarded dynamic recomputation, inventory every static/dynamic loop and allocation, and pin the position of B5-B8 relative to Mode B. Then strengthen the release contract with an actual V1.0-to-V1.1 state migration fixture, a full host-parameter manifest, enabled-band audio-oracle cases, exact downstream memory addresses, and a deterministic null test.
+Resolve the four P0 items before producing an implementation plan: choose a valid eight-band GUI scratch layout, keep `bp` under `N_DYN`, define a truly dynamic-free B5-B8 sample path, and expose every new band parameter plus disable from the custom GUI. Then replace impossible production canaries with an instrumented bounds test, complete the word-address manifest, choose one real migration mechanism, and turn the null and CPU prose into named executable fixtures.
