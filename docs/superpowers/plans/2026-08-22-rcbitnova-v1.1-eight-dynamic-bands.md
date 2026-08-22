@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development or
 > superpowers:executing-plans to implement this task-by-task. Steps use `- [ ]` for tracking.
 
-**Revision 1**, 2026-08-22. **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands.md` (rev 5).
+**Revision 2**, 2026-08-23 (after the rev-1 weakness review: 4 P0, 7 P1, 2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands.md` (rev 5).
 That plan built eight *static* bands with dynamics on the first four; four review rounds of its
 `N_DYN` split produced three P0s that existed only because of the split. Everything it learned that
 still applies — the gate design, the migration, the live API facts, the GUI work — is carried over
@@ -32,7 +32,7 @@ proportional Q on every one.
   full review before the CPU meter caught it.
 - **EEL2 resolves functions in file order** — four V1.0 builds broke on this.
 - **`lp_base` moves 65536 → 131072.** A 32768-point FFT buffer off a 65536-word page corrupts
-  **silently**. The gate asserts the number; Task 9 verifies it with audio.
+  **silently**. The gate asserts the number; **Task 8 Step 3** verifies it with audio.
 - **Measured, not assumed (reapy, live, 2026-08-19/22):** the host reports 98 parameters for V1.0 —
   95 declared then `Bypass`, `Wet`, `Delta`. V1.1 will report 178. Only the declared block is a
   prefix. `TrackFX_GetNamedConfigParm` returns **six** elements (value at `[4]`);
@@ -54,7 +54,9 @@ proportional Q on every one.
 | `tools/migrate_v10_to_v11.py` | NEW. 95 declared by index, host tail by position, identity by GUID string, transactional. | Create |
 | `tools/rcbitnova_nulltest.py` | NEW. Float render, equal-latency check, zero-tolerance compare. | Create |
 | `tools/rcbitnova_cpu.py` | NEW. Validates a manual Performance Meter run; xruns via `GetUnderrunTime`. | Create |
-| `tools/make_null_fixture.py`, `tests/fixtures/null_30s.wav` | NEW. Deterministic material. | Create |
+| `tools/make_null_fixture.py`, `tests/fixtures/null_30s.wav` | NEW. Deterministic material, 30 s stereo float. | Create |
+| `tests/_reaper_fx_fake.py` | NEW. Local FX-chain fake for the migration branch tests — deliberately **not** the one in `midi-composition`, which is outside this branch and currently dirty. | Create |
+| `tests/fixtures/cpu_runs.schema.json`, `tests/fixtures/lp_base_live.json` | NEW. Schemas for the two manual results, so two runs compare mechanically. | Create |
 | `tests/test_rcbitnova_dsp.py` | V1.1 block appended. | Modify |
 | `JSFX/RCBitNova V1.1` | The plugin. | Create, then Tasks 3–6, 8 |
 
@@ -97,6 +99,13 @@ def test_v11_low_map_leaves_room_below_mb_band():
     end = max(hi for _, hi in m.values()) + 1
     assert end == 272
     assert 1024 - end == 752, "mb_band is a literal 1024; this is the slack the tables live in"
+
+
+def test_v11_words_per_band_and_the_memory_ceiling():
+    """34 words per band, not 30 - rev 1 of the spec got this wrong and inverted the conclusion.
+    Thirty bands end at 1020; thirty-one at 1054, past mb_band."""
+    assert sum(w for _, w in lay.LOW) == 34
+    assert lay.max_bands_by_memory() == 30
 
 
 def test_v11_the_real_ceiling_is_ten_bands_not_eight():
@@ -164,6 +173,17 @@ def test_v11_gui_model_reproduces_the_shipped_clear_span():
     assert lay.gui_layout(base, 4)["clear_span"] - 8 == 13638
     assert lay.gui_layout(base, 4)["clear_span"] == 13646
     assert lay.gui_layout(lay.audio_layout(8)["gc_trace"], 8)["clear_span"] == 13678
+
+
+def test_v11_three_gui_region_ends_are_distinct_and_derived():
+    """Shipped V1.0, the four-band pre-flip build, and the final eight-band build are three
+    different artifacts. Rev 1 of the spec mixed the first two and printed 51953 for V1.0, whose
+    real end is 51913."""
+    four = lay.audio_layout(4)["gc_trace"]
+    eight = lay.audio_layout(8)["gc_trace"]
+    assert four + 13638 == 51913                       # shipped V1.0
+    assert four + lay.gui_layout(four, 4)["clear_span"] == 51921    # pre-flip V1.1
+    assert eight + lay.gui_layout(eight, 8)["clear_span"] == 84765  # final V1.1
 
 
 def test_v11_all_eight_bands_access_every_array_in_bounds():
@@ -248,6 +268,14 @@ def low_layout(n_bands):
 RESERVED = (set(range(1, 5)) | set(range(11, 50)) | set(range(51, 89))
             | set(range(91, 124)) | set(range(131, 143)))
 PER_BAND_BLOCKS = (9, 8, 3)          # static, dynamics, ceilings
+
+
+def max_bands_by_memory():
+    """The largest band count whose low map still ends at or below mb_band's literal 1024."""
+    n = 1
+    while max(hi for _, hi in low_layout(n + 1).values()) + 1 <= 1024:
+        n += 1
+    return n
 
 
 def check_capacity(n_bands):
@@ -483,18 +511,27 @@ At four bands these simply sit higher in free space — no behaviour change. `de
 Place them after the low-map literals, before any function that reads them:
 
 ```eel2
-stb = 272; dynb = 280; ceb = 288;        // 8 words each, below mb_band's literal 1024
-b = 0;
-loop(N_BANDS,
-  stb[b]  = b < 4 ? 10 * (b + 1) : 150 + 10 * (b - 4);
-  dynb[b] = b < 4 ? 50 + 10 * b  : 190 + 10 * (b - 4);
-  ceb[b]  = b < 4 ? 90 + 10 * b  : 230 + 4  * (b - 4);   // stride 4: at 10, B8 would need 261
-  b += 1;
-);
+stb  = 272;   // TABLE-DECL: static base per band
+dynb = 280;   // TABLE-DECL: dynamics base per band
+ceb  = 288;   // TABLE-DECL: ceiling base per band
+// TABLE-FILL below. Written out rather than computed in a loop: these 24 words decide which
+// parameter every single read touches, and an explicit list is something a gate can compare
+// value by value. A fill loop cannot be evaluated by the gate's parser and would let
+// stb[6] = 175, a wrong ceiling stride, or an uninitialised B8 entry redirect a whole band
+// while every address, writer and forbidden-pattern check still passed.
+stb[0]  = 10;  stb[1]  = 20;  stb[2]  = 30;  stb[3]  = 40;
+stb[4]  = 150; stb[5]  = 160; stb[6]  = 170; stb[7]  = 180;
+dynb[0] = 50;  dynb[1] = 60;  dynb[2] = 70;  dynb[3] = 80;
+dynb[4] = 190; dynb[5] = 200; dynb[6] = 210; dynb[7] = 220;
+ceb[0]  = 90;  ceb[1]  = 100; ceb[2]  = 110; ceb[3]  = 120;
+ceb[4]  = 230; ceb[5]  = 234; ceb[6]  = 238; ceb[7]  = 242;   // stride 4: at 10, B8 needs 261
 ```
 
-A table, not a helper: these are read in `@sample` per band per sample, and a memory read costs
-less than a call plus a branch.
+One declaration per line, because the gate's `eval_init` anchors one assignment per line — three on
+one line would leave `dynb` and `ceb` unevaluated and fail the gate before it checked anything.
+
+A table, not a helper: these are read in `@sample` per band per sample, and a memory read costs less
+than a call plus a branch.
 
 - [ ] **Step 4: Grow the GUI scratch, add the hit set, derive the clear span**
 
@@ -556,11 +593,15 @@ helpers, `@slider`, `@sample` and `@gfx`:
 The `@gfx` group is eight sites and the one the previous design's first draft missed entirely;
 unconverted, B5–B8 would read sliders 51–89 — bands 1–4's dynamics controls.
 
-- [ ] **Step 7: Make every GUI writer eight-way**
+- [ ] **Step 7: Make the six existing writers eight-way, and create the three missing ones**
 
-For `gc_w_enable`, `gc_w_type`, `gc_w_freq`, `gc_w_q`, `gc_w_macro`, `gc_w_micro`, `gc_w_ratio`,
-`gc_w_place`, `gc_w_qchar` — nine writers, eight explicit named branches each. No `N_DYN` guard:
-every band has dynamics, so `setup_band_dyn(b)` is always correct.
+V1.0 has **six**: `gc_w_freq`, `gc_w_macro`, `gc_w_micro`, `gc_w_ratio`, `gc_w_q`, `gc_w_enable`
+(`grep -n '^function gc_w_' "JSFX/RCBitNova V1.0"`). `gc_w_type`, `gc_w_place` and `gc_w_qchar`
+**do not exist** — the menu in Task 6 calls them, and the gate in Task 4 requires all nine, so they
+are created here, not there. Offsets: Type +2, Placement +8, Q Character +9.
+
+All nine get eight explicit named branches. No `N_DYN` guard: every band has dynamics, so
+`setup_band_dyn(b)` is always correct.
 
 ```eel2
 function gc_w_macro(b, v, qz) (
@@ -581,17 +622,41 @@ function gc_w_macro(b, v, qz) (
 V1.0's writers branch B1–B3 and fall through to B4, so without this every gesture on B5–B8 would
 edit B4.
 
-- [ ] **Step 8: Live check — byte-identical behaviour**
+- [ ] **Step 8: Restructure the node hit test around a hit set — behaviour unchanged**
+
+The gate's `gfx-hit-test` row and Task 6's cycling both need `gc_hit_n`/`gc_hits`, and the gate runs
+**before** Task 6. Introduce them here, keeping V1.0's selection rule exactly:
+
+```eel2
+gc_hit_n = 0;
+gc_b = 0;
+loop(N_BANDS,
+  gc_nx = gc_x_of_f(slider(stb[gc_b] + 3));
+  gc_ny = gc_y_of_bits(...);                       // unchanged
+  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
+    gc_hits[gc_hit_n] = gc_b; gc_hit_n += 1;
+  );
+  gc_b += 1;
+);
+// V1.0 kept the LAST match. Reproduce that exactly - Task 6 changes only this one line, to the
+// cycling rule. Splitting it this way keeps the pre-flip build behaviour-identical AND gives the
+// gate the structure it asserts.
+gc_hover = gc_hit_n > 0 ? gc_hits[gc_hit_n - 1] : -1;
+```
+
+Add `gc_hit_n = 0;` to the `@init` GUI state beside `gc_hover = -1;`.
+
+- [ ] **Step 9: Live check — byte-identical behaviour**
 
 Load it. With `N_BANDS` still 4 this is V1.0 with 80 inert parameters appended and two arrays living
-8 and 16 words higher. It must load, play and draw exactly as before. The proof is Task 9's null
+8 and 16 words higher. It must load, play and draw exactly as before. The proof is Task 8's null
 test; this is the smoke test.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add "JSFX/RCBitNova V1.1"
-git commit -m "feat(rcbitnova): V1.1 - re-based arrays, base tables, 80 new sliders, eight-way writers"
+git commit -m "feat(rcbitnova): V1.1 - re-based arrays, base tables, 80 new sliders, nine writers"
 ```
 
 ---
@@ -600,7 +665,7 @@ git commit -m "feat(rcbitnova): V1.1 - re-based arrays, base tables, 80 new slid
 
 **Files:** create `tools/rcbitnova_gates.py`
 
-Source-level only; the live gates are Task 9. **One contract, two phases:** the pre-flip run works
+Source-level only; the live gates are Task 8. **One contract, two phases:** the pre-flip run works
 on a **projection** — the source text with `N_BANDS = 4` substituted to `8` — and runs the full
 post-flip contract against it. Nothing is excused, and Task 5 re-runs identical assertions on the
 real file.
@@ -612,6 +677,7 @@ def check_source(path, project=False):
         text, n = re.subn(r"^N_BANDS\s*=\s*4;", "N_BANDS = 8;", text, count=1, flags=re.M)
         assert n == 1, f"{path}: no `N_BANDS = 4;` to project from"
     check_sites(text, path)
+    check_tables(text, path)
     check_forbidden(text, path)
     check_writers(text, path)
     check_addresses(text, path)
@@ -622,7 +688,10 @@ def check_source(path, project=False):
 ```python
 import ast, math, re
 
-ASSIGN = re.compile(r"^\s*(\w+)\s*=\s*([^;]+);")
+# finditer, not match: several assignments can share a line, and anchoring to the first one is
+# how rev 1 would have lost `dynb` and `ceb` from `stb = 272; dynb = 280; ceb = 288;` and failed
+# the gate before it checked anything.
+ASSIGN = re.compile(r"(?:^|;)\s*(\w+)\s*=\s*([^;]+)")
 
 
 def eval_init(text, wanted):
@@ -631,23 +700,31 @@ def eval_init(text, wanted):
     env, out = {}, {}
     for line in text.splitlines():
         line = line.split("//")[0]
-        m = ASSIGN.match(line)
-        if not m:
-            continue
-        name, expr = m.group(1), re.sub(r"\bceil\(", "_ceil(", m.group(2).strip())
-        try:
-            value = eval(compile(ast.parse(expr, mode="eval"), "<init>", "eval"),
-                         {"_ceil": math.ceil, "__builtins__": {}}, dict(env))
-        except Exception:
-            continue
-        if isinstance(value, (int, float)):
-            env[name] = value
-            if name in wanted:
-                out[name] = int(value)
+        for m in ASSIGN.finditer(line):
+            name, expr = m.group(1), re.sub(r"\bceil\(", "_ceil(", m.group(2).strip())
+            try:
+                value = eval(compile(ast.parse(expr, mode="eval"), "<init>", "eval"),
+                             {"_ceil": math.ceil, "__builtins__": {}}, dict(env))
+            except Exception:
+                continue
+            if isinstance(value, (int, float)):
+                env[name] = value
+                if name in wanted:
+                    out[name] = int(value)
     missing = set(wanted) - set(out)
     if missing:
         raise AssertionError(f"could not evaluate {sorted(missing)}")
     return out
+```
+
+A parser test uses the **exact** text Task 3 inserts, so a change to either side breaks it:
+
+```python
+def test_v11_eval_init_reads_every_assignment_on_a_line():
+    src = "stb  = 272;\ndynb = 280;\nceb  = 288;\n"
+    assert gates.eval_init(src, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
+    packed = "stb = 272; dynb = 280; ceb = 288;\n"       # the form rev 1 would have choked on
+    assert gates.eval_init(packed, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
 ```
 
 **`math.ceil`, never a hand-rolled one.** The previous plan wrote `-(-int(x) // 1)`, which truncates
@@ -687,6 +764,34 @@ SITES = {
 
 A row matching nothing is a **failure**, not a pass.
 
+- [ ] **Step 2a: The table contents — the 24 words every read depends on**
+
+Addresses alone are not the contract. `stb[6] = 175`, a ceiling stride of 10, two tables swapped, or
+an uninitialised `stb[7]` redirects every read for a band while the address comparison, the writer
+manifest and the forbidden patterns all pass. The values are part of the source:
+
+```python
+TABLE_ENTRY = re.compile(r"^(stb|dynb|ceb)\[(\d+)\]\s*=\s*(\d+);", re.M)
+
+
+def check_tables(text, path):
+    want = layout.base_tables(8)
+    got = {name: {} for name in want}
+    for name, idx, value in TABLE_ENTRY.findall(text):
+        got[name][int(idx)] = int(value)
+    for name, values in want.items():
+        for b, expect in enumerate(values):
+            assert b in got[name], f"{path}: {name}[{b}] is never assigned"
+            assert got[name][b] == expect, \
+                f"{path}: {name}[{b}] = {got[name][b]}, expected {expect}"
+        extra = set(got[name]) - set(range(len(values)))
+        assert not extra, f"{path}: {name} has entries beyond the band count: {sorted(extra)}"
+```
+
+Seeded defects for this class, each of which must be rejected: one wrong entry per table
+(`stb[6] = 175`, `dynb[5] = 210`, `ceb[6] = 248`), a missing final entry (`stb[7]` deleted), and the
+ceiling table written at stride 10 (`ceb[7] = 260`, which also exceeds 256).
+
 - [ ] **Step 3: Forbidden reads and the writer manifest**
 
 ```python
@@ -697,7 +802,24 @@ FORBIDDEN = [
 ]
 ```
 
-Exempt only the `@init` block that fills the tables. Everything else must read `stb`/`dynb`/`ceb`.
+**The exemption is per line, not per section.** Most helper functions are declared inside `@init`,
+so exempting the whole section would exempt real runtime readers — `setup_band`, `band_qeff` and the
+`gc_*` helpers all live there. Only lines carrying the `TABLE-DECL` or `TABLE-FILL` marker are
+allowed to contain a raw base number:
+
+```python
+def check_forbidden(text, path):
+    for pattern, why in FORBIDDEN:
+        for n, line in enumerate(text.splitlines(), 1):
+            code = line.split("//")[0]
+            if "TABLE-DECL" in line or "TABLE-FILL" in line:
+                continue
+            if re.search(pattern, code):
+                raise AssertionError(f"{path}:{n}: {why}: {code.strip()}")
+```
+
+A seeded defect must prove this: reintroduce `10 * (b + 1)` **inside `setup_band`**, which is an
+`@init`-declared helper, and require rejection. Everything else must read `stb`/`dynb`/`ceb`.
 
 ```python
 WRITERS = {"gc_w_enable": 1, "gc_w_type": 2, "gc_w_freq": 3, "gc_w_q": 4, "gc_w_macro": 5,
@@ -855,29 +977,54 @@ them is its own version.
 
 - [ ] **Step 4: The eight-button selector strip, below the plot**
 
-V1.0 sets `gc_fy = gc_py + gc_ph + 6 * gc_sc`, so a strip drawn at `gc_fy - 24*gc_sc` sits in the
-bottom 18 logical pixels **of the plot**, where nodes can be — and node click-to-enable and
-drag-start run earlier in the frame. Put it below, and give it explicit ownership computed **before**
-the node event code:
+Two mistakes to avoid, both real in earlier drafts:
+
+1. `gc_fy = gc_py + gc_ph + 6 * gc_sc` is the top of the **readout fields**, which are `gc_fh =
+   20 * gc_sc` tall and `gc_fw = 150 * gc_sc` wide each. A strip at `gc_fy - 24*gc_sc` sits inside
+   the plot; a strip at `gc_fy + 2*gc_sc` sits on top of the fields. It needs **its own row**.
+2. V1.0 computes `gc_fy` near the **end** of `@gfx`, after node interaction — but ownership has to
+   be decided before it. Move the whole layout block (`gc_fy`, `gc_fh`, `gc_fw`, and the new
+   `gc_sy`) up beside `gc_py`/`gc_ph`, so the first frame and every resize use live geometry.
+
+`gc_ph = gfx_h - gc_py - 84 * gc_sc` reserves 84 px below the plot; fields take 6 + 20, so the strip
+fits at +24..+42 with room to spare.
 
 ```eel2
-gc_sy = gc_fy + 2 * gc_sc;                       // BELOW the plot
-gc_strip_hot = (mouse_y >= gc_sy && mouse_y < gc_sy + 18 * gc_sc &&
+// --- layout, computed BEFORE any hit test (moved up from the end of @gfx) ---
+gc_fy = gc_py + gc_ph + 6 * gc_sc;    // readout fields
+gc_fh = 20 * gc_sc;
+gc_fw = 150 * gc_sc;
+gc_sy = gc_fy + gc_fh + 4 * gc_sc;    // band strip: its own row, below the fields
+gc_sh = 18 * gc_sc;
+gc_strip_hot = (mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh &&
                 mouse_x >= gc_px && mouse_x < gc_px + N_BANDS * 34 * gc_sc);
-gc_strip_hot ? ( gc_hover = -1; gc_hit_n = 0; );
 ```
 
-Then the strip itself, drawn later:
+**Ownership is a guard, not a cleanup.** Clearing `gc_hover` before the hit-test loop achieves
+nothing — that loop repopulates it. The loop and every consumer must be skipped instead:
+
+```eel2
+!gc_strip_hot ? (
+  gc_hit_n = 0;
+  gc_b = 0;
+  loop(N_BANDS, ... );                // hit set
+  ... cycling, click-to-enable, drag-start ...
+) : (
+  gc_hit_n = 0; gc_hover = -1;        // strip owns this frame's pointer
+);
+```
+
+Then the strip itself:
 
 ```eel2
 gc_b = 0;
 loop(N_BANDS,
   gc_bx = gc_px + gc_b * 34 * gc_sc;
   gc_bhot = (mouse_x >= gc_bx && mouse_x < gc_bx + 30 * gc_sc &&
-             mouse_y >= gc_sy && mouse_y < gc_sy + 18 * gc_sc);
+             mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh);
   gc_sel == gc_b ? ( gfx_set(0.3, 0.45, 0.6, 1); ) : ( gfx_set(0.16, 0.16, 0.18, 1); );
   gc_bhot ? ( gfx_set(0.35, 0.5, 0.66, 1); );
-  gfx_rect(gc_bx, gc_sy, 30 * gc_sc, 18 * gc_sc);
+  gfx_rect(gc_bx, gc_sy, 30 * gc_sc, gc_sh);
   gfx_set(slider(stb[gc_b] + 1) == 1 ? 0.95 : 0.45, 0.9, 0.95, 1);
   gfx_x = gc_bx + 5 * gc_sc; gfx_y = gc_sy + 4 * gc_sc;
   gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
@@ -893,10 +1040,25 @@ No DYN/STATIC tag: every band is dynamic.
 Adopted from `Fable Eq Dynamic`, where a band's card glows in proportion to current GR. Here it goes
 on the node, so the graph shows which bands are working:
 
+The applied gain is a **cascade of two stages, per channel**, and which pair is live depends on the
+mode. Reading `min(eg[b*2], mbgc[b*2])` — one channel, soft stage only, both modes at once — would
+ignore the hard stage entirely and let the idle mode's stale envelope light a node after a mode
+change, a dynamics disable or a band disable.
+
 ```eel2
-// Live GR: eg[] holds the Mode-A envelope gain per band (1 = no reduction), mbgc[] the Mode-B
-// gain. Tint toward orange in proportion to whichever is reducing.
-gc_gr = 1 - min(eg[gc_b * 2], mbgc[gc_b * 2]);
+// Live GR. Mode A gain = eg * egh; Mode B gain = mbgc * mbeh; both are per (band, channel) and
+// 1 means no reduction. Show the DEEPEST reduction across the two channels.
+gc_gr = 0;
+slider(stb[gc_b] + 1) == 1 && slider(dynb[gc_b] + 1) == 1 ? (
+  mbmode[gc_b] == 1 ? (
+    gc_ga = mbgc[gc_b * 2]     * mbeh[gc_b * 2];
+    gc_gb = mbgc[gc_b * 2 + 1] * mbeh[gc_b * 2 + 1];
+  ) : (
+    gc_ga = eg[gc_b * 2]     * egh[gc_b * 2];
+    gc_gb = eg[gc_b * 2 + 1] * egh[gc_b * 2 + 1];
+  );
+  gc_gr = 1 - min(gc_ga, gc_gb);
+);
 gc_gr > 0.002 ? (
   gc_gl = min(gc_gr * 6, 1);
   gfx_set(1.0, 0.5, 0.12, 0.3 + 0.6 * gc_gl);
@@ -904,9 +1066,15 @@ gc_gr > 0.002 ? (
 );
 ```
 
-Read-only from `@gfx`, one word per band per frame, no writes — the same thread-safety posture V1.0
-accepted for `cf`/`hplp_cf`. **Scope guard:** this is the node tint only. The V1.2 dynamics display
+**Documented aggregate:** the tint shows the maximum reduction across the two channels, so a
+Dual-L/R band working on one side only still reads as working.
+
+Read-only from `@gfx`, four words per band per frame, no writes — the same thread-safety posture
+V1.0 accepted for `cf`/`hplp_cf`. **Scope guard:** node tint only; the V1.2 dynamics display
 (per-band GR meters, history) is not pulled in.
+
+Live cases: Mode A and Mode B; Linked and Dual L/R and Dual M/S; soft-only; hard-only; dynamics off;
+band off. In the last three the node must not glow at all — that is the stale-state failure.
 
 - [ ] **Step 6: Coincident-node cycling**
 
@@ -951,9 +1119,18 @@ And a reset on movement without a click, with the other end-of-frame updates:
 
 - [ ] **Step 7: Live matrix**
 
+**The contract, narrowed (spec §8.1).** The GUI has controls for **nine** of a band's twenty. The
+other eleven — Dyn, Dyn Stereo, Soft Ceiling Macro/Micro, Attack, Release, Dyn Mode, Soft, Hard,
+Hard Ceiling Macro/Micro — are reached through the host's **Param** list, exactly as bands 1–4's
+dynamics always have been (every slider carries the `-` prefix: hidden from the FX window,
+automatable, reachable via Param). A dynamics editor for those eleven is V1.2 work. The matrix names
+the interaction for each parameter so the split is auditable rather than implied.
+
 | Case | Expected |
 |---|---|
-| All 20 parameters of B5…B8 from the GUI alone | each confirmed in `Param`, including a typed Q Character of 0.333 |
+| B5…B8: Enable, Type, Placement, Q Character | node right-click menu |
+| B5…B8: Freq, Macro, Micro, Ratio, Q | drag/wheel gesture **and** the readout field, incl. a typed Q Character of 0.333 |
+| B5…B8: the other 11 dynamics/ceiling parameters | present and editable in **Param**, correct name and range |
 | One node under the cursor | selection unchanged regardless of counter value |
 | Two coincident, both enabled | clicks alternate |
 | Three coincident | clicks walk 1 → 2 → 3 → 1 |
@@ -972,7 +1149,7 @@ And a reset on movement without a click, with the other end-of-frame updates:
 
 **Files:** create `tools/migrate_v10_to_v11.py`
 
-Before the live gates, because Task 9's null test uses it for equal state. Carried over from the
+Before the live gates, because Task 8's null test uses it for equal state. Carried over from the
 superseded plan with the counts updated: **95 declared → 175 declared**, host tail still three.
 
 All of the following are measured, not assumed:
@@ -987,18 +1164,50 @@ All of the following are measured, not assumed:
 - Automation, parameter modulation, non-default pin maps and instance oversampling are all
   detectable and are **refused**. Parameter aliases are not detectable and are declared undetected.
 
-- [ ] **Step 1: Write it** — as in the superseded plan §Task 9, with `N_DECLARED_V11 = 175`, every
-  mutation inside `try/finally`, `dst_guid = None` initialised, the undo block closed exactly once
-  on every path, and the destination removed by GUID on failure.
+- [ ] **Step 1: Write it — the algorithm, in this document**
 
-- [ ] **Step 2: FakeReaper branch tests BEFORE REAPER**
+A superseded plan must not be the only source for a destructive script. The invariants, in order:
 
-Project rule. `midi-composition/tests/_reaper_fakes.py` has 62 functions and **no `TrackFX_*`**, so
-extend it: FX enumeration, `add_fx`, `TrackFX_CopyToTrack` with `is_move`, delete, GUIDs, parameter
-get/set, named config, enabled/offline, and undo counters. Assert the whole chain and the undo
-balance for each of: success mid-chain; `add_fx` returns `None`; `add_fx` raises; read-back
-mismatch; move lands wrong; failure after the source was deleted; an unrelated V1.1 present; two
-V1.0 instances; each refusal.
+1. **Refuse ambiguity first.** More than one V1.0 instance on the track → refuse before creating
+   anything.
+2. **Validate the shape.** `len(names) == 98` and `names[95:] == ("Bypass", "Wet", "Delta")`, else
+   refuse: a different REAPER build exposes a different special set.
+3. **Refuse unmigratable state.** Any parameter envelope; any `param.N.mod.active`; any non-default
+   pin map (`TrackFX_GetPinMappings(tr, fx, isout, pin, 0)[0] != (1 << pin)`); any
+   `instance_oversample_shift` other than `'0'`. Parameter aliases are **undetectable** and are
+   declared as not migrated, never as refused.
+4. **Capture.** The 95 declared values by index; the three host values **by position** (`slider1` is
+   also named `Bypass`, so a name search returns index 0); enabled and offline state; the source's
+   chain index; the source's GUID **string** via `guidToString(TrackFX_GetFXGUID(...), "")[1]` — the
+   raw pointer does not survive a move.
+5. **Mutate inside `try/finally`**, `add_fx` included, with `dst_guid = None` initialised. Verify
+   V1.1's own shape (`175 + 3`), write all 95 + 3, **read every one back**, then set enabled/offline.
+6. **Move, then verify the move** (`_index_of_guid(tr, dst_guid) == src_idx`) before deleting
+   anything.
+7. **Delete the source by GUID**, never by name.
+8. **On failure:** delete the destination by GUID (the track may hold an unrelated V1.1), close the
+   undo block exactly once, and if the source is already gone call a real undo and say so. Grouping
+   is not rollback.
+
+Constants: `N_DECLARED_V10 = 95`, `N_DECLARED_V11 = 175`, `HOST_TAIL = ("Bypass", "Wet", "Delta")`.
+`TrackFX_GetNamedConfigParm` returns six elements — value at `[4]`.
+
+- [ ] **Step 2: FakeReaper branch tests BEFORE REAPER — in this repository**
+
+Project rule, and it applies squarely: correctness here is index shifts, GUID identity, undo balance
+and not disturbing unrelated FX — what a fake asserts and a live run only samples.
+
+**Create `tests/_reaper_fx_fake.py` in this worktree.** `midi-composition/tests/_reaper_fakes.py`
+has 62 functions, no `TrackFX_*`, **and uncommitted changes right now** — editing it would mix this
+feature into unrelated work in another repository and leave the test dependency outside the
+RCBitNova branch. The fake needs: FX enumeration, `add_fx`, `TrackFX_CopyToTrack` with `is_move`,
+delete, `TrackFX_GetFXGUID` + `guidToString`, parameter get/set, `TrackFX_GetNamedConfigParm`,
+`TrackFX_GetPinMappings`, enabled/offline, and counters for `Undo_BeginBlock2` / `Undo_EndBlock2` /
+`Undo_DoUndo2`.
+
+Assert the whole chain and the undo balance for each of: success mid-chain; `add_fx` returns `None`;
+`add_fx` raises; read-back mismatch; move lands wrong; failure after the source was deleted; an
+unrelated V1.1 present; two V1.0 instances; and each refusal.
 
 - [ ] **Steps 3–6:** dry run on a chain where V1.0 is **not** last; real run verifying values,
   defaults, position and the host tail (set host Bypass and Wet to distinctive values first — that
@@ -1016,25 +1225,63 @@ V1.0 instances; each refusal.
   any probe; the original value restored **and verified**. `v11_declared[:95] == v10_declared`;
   `len(v11_declared) == 175`; the host tail checked separately by position.
 
-- [ ] **Step 2: Null test** — `tests/fixtures/null_30s.wav`, 48 kHz, block 512, GUI closed, bands
-  5–8 disabled, state transferred by the migration script. **32-bit float** render, dither and
-  normalization off, per-track stems, every `RENDER_*` property saved and restored, completion by
-  file size plus header frame count, a float-WAV reader written here (`wave` rejects format 3),
-  equal reported `pdc` asserted **before** samples, zero tolerance. Cases: defaults; Mode A; Mode B;
-  Min and Linear. Assert the case count. **Seed a one-ULP difference and require a failure** — if
-  that passes, the format is quantising and the gate is decorative.
+- [ ] **Step 2: Null test — what it proves, stated precisely**
+
+**The claim is exact equality of the rendered 32-bit float output**, not internal bit identity. A
+render quantises, so a difference below output resolution cannot be detected by any comparison of
+rendered files; claiming more than this would be claiming something the method cannot support.
+
+Pinned so two runs are the same run:
+
+| | |
+|---|---|
+| Fixture | `tests/fixtures/null_30s.wav`, generated by `tools/make_null_fixture.py`, committed |
+| Fixture content | 30.000 s, 48 kHz, **stereo**, 32-bit float: log sweep 20 Hz–20 kHz, noise burst, 2 s digital silence, full-scale transient |
+| Render | 48 kHz, 32-bit float WAV, dither **off**, normalization **off**, no resampling, stems, **one selected track**, entire-item bounds, tail 0 |
+| Block size | 512 |
+| State | every `RENDER_*` property read, set, restored, and asserted restored |
+| Equal state | both instances via `migrate_v10_to_v11.py` on a copy of the source track |
+| Latency | `pdc` from named config on both, asserted equal **before** samples |
+| Completion | output size stable **and** header frame count == 1 440 000 |
+| Reader | `_read_float_wav()` in this file — Python's `wave` rejects `WAVE_FORMAT_IEEE_FLOAT` |
+| Comparator | frame count equal, then `a[i] != b[i]` over every sample; report the first index, both values, the case |
+| Tolerance | zero |
+
+Cases: defaults; four bands Mode A; four bands Mode B; Min; Linear. **Assert the case count** — a
+skipped case fails rather than vanishing. **Seed a one-ULP difference into a copy of a render and
+require the comparator to fail**; if it passes, the render is quantising and the gate is decorative.
 
 - [ ] **Step 3: `lp_base` live** — the check no gate can make. Phase=Linear, Resolution=High on both
   HP and LP, sweep a deep low-cut and a high brickwall, and confirm clean audio and the expected
   analyzer shape. A misaligned 32768-point FFT corrupts silently: it will not error, it will sound
   wrong. This is the one live test that exists specifically because `lp_base` moved to 131072.
 
-- [ ] **Step 4: CPU** — manual Performance Meter protocol read into `cpu_runs.json`, validated by
-  `rcbitnova_cpu.py`; five 60-second runs per configuration, first discarded, median of per-run
-  peaks, blocks 128 and 512. Gate: **V1.1 with bands 5–8 disabled vs V1.0, within +5 %**. Report but
-  do not gate: eight bands with dynamics on vs four — expect roughly double the dynamics share.
-  Xruns via `GetUnderrunTime` before and after each run, **any change fails**, and the induced-xrun
-  test is mandatory.
+- [ ] **Step 4: CPU — a manual protocol with a machine-checked result**
+
+No peak-block-time API exists on this build, so a human reads the Performance Meter. What makes it
+reproducible is the **schema**, checked in as `tests/fixtures/cpu_runs.schema.json` and validated by
+`rcbitnova_cpu.py`:
+
+```json
+{
+  "reaper_build": "7.xx", "srate": 48000, "captured": "2026-08-2x",
+  "runs": [
+    {"config": "v10", "block": 512, "run": 1, "peak_ms": 0.0, "xrun_before": 0, "xrun_after": 0},
+    {"config": "v11_4on", "block": 512, "run": 1, "peak_ms": 0.0, "xrun_before": 0, "xrun_after": 0},
+    {"config": "v11_8on", "block": 128, "run": 1, "peak_ms": 0.0, "xrun_before": 0, "xrun_after": 0}
+  ]
+}
+```
+
+Five 60-second runs per configuration per block size, first discarded, median of per-run peaks.
+`rcbitnova_cpu.py` refuses a file with a missing configuration, fewer than five runs, or any
+`xrun_after != xrun_before`. **Gate:** `v11_4on` vs `v10`, within +5 %. **Reported, not gated:**
+`v11_8on` vs `v11_4on` — expect roughly double the dynamics share.
+
+`GetUnderrunTime` returns `[audio_xrun, media_xrun, curtime]`; the operator records `audio_xrun`
+before and after. The induced-xrun test is mandatory: force one at a tiny block size and confirm the
+number actually moves off 0. Step 3's `lp_base` result gets the same treatment — a checked-in
+`lp_base_live.json` naming the topology tested, the observed behaviour, and pass/fail.
 
 - [ ] **Step 5: Run everything, read every output. Step 6: Commit.**
 
@@ -1071,3 +1318,23 @@ marker-comment convention for `N_DYN`-bounded lines, and the three P0s those pro
 **What it adds:** 44 more sliders, 512 KB, roughly double the dynamics CPU at eight active bands,
 and one genuinely dangerous consequence — `lp_base` moving to 131072, which is why Task 8 Step 3
 exists.
+
+---
+
+## Rev-2 Disposition (weakness review of rev 1)
+
+| Finding | Disposition |
+|---|---|
+| **P0.1** 11 of 20 parameters unreachable from the GUI | **Accepted, contract narrowed.** The GUI covers nine; the dynamics and ceiling blocks are reached through **Param**, exactly as bands 1–4's always have been (every slider carries the `-` prefix — hidden, automatable, reachable). Spec §8.1 states it, and the live matrix now names the interaction for each of the twenty. A dynamics editor is V1.2 work, not an implied deliverable. |
+| **P0.2** The pre-flip gate needs Task 6 code | **Accepted — confirmed in the source.** V1.0 has **six** writers; `gc_w_type`/`gc_w_place`/`gc_w_qchar` do not exist, and `gc_hit_n` is introduced only by cycling. Task 3 now creates all three writers and restructures the hit test around `gc_hits`/`gc_hit_n` **keeping V1.0's last-match rule**, so the pre-flip build is still behaviour-identical and the gate's rows match at the commit where it runs. Task 6 changes exactly one line to the cycling rule. |
+| **P0.3** `eval_init` cannot parse the table declaration | **Accepted.** `ASSIGN.match` per line would have read `stb` and lost `dynb` and `ceb`. Now `finditer` over every assignment on a line, the declarations are one per line anyway, and a parser test uses both forms. |
+| **P0.4** The gate checks table addresses, never contents | **Accepted — this was the real hole.** Those 24 words decide which parameter every read touches. The fill loop is replaced by 24 explicit assignments, `check_tables` compares all of them to the model and rejects a missing or extra entry, and seeded defects cover one wrong entry per table, a deleted final entry, and the stride-10 ceiling table. |
+| **P1.1** The strip lands on the readout fields | **Accepted — confirmed.** `gc_fy` is the fields' top and they are `20*gc_sc` tall, so `gc_fy + 2*gc_sc` sits on them. The strip gets its own row at `gc_fy + gc_fh + 4*gc_sc`; the layout block moves **above** hit testing (V1.0 computes it near the end of `@gfx`); and ownership became a `!gc_strip_hot` guard around the loop instead of a clear before it — clearing achieved nothing, since the loop repopulates. |
+| **P1.2** The GR tint misreads the applied gain | **Accepted.** Gain is a two-stage cascade per channel — `eg * egh` in Mode A, `mbgc * mbeh` in Mode B. Rev 1 read one channel, the soft stage only, and `min()` across both modes, so an idle mode's stale envelope could light a node. Now the active mode is selected, both stages multiply, the aggregate is documented (deepest reduction across channels), and band/dyn guards mean a disabled band cannot glow. Six live cases added. |
+| **P1.3** 34 words per band, not 30 | **Accepted — my arithmetic.** 8+4+4+4+4+4+1+3+2 = 34, so the low map holds **30** bands (1020 words), not ~34; 31 would end at 1054. The model derives the ceiling now instead of the prose carrying an estimate. |
+| **P1.4** The V1.0 GUI-region arithmetic is inconsistent | **Accepted — also mine.** V1.0 ends at **51913** (38275 + 13638); rev 1 printed 51953 by mixing the eight-band span into V1.0's row. The table now distinguishes three artifacts — shipped V1.0 (51913), four-band pre-flip V1.1 (51921), final V1.1 (84765) — each derived by the model. |
+| **P1.5** Migration not self-contained; points at a dirty external repo | **Accepted, and the repo is dirty** (`tests/_reaper_fakes.py` has uncommitted changes, alongside five other modified files). The algorithm and its invariants are written out in this plan, and the fake becomes `tests/_reaper_fx_fake.py` **in this worktree**, so implementation and tests travel on the same branch. |
+| **P1.6** The gate's strongest pieces are pseudocode; the `@init` exemption is too broad | **Accepted.** The exemption is now per **line** — only `TABLE-DECL`/`TABLE-FILL` markers — because `setup_band`, `band_qeff` and the `gc_*` helpers are all declared inside `@init` and would otherwise be exempt. A seeded defect reintroduces `10 * (b + 1)` **inside `setup_band`** and must be rejected. `check_forbidden` and `check_tables` are given in full. |
+| **P1.7** The null claim and the manual gates lack rigour | **Accepted.** The claim is stated as **exact equality of the rendered 32-bit float output** — a render quantises, so nothing stronger is provable this way. The fixture, format, bounds, rate, channel count, block size, tail, completion test, reader and comparator are pinned in a table. CPU and `lp_base` results get checked-in schemas (`cpu_runs.schema.json`, `lp_base_live.json`) that their scripts validate. |
+| **P2.1** Stale task references | **Accepted.** Four references to "Task 9" for the null and `lp_base` checks now point at Task 8 Steps 2 and 3. |
+| **P2.2** The 28 sites are no longer auditable here | **Accepted.** Spec §8.2 carries the inventory, each site mapped to its gate row, with the eighteen `@init` sites explicitly covered by **computed address comparison** rather than one regex each — a documented many-to-one mapping, and a stronger check than matching the text. |

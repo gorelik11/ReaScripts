@@ -1,6 +1,6 @@
 # RCBitNova V1.1 — Eight Fully Dynamic Bands
 
-**Revision 1**, 2026-08-22. **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`
+**Revision 2**, 2026-08-23 (after the rev-1 weakness review: 4 P0, 7 P1, 2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`
 (rev 4) and its plan, which built eight *static* bands with dynamics on the first four only.
 
 ## 1. Goal
@@ -59,8 +59,10 @@ Ends at 272; `mb_band` is a literal 1024, so **752 words remain free**.
 **"Eight is the maximum" was wrong, twice, and both versions were asserted rather than computed.**
 
 The split design justified it with `cf + 8*8 == st` and `st + 8*4 == det` being zero-slack — true
-only while `det` was pinned at 96. Here every array floats up as needed, so the low map holds
-**about 34 bands** (30 words per band under 1024); a ninth ends at 306.
+only while `det` was pinned at 96. Here every array floats up as needed. The arrays are
+**34 words per band** (`cf` 8 + `st` 4 + `det` 4 + `dst` 4 + `cst` 4 + `dp` 4 + `dm` 1 + `bp` 3 +
+`eg` 2 — rev 1 said 30 and inverted the conclusion), so the low map holds **30 bands**: thirty end
+at 1020, thirty-one at 1054, past `mb_band`'s literal 1024. A ninth ends at 306.
 
 The slider budget is tighter but still not eight. After bands 5–8 are allocated, **50 numbers remain
 below 256** in runs of 11 (246–256), 8 (143–150), 7 (124–130) and 6 (5–10). A ninth band needs 9 + 8
@@ -93,13 +95,19 @@ parameter.
 `mb_peak`, `mb_end` and everything after them are derived by multiplying by the band count, so they
 all move:
 
-| | V1.0 | V1.1 | Δ |
+Three states, not two — the pre-flip build is a real artifact that Tasks 3–4 load and gate, and
+rev 1's table silently mixed its span into V1.0's row:
+
+| | shipped V1.0 | V1.1 pre-flip (4 bands) | V1.1 final (8 bands) |
 |---|---:|---:|---:|
-| `mb_peak` | 17408 | 33792 | +16384 |
-| `mb_end` | 33792 | 66560 | +32768 |
-| `gc_trace` | 38275 | 71087 | +32812 |
-| GUI region end | 51953 | 84765 | +32812 |
-| `lp_base` | 65536 | **131072** | +65536 |
+| `mb_peak` | 17408 | 17408 | 33792 |
+| `mb_end` | 33792 | 33792 | 66560 |
+| `gc_trace` | 38275 | 38275 | 71087 |
+| GUI clear span | 13638 | 13646 | 13678 |
+| GUI region end (exclusive) | **51913** | **51921** | **84765** |
+| `lp_base` | 65536 | 65536 | **131072** |
+
+Every one of these is derived by `tools/rcbitnova_layout.py`; none is typed into a document twice.
 
 **`lp_base` moving is the single most dangerous consequence of this design.** V0.7 established that
 a 32768-point FFT buffer must start on a 65536-word page or it corrupts **silently** — no error, no
@@ -204,11 +212,57 @@ There is no loop to split, no guard to add, no array whose band count differs fr
 6. **Migration** — 95 declared parameters copied by index, the host tail by position, FX identity by
    `guidToString` (the raw `TrackFX_GetFXGUID` pointer does **not** survive a move), verified before
    anything is deleted, and tested against FakeReaper before REAPER.
-7. **Live** — every one of a band's 20 parameters reachable for all eight bands; Mode A and Mode B
-   audibly working on B5–B8; the reachability and cycling matrices.
+7. **Live** — the reachability contract below, honoured for all eight bands; Mode A and Mode B
+   audibly working on B5–B8; the cycling matrix.
+
+### 8.1 Reachability contract (narrowed in rev 2)
+
+Rev 1 claimed all 20 parameters of a band are reachable from the custom GUI. The GUI has controls
+for **nine** — enable, Type, Placement and Q Character through the node's right-click menu, and
+Freq, Macro, Micro, Ratio, Q through the readout fields. The other **eleven are the dynamics and
+ceiling blocks**, and V1.0 never exposed them on the graph either.
+
+The honest contract, unchanged from V1.0's shape:
+
+- **From the graph:** the nine static parameters, for all eight bands.
+- **From the host's parameter list:** the eleven dynamics/ceiling parameters. Every slider is
+  declared with a `-` prefix, so it is hidden from the FX window but automatable and reachable
+  through **Param**, exactly as bands 1–4's dynamics have always been.
+
+A selected-band dynamics editor covering those eleven is a real feature and a real amount of work;
+it belongs with the V1.2 dynamics display, not smuggled into V1.1. The live matrix names the
+interaction used for each of the twenty so the split is auditable rather than implied.
+
+## 8.2 The 28 sites, in this document
+
+Rev 1 said "every one of the 28 sites from the old §3.2 is simply `N_BANDS`" and left the inventory
+in a superseded file. It is here instead, mapped to the gate row that covers it, so this revision
+stands on its own. Sites that were separate rows only because the split needed two counts collapse
+into one gate row; that is a documented many-to-one mapping, not an omission.
+
+| V1.0 site | Gate row |
+|---|---|
+| `N_BANDS = 4` declaration | `count-declaration` |
+| `memset(st, …)` | address gate (`st` span) |
+| `memset(dst)`, `memset(cst)`, `eg` fill | address gate (low-map spans) |
+| `mb_peak`, `mb_end` | address gate (`AUDIO` chain, exact) |
+| `mbmode`, `mbwpos`, `bus_dry` bases | address gate |
+| `mbenv`, `mbwpos`, `mbgc` fills | address gate |
+| `mbeh`, `hc`, `egh` bases; `mbeh`, `egh` fills | address gate |
+| `hplp_state = egh + …` | address gate |
+| `gc_domain_bits`, `gc_dom_used` | `helper-gc_domain_bits`, `helper-gc_dom_used` |
+| `@slider` setup loop | `slider-setup` |
+| `@slider` Mode-B scan | `slider-modeb-scan` |
+| `@sample` band loop | `sample-band-loop` |
+| `@sample` Mode-B pass | `sample-modeb-pass` |
+| `@gfx` coefficients, hit-test, node draw | `gfx-band-setup`, `gfx-hit-test`, `gfx-node-draw` |
+
+The eighteen `@init` sites are covered by comparing **computed word addresses** rather than one
+regex each: a site left on the wrong count moves an address, and the address gate compares every one
+of them to the model. That is strictly stronger than matching the text that produces them.
 
 ## 9. Out of scope
 
-A ninth band (it would fit, on scattered bases — see §3.1 — but eight is the chosen shape); the V1.2 dynamics *display* beyond the node tint;
+A ninth band (it would fit, on scattered bases — see §3.1 — but eight is the chosen shape); a dynamics editor in the GUI (§8.1); the V1.2 dynamics *display* beyond the node tint;
 parameter aliases in migration; bringing V1.0's five existing numeric fields onto their declared
 steps.
