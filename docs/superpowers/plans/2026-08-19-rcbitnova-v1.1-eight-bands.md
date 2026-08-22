@@ -1,9 +1,10 @@
 # RCBitNova V1.1 — Eight Bands Implementation Plan
 
-**Revision 2** — after the plan weakness review
-(`docs/superpowers/plans/2026-08-19-rcbitnova-v1.1-eight-bands-weaknesses.md`). Five P0s, all
-accepted; disposition at the end of this file. The task order changed: `N_BANDS` is now raised to
-8 **last**, not first.
+**Revision 3** — after two plan weakness reviews
+(`…-eight-bands-weaknesses.md` on rev 1, five P0s; `…-eight-bands-rev2-weaknesses.md` on rev 2,
+two P0s). Both dispositions are at the end of this file. Rev 2 moved the `N_BANDS` flip to the end;
+rev 3 puts the **source gate before it**, and fixes a migration bug that would have copied the
+wrong `Bypass`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -25,14 +26,14 @@ accepted; disposition at the end of this file. The task order changed: `N_BANDS`
 - **`setup_band_dyn(b)` is guarded by `b < N_DYN`** everywhere, including every GUI writer, which today calls it unconditionally.
 - **New slider declarations go AFTER every existing one in the file.** Verified live: the host numbers parameters densely in declaration order, so this is what keeps V1.0's parameter list an exact prefix of V1.1's.
 - **EEL2 resolves functions in file order** — four builds broke on this in V1.0. Check every new call site against its definition position.
-- **`N_BANDS` stays 4 until Task 6.** Every dynamic site is converted to `N_DYN`, and all the
+- **`N_BANDS` stays 4 until Task 7**, and the source gate runs before the flip. Every dynamic site is converted to `N_DYN`, and all the
   eight-band machinery is added, while the plugin is still a four-band plugin. The count flip is
   one line in its own task, after every path that could read or write past a four-band array is
   already bounded. The rejected order — flip first, bound later — produces a plugin whose
   `@slider` pass writes `det`/`dp`/`dm`/`bp` out of range on the very first load, and commits it.
 - **No open-coded band-slider arithmetic outside `band_slider_base`**, except inside loops proven
   to be `N_DYN`-bounded, where the line must carry the marker comment `// N_DYN-bounded`. The gate
-  in Task 9 enforces exactly this. V1.0 open-codes `10 * (b + 1)` in **eight `@gfx` sites** — hit
+  in Task 6 enforces exactly this. V1.0 open-codes `10 * (b + 1)` in **eight `@gfx` sites** — hit
   test, click-to-enable, drag capture, drag read, wheel-Q, node draw, readout, selected band —
   and all eight execute for B5–B8 once the GUI loops grow. Unconverted, they would read sliders
   51–89, which are bands 1–4's *dynamics* controls.
@@ -52,10 +53,10 @@ accepted; disposition at the end of this file. The task order changed: `N_BANDS`
 | `tools/rcbitnova_curve.py` | Gains `band_slider_base`. | Modify |
 | `tests/test_rcbitnova_dsp.py` | V1.1 test block appended. | Modify |
 | `JSFX/RCBitNova V1.1` | The plugin. | Create (copy of V1.0), then modified in Tasks 3–6 |
-| `tools/migrate_v10_to_v11.py` | NEW. The one supported migration: copies the 95 declared parameters by index and the host tail by name, in place and transactionally, refusing when automation is present. | Create (Task 8) |
-| `tools/rcbitnova_gates.py` | NEW. The release gates as executable checks: the 28-site table, the address manifest computed through `lp_base`, and the parameter manifest. Exits nonzero on failure. | Create (Task 9) |
-| `tools/rcbitnova_nulltest.py` | NEW. Renders the V1.0/V1.1 null cases and compares sample for sample at zero tolerance. Exits nonzero on any mismatch. | Create (Task 9) |
-| `tools/rcbitnova_cpu.py` | NEW. Median peak block time and xrun count over the prescribed runs; exits nonzero on regression or any xrun. | Create (Task 9) |
+| `tools/migrate_v10_to_v11.py` | NEW. The one supported migration: copies the 95 declared parameters by index and the host tail **by position**, in place and transactionally by GUID, refusing automation, modulation and ambiguous chains. | Create (Task 9) |
+| `tools/rcbitnova_gates.py` | NEW. `--source-only`: the complete 28-site table, `eval_init`, and every address computed through `lp_base`; self-tested against seeded defects. `--live`: parameter and writer manifests. Exits nonzero on failure. | Create (Task 6), extended (Task 10) |
+| `tools/rcbitnova_nulltest.py` | NEW. Renders the V1.0/V1.1 null cases and compares sample for sample at zero tolerance, after asserting equal reported latency. Exits nonzero on any mismatch. | Create (Task 10) |
+| `tools/rcbitnova_cpu.py` | NEW. Median peak block time and xrun count over the prescribed runs; exits nonzero on regression or any xrun. | Create (Task 10) |
 
 Tasks 1–2 are pure Python. Tasks 3–6 are the JSFX transcription, each live-verifiable. Tasks 7–9 are gates, migration and shipping.
 
@@ -116,9 +117,8 @@ def test_v11_dynamic_arrays_do_not_grow_with_band_count():
         assert four[name] == eight[name], f"{name} moved when static bands grew"
 
 
-def test_v11_shadow_layout_has_room_for_guards():
-    """Bounds testing needs guard words, and the production layout has none - so the shadow
-    layout is where overruns are detected."""
+def test_v11_shadow_layout_spaces_arrays_apart():
+    """Only claims spacing. Bounds detection is GuardedMemory's job, tested below."""
     sh = lay.shadow_layout(8, 4, guard=2)
     names = list(sh)
     for a, b in zip(names, names[1:]):
@@ -199,9 +199,9 @@ def check_adjacency(n_bands, n_dyn):
 def shadow_layout(n_bands, n_dyn, guard=1):
     """The same arrays re-based with `guard` spare words between them.
 
-    The production layout has zero slack at cf/st and st/det, so a sentinel written 'just past'
-    cf would land inside st and be changed by ordinary audio. Bounds testing therefore runs
-    against this instrumented copy instead.
+    A SPACING MODEL, not a bounds test - it answers "how much room would this layout need with
+    slack", which is useful when considering a future layout, and nothing more. Out-of-bounds
+    detection is `GuardedMemory`, which is ownership-aware and runs against the production spans.
     """
     out = {}
     p = 0
@@ -243,13 +243,22 @@ AUDIO_CHAIN = [
     ("lp_rt",      "hplp_cf",   lambda nb, nd: 126),
     ("lp_kc",      "lp_rt",     lambda nb, nd: 16),
     ("lp_ks",      "lp_kc",     lambda nb, nd: 63),
+    ("lp_geo",     "lp_ks",     lambda nb, nd: 18),
+    ("lp_off",     "lp_geo",    lambda nb, nd: 8),
+    ("lp_fs",      "lp_off",    lambda nb, nd: 32),
+    ("gc_trace",   "lp_fs",     lambda nb, nd: 8),
 ]
 
 
 def audio_layout(n_bands, n_dyn):
-    """Every derived base address, in words. `n_bands` is deliberately unused by the audio
-    chain - that is the property under test: growing the STATIC band count must not move a
-    single audio address."""
+    """Every derived base address, in words, from mb_band through gc_trace - the bridge into the
+    GUI block. `n_bands` is deliberately unused by the audio chain: that is the property under
+    test, growing the STATIC band count must not move a single audio address.
+
+    Stopping this chain early was the rev-2 defect. A model that ends at lp_ks cannot say anything
+    about lp_geo/lp_off/lp_fs, and `lp_base % 65536 == 0` is satisfied by a wrong address just as
+    happily as by the right one.
+    """
     out = {"mb_band": 1024}
     for name, prev, size in AUDIO_CHAIN[1:]:
         out[name] = out[prev] + size(n_bands, n_dyn)
@@ -292,12 +301,25 @@ def test_v11_missing_one_dynamic_site_is_caught_as_a_16384_word_shift():
     assert wrong["mb_peak"] - lay.audio_layout(4, 4)["mb_peak"] == 16384
 
 
-def test_v11_gui_block_grows_only_gc_kc_and_lp_base_still_lands_on_a_page():
-    four = lay.gui_layout(100000, 4)
-    eight = lay.gui_layout(100000, 8)
+def test_v11_gui_block_grows_only_gc_kc_and_lp_base_is_exactly_65536():
+    """`% 65536 == 0` is not a test: a wrong address can be page-aligned too. Pin the value."""
+    base = lay.audio_layout(8, 4)["gc_trace"]
+    four, eight = lay.gui_layout(base, 4), lay.gui_layout(base, 8)
     assert eight["gc_kc"] == four["gc_kc"]              # base unchanged
     assert eight["gc_fc"] - four["gc_fc"] == 32         # 4 more bands x 8 words
-    assert eight["lp_base"] % 65536 == 0
+    assert eight["lp_base"] == 65536 == four["lp_base"]
+
+
+def test_v11_gui_region_is_ordered_non_overlapping_and_ends_below_lp_base():
+    """The GUI block is read by @gfx on another thread while lp_relayout memsets everything from
+    lp_base up. Crossing that line is not a wrong number, it is a thread-safety failure."""
+    base = lay.audio_layout(8, 4)["gc_trace"]
+    g = lay.gui_layout(base, 8)
+    order = ["gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc", "gc_ebuf", "gc_hits"]
+    addrs = [g[n] for n in order]
+    assert addrs == sorted(addrs), addrs
+    assert g["clear_span"] == g["gc_hits"] + 8 - base
+    assert g["gc_hits"] + 8 <= g["lp_base"], "the GUI region must end below lp_base"
 
 
 def test_v11_gui_model_reproduces_the_shipped_clear_span():
@@ -315,78 +337,92 @@ test. Add an instrumented memory that fails when a modeled access crosses an arr
 
 ```python
 class GuardedMemory:
-    """Word-addressed memory with a guard word after every array. Writing or reading a guard
-    raises. This is where B5-B8 accesses are proven in-bounds BEFORE any JSFX is written -
-    the production layout has no spare word to hold a sentinel."""
+    """Ownership-aware word memory: every access names the array it believes it is touching, and
+    any offset outside that array's span raises.
 
-    GUARD = object()
+    A guard-word-only design (rev 2's) catches an overrun of exactly one word and lets an access
+    that jumps further land silently in the next array - which is precisely the failure mode being
+    modelled, since `cf` and `st` are adjacent with zero slack. Naming the owner makes the check
+    total instead of probabilistic.
+    """
 
     def __init__(self, spans):
-        self.spans = spans                       # name -> (first, last)
-        self.guards = {last + 1 for _, last in spans.values()}
+        self.spans = spans                       # name -> (first, last inclusive)
         self.cells = {}
 
-    def _check(self, addr, what):
-        if addr in self.guards:
-            owner = next(n for n, (f, l) in self.spans.items() if l + 1 == addr)
-            raise AssertionError(f"{what} at {addr} hit the guard word after {owner}")
+    def _addr(self, name, offset, what):
+        first, last = self.spans[name]
+        if offset < 0 or first + offset > last:
+            raise AssertionError(
+                f"{what} {name}[{offset}] leaves its span {first}..{last} "
+                f"(next array begins at {min((f for f, _ in self.spans.values() if f > last), default='end')})")
+        return first + offset
 
-    def write(self, addr, value):
-        self._check(addr, "write")
-        self.cells[addr] = value
+    def write(self, name, offset, value):
+        self.cells[self._addr(name, offset, "write")] = value
 
-    def read(self, addr):
-        self._check(addr, "read")
-        return self.cells.get(addr, 0.0)
+    def read(self, name, offset):
+        return self.cells.get(self._addr(name, offset, "read"), 0.0)
 
 
-def model_static_band(mem, spans, b):
-    """What setup_band + the static sample loop touch for band b: 8 coefficient words and 4
-    state words. Deliberately mirrors the JSFX indexing, cf[b*8+k] and st[b*4+k]."""
+def model_static_band(mem, b):
+    """What setup_band plus the static sample loop touch for band b: 8 coefficient words and 4
+    state words, indexed exactly as the JSFX does - cf[b*8+k], st[b*4+k]."""
     for k in range(8):
-        mem.write(spans["cf"][0] + b * 8 + k, 1.0)
+        mem.write("cf", b * 8 + k, 1.0)
     for k in range(4):
-        mem.read(spans["st"][0] + b * 4 + k)
-        mem.write(spans["st"][0] + b * 4 + k, 0.0)
+        mem.read("st", b * 4 + k)
+        mem.write("st", b * 4 + k, 0.0)
+
+
 ```
 
 ```python
 def test_v11_static_accesses_for_all_eight_bands_stay_in_bounds():
-    spans = lay.shadow_layout(8, 4, guard=1)
-    mem = lay.GuardedMemory(spans)
+    """Run against the PRODUCTION spans, not a padded copy - ownership checking needs no slack."""
+    mem = lay.GuardedMemory(lay.layout(8, 4))
     for b in range(8):
-        lay.model_static_band(mem, spans, b)        # must not raise
+        lay.model_static_band(mem, b)               # must not raise
 
 
-def test_v11_a_ninth_band_trips_the_guard():
-    """Proves the instrument works. Without this, the previous test passes vacuously."""
-    spans = lay.shadow_layout(8, 4, guard=1)
-    mem = lay.GuardedMemory(spans)
+def test_v11_a_ninth_band_leaves_cf():
+    """Proves the instrument works. Without it, the test above passes vacuously."""
+    mem = lay.GuardedMemory(lay.layout(8, 4))
     try:
-        lay.model_static_band(mem, spans, 8)
+        lay.model_static_band(mem, 8)
     except AssertionError as e:
-        assert "guard word after cf" in str(e), e
+        assert "cf[64] leaves its span 0..63" in str(e), e
     else:
-        raise AssertionError("a ninth band must trip the cf guard")
+        raise AssertionError("a ninth band must leave cf")
 
 
-def test_v11_dynamic_access_by_a_static_band_trips_the_guard():
-    """The V1.0 static loop read dp[b*4+3] and dm[b]. If bands 5-8 ever did that, this is what
-    it would look like."""
-    spans = lay.shadow_layout(8, 4, guard=1)
-    mem = lay.GuardedMemory(spans)
-    try:
-        mem.read(spans["dm"][0] + 4)
-    except AssertionError as e:
-        assert "after dm" in str(e), e
-    else:
-        raise AssertionError("reading dm[4] with four dynamic bands must trip the guard")
+def test_v11_an_overrun_that_jumps_clear_of_a_guard_word_is_still_caught():
+    """The rev-2 design only failed on the single word after an array, so an access landing two
+    or more words in - the realistic case for cf, which is indexed b*8 - went undetected."""
+    mem = lay.GuardedMemory(lay.layout(8, 4))
+    for bad in (64, 65, 71, 95):
+        try:
+            mem.write("cf", bad, 1.0)
+        except AssertionError:
+            continue
+        raise AssertionError(f"cf[{bad}] must be rejected")
+
+
+def test_v11_dynamic_access_by_a_static_band_is_caught():
+    """The V1.0 static loop read dp[b*4+3] and dm[b]. If bands 5-8 ever did that, this is it."""
+    mem = lay.GuardedMemory(lay.layout(8, 4))
+    for name, offset in (("dm", 4), ("dp", 16), ("det", 16), ("bp", 12)):
+        try:
+            mem.read(name, offset)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{name}[{offset}] must be rejected with four dynamic bands")
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 233 passed (221 + 5 + 4 + 3).
+Expected: 235 passed (221 + 5 + 5 + 4).
 
 - [ ] **Step 5: Commit**
 
@@ -454,7 +490,7 @@ def band_slider_base(b):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 236 passed.
+Expected: 238 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -485,7 +521,7 @@ Change `desc:` to read `V1.1` and append ` + 8 bands`.
 - [ ] **Step 2: Declare the two constants — both 4 for now**
 
 ```eel2
-N_BANDS = 4;   // static EQ bands. Becomes 8 in Task 6, and NOT before: every path that could
+N_BANDS = 4;   // static EQ bands. Becomes 8 in Task 7, and NOT before: every path that could
                // read or write past a four-band array must be bounded first.
 N_DYN   = 4;   // bands with dynamics: Mode A, Mode B, ceilings, detectors.
                // Everything sized by N_DYN keeps its V1.0 address forever. Raising N_BANDS past
@@ -520,34 +556,46 @@ hplp_state = egh + N_DYN * 2;
 the count flips.
 
 Because both constants are still 4, this step changes no address at all. That is the point: the
-gate in Task 9 compares computed word indices, and at this commit they must be identical to V1.0's.
+gate in Task 6 compares computed word indices, and at this commit they must be identical to V1.0's.
 
 - [ ] **Step 4: Grow the GUI coefficient scratch and add the hit-set buffer (spec §2.1)**
 
 `gc_kc` holds 8 words per band and `gc_fc` starts immediately after it, so at eight bands
 `gc_kc + b*8` for B5–B8 would overwrite the GUI's HP/LP coefficients. Size it by `N_BANDS` so it
-follows the flip automatically, and add the 8-word hit set that Task 6's node cycling needs:
+follows the flip automatically, and add the 8-word hit set that Task 8's node cycling needs:
 
 ```eel2
 gc_kc    = gc_meta + 16;              // N_BANDS * 8 words: the GUI's OWN band coefficients
 gc_fc    = gc_kc + N_BANDS * 8;       // 126 words: the GUI's OWN HP/LP coefficients (2 x 63)
 gc_ebuf  = gc_fc + 126;               // 24 words: numeric-entry character buffer
-gc_hits  = gc_ebuf + 24;              // 8 words: nodes under the cursor this frame (Task 6)
+gc_hits  = gc_ebuf + 24;              // 8 words: nodes under the cursor this frame (Task 8)
 ```
 
-and the clear span grows from V1.0's 13638 by the same 32 + 8 words:
+and the clear span stops being a hand-typed number. Every one of those bases is already assigned
+by the time the clear runs, so **derive it**:
 
 ```eel2
-memset(gc_trace, 0, 13678);
+memset(gc_trace, 0, gc_hits + 8 - gc_trace);
 ```
 
-Take the number from the model, not by hand:
+V1.0 hard-coded 13638, and rev 1 of this plan typed 13670 — which was the spec's number and is now
+wrong, because `gc_hits` did not exist when the spec was written. A derived span is correct at four
+bands (13646), correct at eight (13678), and correct at whatever the flip in Task 7 makes it. Nothing
+to keep in sync, and the intermediate build stays a genuine no-op.
+
+Cross-check the two endpoints against the model:
 
 ```bash
-python3 -c "from tools import rcbitnova_layout as l; print(l.gui_layout(0, 8)['clear_span'])"
+python3 -c "from tools import rcbitnova_layout as l; print(l.gui_layout(0,4)['clear_span'], l.gui_layout(0,8)['clear_span'])"
 ```
 
-`lp_base` is computed from `gc_hits + 8`, so it recalculates itself. Task 9's gate asserts it still
+Expected: `13646 13678`.
+
+**Spec follow-up (review P1-1):** §2.1 and §6.1 pin the span to 13670 and know nothing of `gc_hits`.
+Update the spec to rev 5 before Task 11 signs anything off — the plan and the spec cannot both be
+the acceptance contract.
+
+`lp_base` is computed from `gc_hits + 8`, so it recalculates itself. Task 6's gate asserts it still
 lands on a 65536 boundary — the hi-res FFT corrupts **silently** if it does not.
 
 - [ ] **Step 5: Declare the 36 new sliders at the END of the slider block**
@@ -574,7 +622,7 @@ parameters an exact prefix of V1.1's 131.
 - [ ] **Step 6: Live check — byte-identical behaviour**
 
 Load `RCBitNova V1.1`. With both counts at 4 it is V1.0 with 36 inert parameters appended. Confirm
-it loads, plays, and the graph draws. The real proof is Task 9's null test; this is the smoke test.
+it loads, plays, and the graph draws. The real proof is Task 10's null test; this is the smoke test.
 
 - [ ] **Step 7: Commit**
 
@@ -641,7 +689,7 @@ grep -nE '10 ?\* ?\((b|gc_b|gc_hover|gc_drag|gc_sel) ?\+ ?1\)' "JSFX/RCBitNova V
   | grep -v 'N_DYN-bounded' | grep -v 'function band_slider_base'
 ```
 
-Expected: no output. Task 9 runs this as a gate so it cannot rot.
+Expected: no output. Task 6 runs this as a gate so it cannot rot.
 
 - [ ] **Step 4: Live check**
 
@@ -665,7 +713,7 @@ git commit -m "feat(rcbitnova): V1.1 - all sixteen band-slider sites go through 
 
 Still four bands. `loop(N_BANDS - N_DYN, …)` runs zero iterations, and the eight-way writers are
 never called with `b >= 4`. Everything below is dormant machinery — which is why it can be loaded
-and committed safely, and why the flip in Task 6 is one line.
+and committed safely, and why the flip in Task 7 is one line.
 
 - [ ] **Step 1: Bound the `@sample` band loop to `N_DYN`**
 
@@ -797,7 +845,177 @@ git commit -m "feat(rcbitnova): V1.1 - dynamic paths bounded, static-only loop a
 
 ---
 
-### Task 6: Flip the count
+### Task 6: The source gate — before anything flips
+
+**Files:**
+- Create: `tools/rcbitnova_gates.py`
+
+The rejected order had this after the flip and left the flip covered by two greps alone.
+Those greps check open-coded slider arithmetic and forbidden identifiers in the new loop; neither
+verifies a single one of the 17 `@init` conversions, and neither computes an address. The failure
+this gate exists to catch is **silent**: a plugin that loads, plays, and has a different memory map
+than the spec describes. "Watch for a REAPER memory error" is not a fallback for that.
+
+Everything here is source-level — no REAPER, no rendering. The live gates stay in Task 10.
+
+- [ ] **Step 1: `eval_init` — evaluate the `@init` arithmetic instead of eyeballing it**
+
+Small deliberately: the addresses are a chain of `name = expr;` lines over integer literals, the
+two counts, and previously defined names. That is enough grammar to evaluate with `ast`.
+
+```python
+import ast, re
+
+ASSIGN = re.compile(r"^\s*(\w+)\s*=\s*([^;]+);")
+CONSTS = ("N_BANDS", "N_DYN", "MAX_LOOK", "GC_N", "GC_LIN_N")
+
+
+def eval_init(path, wanted):
+    """name -> word address, evaluated from the file's own @init. Only +, -, *, ceil() and
+    already-known names are allowed; anything else raises rather than guessing."""
+    env, out = {}, {}
+    for line in open(path, encoding="utf-8", errors="replace"):
+        line = line.split("//")[0]
+        m = ASSIGN.match(line)
+        if not m:
+            continue
+        name, expr = m.group(1), m.group(2).strip()
+        expr = re.sub(r"\bceil\(", "_ceil(", expr)
+        try:
+            value = eval(compile(ast.parse(expr, mode="eval"), "<init>", "eval"),
+                         {"_ceil": lambda x: -(-int(x) // 1), "__builtins__": {}}, dict(env))
+        except Exception:
+            continue                       # not an address expression; skip it
+        if isinstance(value, (int, float)):
+            env[name] = value
+            if name in wanted:
+                out[name] = int(value)
+    missing = set(wanted) - set(out)
+    if missing:
+        raise AssertionError(f"{path}: could not evaluate {sorted(missing)}")
+    return out
+```
+
+`ceil(x/65536)*65536` evaluates correctly because the division is real division, exactly as EEL2
+does it. Anything the evaluator cannot handle raises — it never falls back to a guess.
+
+- [ ] **Step 2: The 28-site table, complete**
+
+All 28 rows of spec §3.2. A site is `(regex, required token)`; a row whose regex matches nothing is
+a **failure**, not a pass — a renamed or deleted line must not slip through as vacuous absence.
+
+```python
+SITES = [
+    (r"^N_BANDS\s*=\s*(\d+);",                              "8"),
+    (r"^N_DYN\s*=\s*(\d+);",                                "4"),
+    (r"^memset\(st,\s*0,\s*(\w+) \* 4\);",                  "N_BANDS"),
+    (r"^memset\(dst,\s*0,\s*(\w+) \* 4\);",                 "N_DYN"),
+    (r"^memset\(cst,\s*0,\s*(\w+) \* 4\);",                 "N_DYN"),
+    (r"loop\((\w+) \* 2,\s*eg\[i\] = 1;",                   "N_DYN"),
+    (r"^mb_peak = mb_band \+ (\w+) \* 2 \* MAX_LOOK;",       "N_DYN"),
+    (r"^mb_end\s+= mb_peak \+ (\w+) \* 2 \* MAX_LOOK;",      "N_DYN"),
+    (r"^mbmode = mbenv \+ (\w+) \* 2;",                     "N_DYN"),
+    (r"^mbwpos = mbmode \+ (\w+);",                         "N_DYN"),
+    (r"^bus_dry = mbwpos \+ (\w+);",                        "N_DYN"),
+    (r"loop\((\w+) \* 2,\s*mbenv\[i\] = 1;",                "N_DYN"),
+    (r"^memset\(mbwpos,\s*0,\s*(\w+)\);",                   "N_DYN"),
+    (r"loop\((\w+) \* 2,\s*mbgc\[i\] = 1;",                 "N_DYN"),
+    (r"^mbeh = mbgc \+ (\w+) \* 2;",                        "N_DYN"),
+    (r"^hc\s+= mbeh \+ (\w+) \* 2;",                        "N_DYN"),
+    (r"loop\((\w+) \* 2,\s*mbeh\[i\] = 1;",                 "N_DYN"),
+    (r"^egh = hc \+ (\w+);",                                "N_DYN"),
+    (r"loop\((\w+) \* 2,\s*egh\[i\] = 1;",                  "N_DYN"),
+    (r"^hplp_state = egh \+ (\w+) \* 2;",                   "N_DYN"),
+    (r"^gc_kc\s+= gc_meta \+ 16;.*",                        None),   # presence only
+    (r"^gc_fc\s+= gc_kc \+ (\w+) \* 8;",                    "N_BANDS"),
+    (r"function gc_domain_bits.*\n(?:.*\n)*?\s*loop\((\w+),", "N_BANDS"),
+    (r"function gc_dom_used.*\n(?:.*\n)*?\s*loop\((\w+),",    "N_BANDS"),
+    (r"b = 0; loop\((\w+), setup_band\(b\); b \+= 1;\);",   "N_BANDS"),
+    (r"b = 0; loop\((\w+),\s+setup_band_dyn\(b\); b \+= 1;\);", "N_DYN"),
+    (r"loop\((\w+),\s*\n\s*slider\(50 \+ 10\*b \+ 1\)",     "N_DYN"),   # @slider Mode-B scan
+    (r"V1\.1: bands 5-8, STATIC ONLY(?:.*\n)*?\s*loop\((\w+) - (\w+),", ("N_BANDS", "N_DYN")),
+]
+```
+
+Alongside them, the two rejections that no site table can express:
+
+```python
+FORBIDDEN = [
+    # open-coded band-slider arithmetic outside the helper
+    (r"10 ?\* ?\((?:b|gc_b|gc_hover|gc_drag|gc_sel) ?\+ ?1\)", "N_DYN-bounded"),
+]
+```
+
+- [ ] **Step 3: The address gate**
+
+```python
+WANTED = ["mb_band", "mb_peak", "mb_end", "mbenv", "mbmode", "mbwpos", "bus_dry", "mbgc",
+          "mbeh", "hc", "egh", "hplp_state", "hplp_cf", "lp_rt", "lp_kc", "lp_ks", "lp_geo",
+          "lp_off", "lp_fs", "gc_trace", "gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc",
+          "gc_ebuf", "gc_hits", "lp_base"]
+
+v10 = eval_init("JSFX/RCBitNova V1.0", [w for w in WANTED if w != "gc_hits"])
+v11 = eval_init("JSFX/RCBitNova V1.1", WANTED)
+model_audio = layout.audio_layout(8, 4)
+model_gui = layout.gui_layout(model_audio["gc_trace"], 8)
+
+for name in model_audio:                     # every audio base, both files, exact
+    assert v11[name] == v10[name] == model_audio[name], (name, v10[name], v11[name])
+assert v11["gc_kc"] == v10["gc_kc"]          # base unchanged; only its SIZE grows
+assert v11["gc_fc"] - v10["gc_fc"] == 32
+assert v11["lp_base"] == v10["lp_base"] == 65536
+assert v11["gc_hits"] + 8 <= v11["lp_base"]
+for a, b in zip(GUI_ORDER, GUI_ORDER[1:]):   # ordering and non-overlap
+    assert v11[a] < v11[b], (a, b, v11[a], v11[b])
+```
+
+The rev-1 grep stays, printed as diagnostics next to the numbers. It is not the gate.
+
+- [ ] **Step 4: Self-test the gate — mutate a fixture and require a failure**
+
+A gate that has never failed is a gate nobody has tested. Copy the source to a temp file, introduce
+each defect, and assert the gate rejects it:
+
+| Mutation | Must be rejected by |
+|---|---|
+| `mb_peak` left on `N_BANDS` | the site table **and** the address comparison (a 16384-word shift) |
+| `memset(st, …)` switched to `N_DYN` | the site table |
+| `gc_fc = gc_kc + 32` (hard-coded) | the address comparison |
+| a `10 * (b + 1)` added to `@gfx` without the marker | `FORBIDDEN` |
+| the `N_BANDS = 8` line deleted | `eval_init` raising on an unevaluable chain |
+
+```python
+def test_v11_gate_rejects_each_seeded_defect(tmp_path):
+    for mutate, expect in SEEDED_DEFECTS:
+        src = tmp_path / "mutant"
+        src.write_text(mutate(open("JSFX/RCBitNova V1.1").read()))
+        with pytest.raises(AssertionError, match=expect):
+            gates.check_source(str(src))
+```
+
+Without this, the negative test from rev 2 — editing a copied dict value and asserting the
+difference is 16384 — proves only that Python subtracts correctly.
+
+- [ ] **Step 5: Run it against the current, still-four-band V1.1**
+
+```bash
+python3 tools/rcbitnova_gates.py --source-only
+```
+
+Expected: the site table passes **except** the `N_BANDS = 8` row, which legitimately fails while the
+count is still 4. Everything else — all 17 conversions, every address, the forbidden patterns — must
+already be green. That is the whole point of doing this before the flip.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tools/rcbitnova_gates.py tests/test_rcbitnova_dsp.py
+git commit -m "test(rcbitnova): V1.1 source gate - 28 sites and computed addresses, self-tested"
+```
+
+---
+
+### Task 7: Flip the count
 
 **Files:**
 - Modify: `JSFX/RCBitNova V1.1` (one line)
@@ -808,21 +1026,19 @@ git commit -m "feat(rcbitnova): V1.1 - dynamic paths bounded, static-only loop a
 N_BANDS = 8;
 ```
 
-- [ ] **Step 2: Check the map before loading**
+- [ ] **Step 2: Run the gate BEFORE loading**
 
 ```bash
-python3 tools/rcbitnova_gates.py --source-only   # written in Task 9; run its sites+address checks
-grep -c "N_DYN" "JSFX/RCBitNova V1.1"
+python3 tools/rcbitnova_gates.py --source-only && echo SOURCE_GATES_OK
 ```
 
-If Task 9 is not written yet, run the two greps from Task 4 Step 3 and Task 5 Step 7 instead, and
-re-run them under the gate later.
+All 28 sites and every address must pass now, `N_BANDS = 8` included. A failure here is the map
+moving — which does not announce itself at load.
 
 - [ ] **Step 3: Live check — the first genuinely eight-band load**
 
-Enable B5 with a large boost: it must be audible and appear on the graph. Then set a B1 Mode-B
-ceiling low enough that the B5 boost pushes it over — Mode B must react, proving the ordering of
-§3.1. Watch for a REAPER memory error at load: that means a `N_DYN` site was missed in Task 3.
+Enable B5 with a large boost: audible, and on the graph. Then set a B1 Mode-B ceiling low enough
+that the B5 boost pushes it over — Mode B must react, proving the ordering of §3.1.
 
 - [ ] **Step 4: Commit**
 
@@ -830,10 +1046,7 @@ ceiling low enough that the B5 boost pushes it over — Mode B must react, provi
 git add "JSFX/RCBitNova V1.1"
 git commit -m "feat(rcbitnova): V1.1 - eight static bands"
 ```
-
----
-
-### Task 7: The band context menu, the selector strip, and node cycling
+### Task 8: The band context menu, the selector strip, and node cycling
 
 **Files:**
 - Modify: `JSFX/RCBitNova V1.1` (`@gfx`)
@@ -909,10 +1122,49 @@ function gc_w_type(b, v) (
 The slider declares `0..1` in `0.001` steps; five menu presets cannot reproduce an existing 0.333,
 which would make the GUI unable to represent a value the engine happily plays. Add Q Character as
 a **sixth numeric-entry field**, reusing V1.0's existing entry machinery (`gc_edit`, `gc_ebuf`,
-`gc_elen`) exactly as Freq/Macro/Micro/Ratio/Q do, and commit typed values unquantised.
+`gc_elen`) exactly as Freq/Macro/Micro/Ratio/Q do.
+
+Commit the typed value **clamped and quantised to the declared step**:
+
+```eel2
+v = min(max(v, 0), 1);
+gc_w_qchar(gc_sel, floor(v / 0.001 + 0.5) * 0.001);
+```
+
+"Full resolution" means the whole 0.001 grid instead of five coarse presets — it does not mean
+off-grid values. V1.0 measured what those cost: a continuous 59.752306 Hz written to a step-1
+slider left **−62 dB of null residue**. A typed 0.3335 would be reachable from the graph,
+unreachable from the host, and the two would not null.
+
+**Deviation, stated rather than hidden:** V1.0's five existing fields keep typed values exact. This
+new field does not follow them. Putting those five on their declared steps is a real fix, but it
+changes shipped behaviour and belongs in its own version rather than smuggled into V1.1.
 
 The menu presets stay as the fast path. With the field present, the nine-parameter reachability
 claim is honest.
+
+- [ ] **Step 4a: Draw static-only nodes with a thinner outline (spec §5)**
+
+§5 requires **both** signals — outline thickness and the textual tag — because thickness alone is
+not accessible. V1.0 draws every node with one call at a fixed radius:
+
+```eel2
+gfx_circle(gc_nx, gc_ny, 6 * gc_sc, gc_en ? 1 : 0, 1);
+```
+
+A filled node has no outline weight to vary, so the distinction goes on a ring: dynamic bands keep
+the plain body, static-only bands get a hairline outer ring.
+
+```eel2
+gfx_circle(gc_nx, gc_ny, 6 * gc_sc, gc_en ? 1 : 0, 1);
+gc_b >= N_DYN ? (                      // static-only: thin outer ring, no extra fill weight
+  gfx_a *= 0.55;
+  gfx_circle(gc_nx, gc_ny, 7.5 * gc_sc, 0, 1);
+);
+```
+
+Check it at Retina scaling (`gc_sc` = 2) in all four combinations — DYN enabled, DYN disabled,
+STATIC enabled, STATIC disabled — a hairline is exactly what a HiDPI backing store can swallow.
 
 - [ ] **Step 5: Add the B1…B8 selector strip and the DYN/STATIC tag**
 
@@ -1005,6 +1257,7 @@ Then the cycling matrix, which is where this kind of code actually fails:
 | Click, wait 1 s, click again | back to the lowest band |
 | Click, move away, return, click | back to the lowest band |
 | Coincident nodes, then drag | the drag moves the band the last click selected |
+| B5–B8 nodes at `gc_sc` = 2 | thinner ring visible, enabled and disabled alike |
 
 - [ ] **Step 8: Commit**
 
@@ -1015,53 +1268,75 @@ git commit -m "feat(rcbitnova): V1.1 - band context menu, selector strip, node c
 
 ---
 
-### Task 8: The migration script
+
+---
+
+### Task 9: The migration script
 
 **Files:**
 - Create: `tools/migrate_v10_to_v11.py`
 
-Before the gates, because Task 9's null test uses it to put both instances in the same state.
+Before the live gates, because Task 10's null test uses it to put both instances in the same state.
 
-**Measured facts this task is built on (reapy, live V1.0, 2026-08-19):** the host reports **98**
-parameters — 95 declared sliders at 0–94, then `Bypass`, `Wet`, `Delta`. V1.1 will report 134.
-The declared block is a prefix; **the full list is not**. Copying by index across the whole list
-would write V1.0's Bypass/Wet/Delta into V1.1's B5 Enable/Type/Freq.
+**Measured facts (reapy, live V1.0, 2026-08-19):** the host reports **98** parameters — 95 declared
+sliders at 0–94, then `Bypass`, `Wet`, `Delta`. V1.1 will report 134. The declared block is a
+prefix; the full list is not.
+
+**And the trap that follows from it (review P0-2): `slider1` is itself named `Bypass`.** So is host
+parameter 95. Any name search finds the declared one at index 0 and silently migrates the wrong
+parameter — never touching the real host bypass, and contaminating the null test that relies on this
+script for equal state. **The host tail is addressed positionally, after validating its names.**
 
 - [ ] **Step 1: Write it**
 
 ```python
 """Replace a V1.0 instance with a V1.1 instance in place, preserving its settings.
 
-The only supported migration. V1.1 is a new file, so an existing project simply reopens V1.0 and
-is unaffected - this is for moving a project forward deliberately.
+The only supported migration. V1.1 is a new file, so an existing project simply reopens V1.0 and is
+unaffected - this is for moving a project forward deliberately.
 
-Two things the first draft got wrong, both measured rather than reasoned:
+Three things learned the hard way, all of them measured rather than reasoned:
 
-1. The host list is 95 declared parameters THEN Bypass/Wet/Delta. Copying by index across the
-   whole list lands the host tail in the new bands. Declared parameters are copied by index and
-   stop at 95; host parameters are matched by name.
-2. add_fx appends. If V1.0 was not last in the chain, an index-preserving move is required or the
-   FX order - and therefore the sound - changes even when every value is right.
+1. The host list is 95 declared parameters THEN Bypass/Wet/Delta. Copying by index across the whole
+   list lands the host tail in the new bands.
+2. `slider1` is ALSO named "Bypass". Searching by name finds index 0, not the host parameter. The
+   tail is addressed by position, after its names are validated.
+3. add_fx appends. If V1.0 was not last in the chain, the FX order - and the sound - changes even
+   when every value is right.
 
-Automation is out of scope: an instance with envelopes is refused, not silently flattened.
+Identity is by FX GUID throughout: a track may legitimately hold more than one RCBitNova, and a
+name search would delete the wrong one on the failure path.
 """
 
 import reapy
 from reapy import reascript_api as RPR
 
 N_DECLARED_V10 = 95
+N_DECLARED_V11 = 131
 HOST_TAIL = ("Bypass", "Wet", "Delta")
+UNSUPPORTED = ("parameter modulation", "pin mappings", "parameter aliases", "oversampling")
 
 
-def _params(fx):
-    return [fx.params[i].name for i in range(fx.n_params)]
+def _guid(track, idx):
+    return RPR.TrackFX_GetFXGUID(track.id, idx)
 
 
-def _by_name(fx, name):
-    for i in range(fx.n_params):
-        if fx.params[i].name == name:
+def _index_of_guid(track, guid):
+    for i in range(track.n_fxs):
+        if _guid(track, i) == guid:
             return i
     return None
+
+
+def _has_modulation(track, idx, n_declared):
+    """RPR exposes per-parameter modulation through named config; when the build does not support
+    the query it returns falsey for every parameter, so a False here means 'not detected', not
+    'definitely absent'. Reported honestly by the caller."""
+    for i in range(n_declared):
+        ok, value = RPR.TrackFX_GetNamedConfigParm(track.id, idx, f"param.{i}.mod.active", "", 32)
+        if ok and value not in ("", "0"):
+            return True
+    return False
 
 
 def migrate(track_index=0, dry_run=True):
@@ -1069,64 +1344,86 @@ def migrate(track_index=0, dry_run=True):
         pr = reapy.Project()
         tr = pr.tracks[track_index]
 
-        src = next((fx for fx in tr.fxs if "RCBitNova V1.0" in fx.name), None)
-        if src is None:
+        srcs = [fx for fx in tr.fxs if "RCBitNova V1.0" in fx.name]
+        if not srcs:
             return "no V1.0 instance on this track"
+        if len(srcs) > 1:
+            return f"REFUSED: {len(srcs)} V1.0 instances on this track; migrate them one by one"
+        src = srcs[0]
         src_idx = src.index
+        src_guid = _guid(tr, src_idx)
 
-        names = _params(src)
-        if len(names) < N_DECLARED_V10:
-            return f"REFUSED: V1.0 reports {len(names)} parameters, expected at least 95"
-        if names[N_DECLARED_V10:N_DECLARED_V10 + 3] != list(HOST_TAIL):
-            return (f"REFUSED: unexpected host tail {names[N_DECLARED_V10:]!r}; this REAPER build "
-                    "exposes a different special-parameter set - migrate by hand")
+        names = [src.params[i].name for i in range(src.n_params)]
+        if len(names) != N_DECLARED_V10 + len(HOST_TAIL):
+            return (f"REFUSED: V1.0 reports {len(names)} parameters, expected "
+                    f"{N_DECLARED_V10 + len(HOST_TAIL)} - this REAPER build exposes a different "
+                    "special-parameter set; migrate by hand")
+        if tuple(names[N_DECLARED_V10:]) != HOST_TAIL:
+            return f"REFUSED: unexpected host tail {names[N_DECLARED_V10:]!r}; migrate by hand"
 
         if any(src.params[i].envelope is not None for i in range(src.n_params)):
             return "REFUSED: this instance has automation; migrate it by hand"
+        if _has_modulation(tr, src_idx, N_DECLARED_V10):
+            return "REFUSED: this instance has parameter modulation; migrate it by hand"
 
         declared = [src.params[i].normalized for i in range(N_DECLARED_V10)]
-        host = {n: src.params[_by_name(src, n)].normalized for n in HOST_TAIL}
+        # POSITIONAL, not by name: parameter 0 is also called "Bypass".
+        host = [src.params[N_DECLARED_V10 + k].normalized for k in range(len(HOST_TAIL))]
         enabled = RPR.TrackFX_GetEnabled(tr.id, src_idx)
         offline = RPR.TrackFX_GetOffline(tr.id, src_idx)
 
         if dry_run:
             return (f"would copy {len(declared)} declared + {len(host)} host parameters "
-                    f"into chain position {src_idx}")
+                    f"into chain position {src_idx}; unsupported state not detected "
+                    f"({', '.join(UNSUPPORTED)} are NOT migrated)")
 
         RPR.Undo_BeginBlock2(pr.id)
         dst = tr.add_fx("JS: RCBitNova V1.1")
-        dst_idx = dst.index
+        dst_guid = _guid(tr, dst.index)
         try:
+            dst_idx = _index_of_guid(tr, dst_guid)
+            dst_names = [dst.params[i].name for i in range(dst.n_params)]
+            if len(dst_names) != N_DECLARED_V11 + len(HOST_TAIL):
+                raise RuntimeError(f"V1.1 reports {len(dst_names)} parameters, expected "
+                                   f"{N_DECLARED_V11 + len(HOST_TAIL)}")
+            if tuple(dst_names[N_DECLARED_V11:]) != HOST_TAIL:
+                raise RuntimeError(f"V1.1 host tail is {dst_names[N_DECLARED_V11:]!r}")
+
             for i, v in enumerate(declared):
                 dst.params[i].normalized = v
-            for n, v in host.items():
-                j = _by_name(dst, n)
-                if j is None:
-                    raise RuntimeError(f"V1.1 has no host parameter {n!r}")
-                dst.params[j].normalized = v
+            for k, v in enumerate(host):
+                dst.params[N_DECLARED_V11 + k].normalized = v
 
             # Read back BEFORE destroying the only known-good instance.
             for i, v in enumerate(declared):
-                if dst.params[i].normalized != v:
-                    raise RuntimeError(f"parameter {i} ({dst.params[i].name}) did not take: "
-                                       f"wrote {v}, read {dst.params[i].normalized}")
-            for n, v in host.items():
-                if dst.params[_by_name(dst, n)].normalized != v:
-                    raise RuntimeError(f"host parameter {n} did not take")
+                got = dst.params[i].normalized
+                if got != v:
+                    raise RuntimeError(f"parameter {i} ({dst_names[i]}) did not take: "
+                                       f"wrote {v}, read {got}")
+            for k, v in enumerate(host):
+                if dst.params[N_DECLARED_V11 + k].normalized != v:
+                    raise RuntimeError(f"host parameter {HOST_TAIL[k]} did not take")
 
             RPR.TrackFX_SetEnabled(tr.id, dst_idx, enabled)
             RPR.TrackFX_SetOffline(tr.id, dst_idx, offline)
 
-            # Move into the source's chain position, then remove the source (whose index has
-            # shifted by the insertion - find it by name rather than by the old number).
+            # Move into the source's slot, then verify the move landed before removing anything.
             RPR.TrackFX_CopyToTrack(tr.id, dst_idx, tr.id, src_idx, True)
-            stale = next((fx for fx in tr.fxs if "RCBitNova V1.0" in fx.name), None)
-            stale.delete()
-        except Exception as exc:                      # noqa: BLE001 - any failure must roll back
-            doomed = next((fx for fx in tr.fxs if "RCBitNova V1.1" in fx.name), None)
+            if _index_of_guid(tr, dst_guid) != src_idx:
+                raise RuntimeError(f"move failed: V1.1 is at {_index_of_guid(tr, dst_guid)}, "
+                                   f"expected {src_idx}")
+            stale_idx = _index_of_guid(tr, src_guid)
+            if stale_idx is None:
+                raise RuntimeError("lost track of the V1.0 instance after the move")
+            tr.fxs[stale_idx].delete()
+        except Exception as exc:                      # noqa: BLE001 - any failure rolls back
+            doomed = _index_of_guid(tr, dst_guid)     # BY GUID: the track may hold another V1.1
             if doomed is not None:
-                doomed.delete()
-            RPR.Undo_EndBlock2(pr.id, "RCBitNova migration (failed, rolled back)", -1)
+                tr.fxs[doomed].delete()
+            RPR.Undo_EndBlock2(pr.id, "RCBitNova migration (failed)", -1)
+            if _index_of_guid(tr, src_guid) is None:
+                RPR.Undo_DoUndo2(pr.id)               # source already gone: undo for real
+                return f"FAILED after the source was removed; undone: {exc}"
             return f"REFUSED, source untouched: {exc}"
 
         RPR.Undo_EndBlock2(pr.id, "RCBitNova V1.0 -> V1.1", -1)
@@ -1137,154 +1434,181 @@ if __name__ == "__main__":
     print(migrate(dry_run=True))
 ```
 
-**Out of scope, stated rather than silently dropped:** parameter modulation, pin mappings,
-parameter aliases, per-FX oversampling metadata. If the source has any of them, migrate by hand.
-Add them to the refusal list if REAPER exposes a way to detect them.
+**Honest scope.** Automation and parameter modulation are **detected and refused**. Pin mappings,
+parameter aliases and per-FX oversampling are **not detected** — they are silently not migrated, and
+the dry run says so. Do not claim they are refused; if REAPER exposes a query for them, add it and
+move them into the refusal list.
+
+The undo block groups the operations for the user; it does not by itself roll back an exception.
+That is why every mutation is verified before the next one, why the destination is removed by GUID
+on failure, and why the one path that can fail *after* the source is gone calls a real undo and
+says so.
 
 - [ ] **Step 2: Dry-run on a project with a configured V1.0 instance, NOT last in the chain**
 
 Run: `python3 tools/migrate_v10_to_v11.py`
-Expected: `would copy 95 declared + 3 host parameters into chain position N`, with N the real slot.
+Expected: `would copy 95 declared + 3 host parameters into chain position N`, with N the real slot,
+followed by the unsupported-state notice.
 
-- [ ] **Step 3: Run it for real; verify values, defaults, position and chain**
+- [ ] **Step 3: Run it for real; verify values, defaults, position, chain and the host tail**
 
-Confirm: every one of the 95 values matches; the 36 new parameters sit at their declared defaults;
-the FX occupies the **same chain position**; Bypass/Wet/Delta carried over; exactly one RCBitNova
-remains. Then undo once — REAPER must restore V1.0 in its original slot in a single step.
+Set the source's **host** Bypass and Wet to distinctive values first — that is the pair the rev-2
+script would have silently skipped. Then confirm: all 95 values match; the 36 new parameters sit at
+their declared defaults; the FX occupies the **same chain position**; host Bypass/Wet/Delta carried
+over; exactly one RCBitNova remains. Undo once — V1.0 must come back in its original slot in one step.
 
-- [ ] **Step 4: Failure path**
+- [ ] **Step 4: The failure paths**
 
-Force a failure (rename `RCBitNova V1.1` temporarily so `add_fx` yields nothing usable) and confirm
-the script reports a refusal, leaves the V1.0 instance untouched, and leaves no orphan V1.1.
+| Forced failure | Expected |
+|---|---|
+| `RCBitNova V1.1` renamed so `add_fx` yields nothing usable | refusal, V1.0 untouched, no orphan |
+| a second V1.1 already on the track | that instance survives; only the new one is removed |
+| two V1.0 instances on the track | refused before anything is created |
+| an automated parameter | refused before anything is created |
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add tools/migrate_v10_to_v11.py
-git commit -m "feat(rcbitnova): V1.1 migration - declared by index, host tail by name, transactional"
+git commit -m "feat(rcbitnova): V1.1 migration - positional host tail, GUID identity, verified rollback"
 ```
 
 ---
 
-### Task 9: The gates, as executable checks
+### Task 10: The live gates
 
 **Files:**
-- Create: `tools/rcbitnova_gates.py`, `tools/rcbitnova_nulltest.py`, `tools/rcbitnova_cpu.py`
+- Create: `tools/rcbitnova_nulltest.py`, `tools/rcbitnova_cpu.py`
+- Modify: `tools/rcbitnova_gates.py` (add `--live`)
 
-The first draft asked a human to eyeball grep output and decide two address lists were equivalent.
-A typo that still looks plausible passes that. Every gate below exits nonzero on failure.
+Source-level checking already happened in Task 6. What remains needs REAPER, and each of these
+exits nonzero.
 
-- [ ] **Step 1: `tools/rcbitnova_gates.py` — source-level gates**
+- [ ] **Step 1: `--live` — the parameter manifest, with records not names**
 
-Three checks, `--source-only` runs all of them without REAPER:
-
-**(a) The 28-site table, encoded.** Not `grep -c`, which counts comment lines and collapses two
-sites on one line. One assertion per site: the regex that must match, and which count it must
-carry.
+For all 131 declared parameters record index, name, min, max, step, default, and a set/get round
+trip at three representative values (min, midpoint, max):
 
 ```python
-SITES = [
-    # (regex that identifies the line, required token)
-    (r"^memset\(st, 0, (\w+) \* 4\);",            "N_BANDS"),
-    (r"^memset\(dst, 0, (\w+) \* 4\);",           "N_DYN"),
-    (r"^mb_peak = mb_band \+ (\w+) \* 2 \* MAX_LOOK;", "N_DYN"),
-    (r"^mb_end  = mb_peak \+ (\w+) \* 2 \* MAX_LOOK;", "N_DYN"),
-    # ... all 28, from spec section 3.2
-]
-```
+def record(fx, i):
+    p = fx.params[i]
+    lo, hi = p.range
+    before = p.normalized
+    trips = []
+    for probe in (0.0, 0.5, 1.0):
+        p.normalized = probe
+        trips.append(p.normalized)
+    p.normalized = before
+    return (i, p.name, lo, hi, p.formatted, trips)
 
-Fail loudly when a site's line is **missing** as well as when it carries the wrong token — a
-renamed or deleted line must not pass by vacuous absence.
-
-**(b) The address manifest, computed.** Parse both files' `@init`, evaluate the arithmetic with
-each file's own constants, and compare **word indices** against `rcbitnova_layout`:
-
-```python
-v10 = eval_init("JSFX/RCBitNova V1.0")
-v11 = eval_init("JSFX/RCBitNova V1.1")
-model = layout.audio_layout(8, 4)
-for name in model:
-    assert v11[name] == v10[name] == model[name], (name, v10[name], v11[name], model[name])
-assert v11["lp_base"] % 65536 == 0
-assert v11["gc_fc"] - v10["gc_fc"] == 32
-```
-
-The grep from the first draft stays, as diagnostic output printed alongside — not as the gate.
-
-**(c) No open-coded band-slider arithmetic.** The Task 4 Step 3 grep, encoded, with the
-`// N_DYN-bounded` markers as the only exemption.
-
-- [ ] **Step 2: `tools/rcbitnova_nulltest.py` — §6.4, machine-checked**
-
-Renders and compares, exits nonzero on any mismatch. Fixture: 48 kHz, block 512, 30 s of
-deterministic material, GUI closed, fresh instances, bands 5–8 disabled, state transferred with
-`migrate_v10_to_v11.py` rather than by hand. Cases: defaults; four bands in Mode A; four bands in
-Mode B; Min and Linear topologies.
-
-Compare **sample for sample at zero tolerance**, after asserting equal length and equal reported
-latency — a PDC difference would otherwise show up as a shifted-but-identical render and could be
-mistaken for a pass. Print the first differing sample index and both values on failure.
-
-- [ ] **Step 3: `tools/rcbitnova_cpu.py` — §6.5, machine-checked**
-
-Two comparisons, reported separately: V1.1 with B5–B8 disabled against V1.0 (**regression, must be
-within +5 %**) and V1.1 eight enabled against V1.1 four enabled (**feature cost, informational**).
-Blocks 128 and 512, five 60-second runs each, first discarded, median peak block time.
-**Any xrun fails the gate**, regardless of timing.
-
-- [ ] **Step 4: `--live` — the parameter manifest**
-
-Not names only: for all 131 declared parameters record index, name, min, max, step, default, and a
-set/get round trip at three representative values, then assert
-
-```python
-assert v11_declared[:95] == v10_declared          # full records, not just names
+assert v11_declared[:95] == v10_declared        # full records, not just names
 assert len(v11_declared) == 131
 assert v11_host == v10_host == ["Bypass", "Wet", "Delta"]
 ```
 
-The 95-record prefix is the compatibility contract; the host tail is checked separately, by name,
-because it moves.
+The 95-record prefix is the compatibility contract. The host tail is checked separately **by
+position**, for the reason Task 9 documents.
 
-- [ ] **Step 5: Run everything**
+- [ ] **Step 2: `--live` — the nine-writer manifest (review P1-6)**
 
-```bash
-python3 -m pytest tests/test_rcbitnova_dsp.py -q      # expect 236 passed
-python3 tools/rcbitnova_gates.py --source-only && echo SOURCE_GATES_OK
-python3 tools/rcbitnova_gates.py --live && echo PARAM_MANIFEST_OK
-python3 tools/rcbitnova_nulltest.py && echo NULL_OK
-python3 tools/rcbitnova_cpu.py && echo CPU_OK
+A transcription slip in a writer passes every site and address assertion while writing the wrong
+band or touching four-band dynamic memory. Encode what each writer must do and then exercise it:
+
+```python
+WRITERS = {                       # writer -> slider offset within the band block
+    "gc_w_enable": 1, "gc_w_type": 2, "gc_w_freq": 3, "gc_w_q": 4, "gc_w_macro": 5,
+    "gc_w_micro": 6, "gc_w_ratio": 7, "gc_w_place": 8, "gc_w_qchar": 9,
+}
+BASES = [10, 20, 30, 40, 150, 160, 170, 180]
 ```
 
-Read the output of each. A gate that was not run is a gate that failed.
+Source side: every writer has eight named `sliderNN` branches whose numbers are exactly
+`BASES[b] + offset`, calls `setup_band(b)`, and guards the dynamic rebuild with `b < N_DYN`.
+Live side: for each writer and each of B1–B8, drive it from the GUI, then confirm through reapy
+that **the intended parameter changed and no other did** — the whole-manifest diff makes "no other"
+checkable rather than a claim.
+
+- [ ] **Step 3: `tools/rcbitnova_nulltest.py` — §6.4**
+
+Mechanics pinned, so two people running this get the same gate:
+
+| Question | Answer |
+|---|---|
+| Material | 30 s, deterministic: a rendered file, generated once and committed, not live input |
+| Instances | one track per version, fresh, GUI closed, 48 kHz, block 512 |
+| Equal state | `migrate_v10_to_v11.py` on a **copy** of the V1.0 track, so the original survives for rendering |
+| Render | `RPR.Main_OnCommand(41824, 0)` (render using most recent settings) into a temp path per version |
+| Latency | `TrackFX_GetNamedConfigParm(..., "pdc")` on both, asserted equal **before** comparing samples |
+| Compare | read both WAVs with `wave` + `array`, assert equal frame count, then sample for sample |
+| Tolerance | zero |
+| Report | first differing frame index, both values, and the case name |
+
+Cases: defaults; four bands in Mode A; four bands in Mode B; Min and Linear topologies. A missing
+case is a failure, not a skip — assert the expected case count at the end.
+
+Asserting equal reported latency **first** matters: a PDC difference renders as a shifted but
+otherwise identical file, which reads like a subtle DSP change when it is actually a compensation
+change.
+
+- [ ] **Step 4: `tools/rcbitnova_cpu.py` — §6.5**
+
+| Question | Answer |
+|---|---|
+| Metric | peak block time, from REAPER's own performance meter via `RPR.GetSetProjectInfo` / the FX CPU readout, sampled once per second |
+| Runs | five 60-second playbacks per configuration; discard the first |
+| Statistic | median of the per-run peaks |
+| Blocks | 128 and 512, both reported |
+| Xruns | `RPR.GetSetProjectInfo` audio-underrun counter, read before and after each run |
+| Comparison A | V1.1 with B5–B8 disabled vs V1.0 — **regression, must be within +5 %** |
+| Comparison B | V1.1 eight enabled vs V1.1 four enabled — **feature cost, informational** |
+
+**Any xrun fails the gate**, regardless of timing. Print both comparisons; only A gates.
+
+- [ ] **Step 5: Run everything and read the output**
+
+```bash
+python3 -m pytest tests/test_rcbitnova_dsp.py -q      # expect 238 passed
+python3 tools/rcbitnova_gates.py --source-only && echo SOURCE_OK
+python3 tools/rcbitnova_gates.py --live       && echo MANIFEST_OK
+python3 tools/rcbitnova_nulltest.py           && echo NULL_OK
+python3 tools/rcbitnova_cpu.py                && echo CPU_OK
+```
+
+A gate that was not run is a gate that failed.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tools/rcbitnova_gates.py tools/rcbitnova_nulltest.py tools/rcbitnova_cpu.py
-git commit -m "test(rcbitnova): V1.1 release gates as executable checks"
+git add tools/rcbitnova_nulltest.py tools/rcbitnova_cpu.py tools/rcbitnova_gates.py
+git commit -m "test(rcbitnova): V1.1 live gates - manifests, null render, CPU"
 ```
 
 ---
 
-### Task 10: Fable review, as-shipped, tag
+### Task 11: Spec rev 5, Fable review, as-shipped, tag
 
-- [ ] **Step 1: Fable final review**
+- [ ] **Step 1: Bring the spec up to what was built**
 
-Dispatch with `model: fable` over `JSFX/RCBitNova V1.1`, the diff against V1.0, and spec rev 4.
+§2.1 and §6.1 still pin the clear span to 13670 and know nothing of `gc_hits`. Update to **rev 5**:
+`gc_hits` exists, the span is derived rather than typed, and the acceptance contract is the derived
+value. The plan and the spec cannot both be authoritative.
+
+- [ ] **Step 2: Fable final review**
+
+Dispatch with `model: fable` over `JSFX/RCBitNova V1.1`, the diff against V1.0, and spec rev 5.
 Ask specifically for: bit-accuracy verdict; whether any `N_DYN` site was missed; whether the
-static-only loop truly touches no dynamic array; whether the eight-way writers are complete and the
-`setup_band_dyn` guard is present in all of them; whether any band-slider read still bypasses
-`band_slider_base`; and EEL2 function-order traps.
+static-only loop truly touches no dynamic array; whether all nine writers are complete, correctly
+numbered and guarded; whether any band-slider read still bypasses `band_slider_base`; and EEL2
+function-order traps.
 
-- [ ] **Step 2: Address every P0/P1, then re-run Task 9**
+- [ ] **Step 3: Address every P0/P1, then re-run Tasks 6 and 10**
 
-- [ ] **Step 3: Append "As-shipped" to the spec**
+- [ ] **Step 4: Append "As-shipped" to the spec**
 
 Record every live measurement, every deviation and why, every defect found live and how. Follow
 V1.0 §16 as the model.
 
-- [ ] **Step 4: Update the memory file and tag**
+- [ ] **Step 5: Update the memory file and tag**
 
 ```bash
 git add -A
@@ -1302,48 +1626,47 @@ git ls-remote --tags origin | grep rcbitnova-v1.1
 
 | Spec section | Task |
 |---|---|
-| §2 memory, zero-slack boundaries | 1 (model + guarded memory), 3 (constants), 9 (computed manifest) |
-| §2.1 `gc_kc` growth | 3 Step 4 |
-| §3 two counts | 3, 6 |
+| §2 memory, zero-slack boundaries | 1 (model + ownership-aware memory), 3 (constants), 6 (computed manifest) |
+| §2.1 `gc_kc` growth, clear span | 3 Step 4 (derived), 11 Step 1 (spec rev 5) |
+| §3 two counts | 3, 7 |
 | §3.1 signal order, structural split | 5 |
-| §3.2 the 28 sites | 3 (17 dynamic), 5 (2 split + `@slider`), 9 (encoded as a gate) |
-| §4 sliders, `band_slider_base`, named writes | 2, 3, 4, 5 |
-| §5 GUI: menu, selector, DYN/STATIC, cycling | 7 |
-| §6.1–6.3 oracle, bounds, addresses | 1, 9 |
-| §6.4 null test | 9 |
-| §6.5 CPU | 9 |
-| §6.6 migration | 8 |
-| §6.7 live, reachability matrix | 6, 7 |
+| §3.2 the 28 sites | 3 (17 dynamic), 5 (2 split + `@slider`), 6 (encoded and self-tested) |
+| §4 sliders, `band_slider_base`, named writes | 2, 3, 4, 5, 10 Step 2 |
+| §5 GUI: menu, selector, DYN/STATIC, thin outline, cycling | 8 |
+| §6.1–6.3 oracle, bounds, addresses | 1, 6 |
+| §6.4 null test | 10 |
+| §6.5 CPU | 10 |
+| §6.6 migration | 9 |
+| §6.7 live, reachability matrix | 8, 10 |
 
-**Ordering property:** at the end of every task before 6, the plugin is functionally V1.0 —
-`N_BANDS` is 4, the static-only loop runs zero times, the eight-way writers are never called
-with `b >= 4`. So every commit is loadable and every live check before the flip is a real check
-that the rewrite changed nothing. The flip itself is one line against fully bounded code.
+**Ordering property:** at the end of every task before 7, the plugin is functionally V1.0 —
+`N_BANDS` is 4, the static-only loop runs zero times, the eight-way writers are never called with
+`b >= 4`. Every commit is loadable, and every live check before the flip really does prove the
+rewrite changed nothing. The flip is one line against code the gate has already verified.
 
-**Dependency check:** no task uses an artifact from a later one. Migration (8) precedes the gates
-(9) that call it; `rcbitnova_layout` (1) precedes the gate that imports it (9); `band_slider_base`
-(2, 4) precedes the static-only loop that calls it (5); `gc_hits` (3) precedes the cycling that
-indexes it (7).
+**Dependency check:** no task uses an artifact from a later one. The source gate (6) precedes the
+flip it protects (7); `rcbitnova_layout` (1) precedes the gate that imports it (6); `band_slider_base`
+(2, 4) precedes the loop that calls it (5); `gc_hits` (3) precedes the cycling that indexes it (8);
+migration (9) precedes the null test that uses it (10).
 
-**Placeholder scan:** every code step carries real code. The cycling algorithm is complete —
-initialization, hit set, modulo, placement relative to enable and drag, and both resets.
+**Placeholder scan:** the 28-site table is complete, `eval_init` is implemented, the cycling
+algorithm is whole, the migration script is whole. The null and CPU scripts are specified as tables
+of pinned mechanics rather than code — the remaining prose in the plan, and deliberately so, because
+their invocation details depend on the machine's render settings.
 
 ---
 
-## Rev-2 Disposition (plan weakness review)
+## Rev-3 Disposition (second plan weakness review, commit `ea2d5d4`)
 
 | Finding | Disposition |
 |---|---|
-| **P0** Task 3 creates and live-loads a knowingly invalid intermediate plugin | **Accepted, restructured.** Verified: `@slider` runs `setup_band_dyn` over `N_BANDS` before any audio, so a flip-first build corrupts `det`/`dp`/`dm`/`bp` at load, disabled bands notwithstanding. `N_BANDS` now stays 4 through Tasks 3–5 and flips in Task 6, after every dynamic path is bounded. |
-| **P0** Slider-base transcription omits the interactive B5–B8 read sites | **Accepted.** Enumerated all sixteen sites by grep (eight in `@gfx`, exactly as claimed) in a Task 4 table, plus a gate that rejects open-coded forms outside `band_slider_base` except lines marked `// N_DYN-bounded`. |
-| **P0** Task 7 depends on a migration script Task 8 has not created | **Accepted.** Migration is now Task 8, gates Task 9. Dependency check added to the self-review. |
-| **P0** `range(src.n_params)` corrupts the new-band defaults | **Accepted, and measured.** Live reapy: V1.0 reports **98** parameters — 95 declared then `Bypass`, `Wet`, `Delta` (the plan said 97 and named two). Migration now copies 0–94 by index and the tail by name; the manifest gate compares `v11[:95] == v10` and checks the tail separately. |
-| **P0** Migration changes FX-chain topology and is not transactional | **Accepted.** Records the source index, verifies every written value by read-back **before** deleting anything, carries enabled/offline, moves the destination into the source slot with `TrackFX_CopyToTrack(..., is_move=True)`, wraps it in one undo block, and on any failure deletes the destination and leaves the source untouched. Modulation, pin mappings, aliases and oversampling are declared out of scope rather than silently dropped. |
-| **P1** Menu string and event-order dependencies | **Accepted.** `strcpy`/`strcat` into `#gc_menu`; `gc_rclick` computed once beside `gc_click`; band nodes own the event when `gc_hover >= 0`, HP/LP otherwise; load immediately after it compiles. |
-| **P1** Coincident-node cycling is an unfinished algorithm | **Accepted.** Complete: `@init` state, hit set into `gc_hits` (disabled nodes included), `gc_cyc_n % gc_hit_n` re-evaluated every frame so a shrinking set cannot leave a stale index, placed before enable and drag, movement and timeout resets, plus a seven-case live matrix. |
-| **P1** Q Character menu loses the declared resolution | **Accepted.** Sixth numeric-entry field reusing the existing entry machinery; presets remain the fast path. |
-| **P1** The shadow layout never performs bounds testing | **Accepted.** `GuardedMemory` raises on any read or write of a guard word, `model_static_band` drives modeled accesses through it, and two negative tests (a ninth band, and a static band touching `dm`) prove the instrument is not vacuous. |
-| **P1** `grep -c "N_BANDS"` is brittle and its expectation is wrong | **Accepted.** Replaced by the encoded 28-site table with per-site assertions, including failure on a missing line. |
-| **P1** The audio-address manifest is a visual grep | **Accepted.** The model now runs through `lp_base`; the gate evaluates both files' `@init` arithmetic and compares word indices. The grep stays as diagnostics. |
-| **P1** The parameter manifest tests names only | **Accepted.** Index, name, min, max, step, default and a three-value round trip for all 131 declared parameters. |
-| **P1** Null and CPU gates have no executable tooling | **Accepted.** `tools/rcbitnova_nulltest.py` and `tools/rcbitnova_cpu.py`, both exiting nonzero, with the null test asserting equal length and reported latency before comparing samples. |
+| **P0-1** Task 6 depends on a gate Task 9 has not created | **Accepted.** The source gate is now Task 6, before the flip (Task 7), and it self-tests against seeded defects. Verified the complaint: the fallback greps check slider arithmetic and forbidden identifiers, and touch neither the 17 `@init` conversions nor any address. |
+| **P0-2** Migration copies the wrong `Bypass` | **Accepted — confirmed in the source.** `slider1:0<0,1,1{Off,On}>-Bypass` is declared parameter 0, and the host tail adds another `Bypass` at 95. `_by_name` returned 0. The tail is now addressed **positionally** after its names are validated, and the live check sets host Bypass/Wet to distinctive values precisely because that is the pair the old script skipped. |
+| **P1-1** Plan and spec disagree: 13670 vs 13678 | **Accepted.** Neither number is now written in the plugin: the clear span is derived as `gc_hits + 8 - gc_trace`, which is right at four bands (13646) and eight (13678), so the intermediate build stays a real no-op. Spec goes to rev 5 in Task 11. |
+| **P1-2** The address model does not run through `lp_base` | **Accepted.** The chain continues through `lp_geo`, `lp_off`, `lp_fs` to `gc_trace`; `lp_base` is asserted `== 65536` rather than merely page-aligned; the GUI interval is checked for ordering, non-overlap, derived span and `end < lp_base`. The negative test now mutates a fixture source and requires the real gate to reject it. |
+| **P1-3** Task 9 specified gates rather than implementing them | **Partly accepted.** The 28-entry table is complete and `eval_init` is implemented. The null and CPU harnesses are pinned as tables of mechanics — material, instances, render command, latency source, comparison, statistic, xrun source — rather than code, because those invocations depend on this machine's render settings. That is a deliberate limit, not an oversight. |
+| **P1-4** Migration not transactional for arbitrary chains | **Accepted.** Identity is by FX GUID throughout, so the failure path cannot delete a pre-existing V1.1; the move is verified before anything is deleted; multiple V1.0 instances are refused up front. The undo claim is narrowed: grouping is not rollback, every mutation is verified before the next, and the one path that can fail after the source is gone calls a real undo and reports it. Modulation is now detected and refused; pin mappings, aliases and oversampling are declared **undetected**, not "refused". |
+| **P1-5** Q Character typed values unquantised | **Accepted.** Clamped and rounded to the declared 0.001 step. V1.0's five existing fields keep their typed-exact behaviour, and changing them is called out as its own version rather than folded in here. |
+| **P1-6** The gate does not cover writer safety | **Accepted.** A nine-writer manifest — per-band slider IDs, `setup_band`, the `b < N_DYN` guard — checked in source and exercised for B1–B8 live, with a whole-manifest diff so "no other parameter changed" is checkable. |
+| **P1-7** The thinner node outline has no implementation step | **Accepted.** Added as Task 8 Step 4a with the actual `gfx_circle` change, plus a Retina check across all four enabled/disabled × DYN/STATIC combinations. |
+| **P2-1** `GuardedMemory` detects only one-word overruns | **Accepted.** Rewritten as ownership-aware `read(name, offset)` / `write(name, offset)`, rejecting every offset outside the named array's span, running against the **production** layout. A new test drives `cf[64]`, `cf[65]`, `cf[71]` and `cf[95]` — the jumps the guard-word design let through. `shadow_layout` survives with its claim narrowed to a spacing model. |
