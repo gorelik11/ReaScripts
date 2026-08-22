@@ -1,10 +1,12 @@
 # RCBitNova V1.1 — Eight Bands Implementation Plan
 
-**Revision 4** — after three plan weakness reviews
+**Revision 5** — after three plan weakness reviews, plus a live API pass
 (rev 1: five P0s; rev 2: two P0s; rev 3: five P0s). Dispositions are at the end of this file.
 Rev 2 moved the `N_BANDS` flip to the end; rev 3 put the **source gate before it**; rev 4 makes that
 gate actually run — one contract verified against an in-memory eight-band **projection**, a site
-manifest derived from the spec rather than counted to 28, and a `ceil` that ceils.
+manifest derived from the spec rather than counted to 28, and a `ceil` that ceils. Rev 5 replaces
+every unverified API assumption in Tasks 9 and 10 with a measurement (see the table in the
+self-review) — one of which invalidated rev 4's identity design outright.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1451,7 +1453,15 @@ UNSUPPORTED = ("parameter modulation", "pin mappings", "parameter aliases", "ove
 
 
 def _guid(track, idx):
-    return RPR.TrackFX_GetFXGUID(track.id, idx)
+    """The GUID as a STRING. Measured 2026-08-22: TrackFX_GetFXGUID returns a *pointer*
+    ('(GUID*)0x...') that does NOT follow the FX across TrackFX_CopyToTrack - after a move the
+    pointer at the destination slot is a different value entirely, so using it as identity would
+    have made every post-move lookup fail. guidToString gives the real GUID, which does follow:
+
+        before move: fx1 -> {99F84DA4-19BE-9A48-A7CF-7FCF4B302A05}
+        after  move: idx0 -> {99F84DA4-19BE-9A48-A7CF-7FCF4B302A05}
+    """
+    return RPR.guidToString(RPR.TrackFX_GetFXGUID(track.id, idx), "")[1]
 
 
 def _index_of_guid(track, guid):
@@ -1461,12 +1471,20 @@ def _index_of_guid(track, guid):
     return None
 
 
+def _cfg(track, idx, key, buf=64):
+    """TrackFX_GetNamedConfigParm returns a SIX-element list - [ok, track, fx, key, value, buflen]
+    - not the (ok, value) pair a two-name unpack assumes. Measured 2026-08-22; the same shape trap
+    cost a live session on GetUserInputs."""
+    r = RPR.TrackFX_GetNamedConfigParm(track.id, idx, key, "", buf)
+    return bool(r[0]), r[4]
+
+
 def _has_modulation(track, idx, n_declared):
-    """RPR exposes per-parameter modulation through named config; when the build does not support
-    the query it returns falsey for every parameter, so a False here means 'not detected', not
-    'definitely absent'. Reported honestly by the caller."""
+    """Measured 2026-08-22 on this build: a clean instance answers ok=0 with an empty value, and
+    after SetNamedConfigParm('param.0.mod.active', '1') it answers ok=1, '1'. So the query works
+    and ok=0 genuinely means 'no modulation record', not 'unsupported'."""
     for i in range(n_declared):
-        ok, value = RPR.TrackFX_GetNamedConfigParm(track.id, idx, f"param.{i}.mod.active", "", 32)
+        ok, value = _cfg(track, idx, f"param.{i}.mod.active", 32)
         if ok and value not in ("", "0"):
             return True
     return False
@@ -1580,41 +1598,40 @@ if __name__ == "__main__":
 
 - [ ] **Step 1a: Verify the two detection APIs, then use them (review P1-6)**
 
-Rev 3 called pin mappings and per-FX oversampling undetectable. The review names
-`TrackFX_GetPinMappings` and `TrackFX_GetNamedConfigParm(..., "instance_oversample_shift")`.
-**Neither is confirmed here: REAPER was not running when this revision was written**, and `reapy`
-builds `reascript_api` from the live host, so there is nothing to introspect offline. Confirm first,
-and let the answer decide the code:
+Rev 3 called pin mappings and per-FX oversampling undetectable. They are not — but the shapes are
+not what rev 4 assumed either.
 
-```bash
-python3 - <<PY
-import reapy
-with reapy.inside_reaper():
-    from reapy import reascript_api as RPR
-    for n in ("TrackFX_GetPinMappings", "TrackFX_GetNamedConfigParm"):
-        print(n, hasattr(RPR, n))
-PY
+**Verified live 2026-08-22 — both exist, and both return list shapes, not scalars:**
+
+```
+TrackFX_GetPinMappings(tr, fx, isout, pin, high32) -> [retval, track, fx, isout, pin, high32]
+    in  pin 0 -> retval 1        # default map: pin k routes to bit k, i.e. retval == 1 << pin
+    out pin 1 -> retval 2
+TrackFX_GetNamedConfigParm(tr, fx, key, "", buf)   -> [ok, track, fx, key, value, buflen]
+    'instance_oversample_shift' -> ok 1, value '0'      (default; detectable)
+    'pdc'                       -> ok 1, value '0'
 ```
 
-If present, refuse before mutating. A default map routes channel k to bit k; anything else is a
-hand-made routing this script does not reproduce:
+Both are therefore usable, and both take the five-argument form:
 
 ```python
 def _nondefault_pins(track, idx, n_channels=2):
-    for ch in range(n_channels):
+    """A default map routes pin k to bit k. Anything else is a hand-made routing this script does
+    not reproduce. retval is element 0 of the returned list, and `high32` is a required argument."""
+    for pin in range(n_channels):
         for is_out in (0, 1):
-            if RPR.TrackFX_GetPinMappings(track.id, idx, is_out, ch) != (1 << ch):
+            if RPR.TrackFX_GetPinMappings(track.id, idx, is_out, pin, 0)[0] != (1 << pin):
                 return True
     return False
 
 
 def _oversampled(track, idx):
-    ok, value = RPR.TrackFX_GetNamedConfigParm(track.id, idx, "instance_oversample_shift", "", 32)
-    return bool(ok) and value not in ("", "0")
+    ok, value = _cfg(track, idx, "instance_oversample_shift", 32)
+    return ok and value not in ("", "0")
 ```
 
-Both join automation and modulation in the refusal list. Only what genuinely cannot be queried on
-this build stays in the warning.
+Non-default pin maps and instance oversampling join automation and modulation in the refusal list.
+Only parameter aliases stay in the warning.
 
 **Honest scope.** Automation, parameter modulation, non-default pin mappings and instance
 oversampling are **detected and refused** (the last two subject to the check above). Parameter
@@ -1694,39 +1711,29 @@ git commit -m "feat(rcbitnova): V1.1 migration - positional host tail, GUID iden
 Source-level checking already happened in Task 6. What remains needs REAPER, and each of these exits
 nonzero.
 
-- [ ] **Step 1: Prove the APIs before building on them (review P0-5)**
+- [ ] **Step 1: The CPU metric — settled by measurement, not by choice (review P0-5)**
 
 Rev 3 pinned peak block time and an xrun counter to `GetSetProjectInfo`. That key set is
-render/project settings — not Performance Meter values — so the gate had no data source at all, and
-it was written as though it did. Establish what this build actually offers, and record the answer in
-the file:
+render/project settings, not Performance Meter values, so the gate had no data source while reading
+as though it did. **Measured on this build 2026-08-22** — every ReaScript function whose name
+contains `cpu`, `perf`, `underrun`, `xrun`, `blocksize` or `audiodevice`:
 
-```bash
-python3 - <<PY
-import reapy
-with reapy.inside_reaper():
-    from reapy import reascript_api as RPR
-    for n in ("GetUnderrunTime", "GetAudioDeviceInfo", "GetSetProjectInfo",
-              "TrackFX_GetNamedConfigParm", "Main_OnCommand"):
-        print(n, hasattr(RPR, n))
-    if hasattr(RPR, "GetUnderrunTime"):
-        print("GetUnderrunTime ->", RPR.GetUnderrunTime(0, 0, 0))
-PY
+```
+['GetAudioDeviceInfo', 'GetUnderrunTime']
 ```
 
-`GetUnderrunTime` returns **timestamps of the last xruns, not a count**, so the protocol is: read it
-before a run, read it after, and treat *any change* as a failure. That works without a counter.
+There is **no peak-block-time API**. So the fallback branch is not a fallback, it is the only
+branch: CPU is a **documented manual Performance Meter protocol** — same runs, same statistic, a
+human reading the meter into a small JSON file that `rcbitnova_cpu.py` then validates and gates on.
+Downgraded from automatic to manual; never from measured to assumed.
 
-**Branch on the outcome, and say which branch was taken:**
+Xruns stay automatic. `GetUnderrunTime` returns `[audio_xrun, media_xrun, curtime]` — **timestamps
+in milliseconds, not counts** (measured: `[0, 0, 712432281]` on an idle system). Protocol: read
+before the run, read after, treat any change in `audio_xrun` as a failure.
 
-- **Peak block time queryable** → `rcbitnova_cpu.py` automates it, and the table below is the gate.
-- **Not queryable** → CPU becomes a **documented manual Performance Meter protocol** with the same
-  runs, the same statistic, and a human reading the meter into a small JSON file that the script
-  then checks. Downgraded from automatic to manual — never from measured to assumed.
-
-Either way, xruns stay automatic via `GetUnderrunTime`, and **the induced-xrun test is mandatory**:
-force one (a tiny block size with everything enabled), and confirm the chosen signal moves. A gate
-whose failure signal has never been seen to change is not a gate.
+**The induced-xrun test is mandatory**: force one — tiny block size, everything enabled — and
+confirm `audio_xrun` actually moves off 0. A gate whose failure signal has never been seen to change
+is not a gate.
 
 - [ ] **Step 2: `--live` — the parameter manifest, with real records**
 
@@ -1818,7 +1825,7 @@ and restored:
 | State handling | read every `RENDER_*` property with `GetSetProjectInfo` / `GetSetProjectInfo_String`, set, render, **restore** — asserted restored at the end |
 | Completion | poll for the output file's size to stop changing, then verify the header's frame count matches the expected duration; no fixed sleep |
 | Reader | a float-WAV reader in this file — Python's `wave` rejects `WAVE_FORMAT_IEEE_FLOAT` (format 3), so parse the RIFF chunks and read the data with `array('f')` |
-| Latency | `TrackFX_GetNamedConfigParm(..., "pdc")` on both, asserted **equal before** samples are compared |
+| Latency | `TrackFX_GetNamedConfigParm(..., "pdc")` on both — verified live: returns `[ok, track, fx, key, value, buflen]`, value at index **4** — asserted **equal before** samples are compared |
 | Compare | equal frame count, then sample for sample |
 | Tolerance | zero |
 | Report | case name, first differing frame, both values |
@@ -1837,7 +1844,7 @@ is decorative — which is exactly what integer PCM would have done to it.
 
 | Question | Answer |
 |---|---|
-| Metric | peak block time — automated if Step 1 found an API, otherwise the manual Performance Meter protocol, read into a JSON file this script validates |
+| Metric | peak block time, read by a human from the Performance Meter into `cpu_runs.json` — no API exists on this build (Step 1) |
 | Runs | five 60-second playbacks per configuration; discard the first |
 | Statistic | median of the per-run peaks |
 | Blocks | 128 and 512, both reported |
@@ -1948,10 +1955,19 @@ mask a difference is fixed (float format, dither off, per-track stems, restored 
 float-WAV reader, a seeded one-ULP failure test), but the invocation depends on this machine's
 render settings and the CPU metric depends on an API that must be proven in Step 1 first.
 
-**Unverified as written:** `TrackFX_GetPinMappings`, `TrackFX_GetNamedConfigParm` and
-`GetUnderrunTime` are used by Tasks 9 and 10 on the review's word. REAPER was not running when this
-revision was written, and `reapy` builds `reascript_api` from the live host, so none could be
-introspected offline. Both tasks begin by checking, and each branches on the answer.
+**Live API facts (measured 2026-08-22, REAPER running).** Nothing in Tasks 9 and 10 now rests on
+the review's word or mine:
+
+| Question | Answer |
+|---|---|
+| `TrackFX_GetPinMappings` | exists; five args; returns a list, retval at `[0]`; default map is `1 << pin` |
+| `TrackFX_GetNamedConfigParm` | exists; returns **six** elements, value at `[4]` — not an `(ok, value)` pair |
+| `instance_oversample_shift` | readable, `'0'` by default → oversampling is detectable |
+| `param.N.mod.active` | ok=0 when clean, ok=1/`'1'` after setting it → modulation is detectable |
+| `pdc` | readable via named config |
+| `GetUnderrunTime` | exists; returns `[audio_xrun, media_xrun, curtime]` — timestamps, not counts |
+| peak block time | **no API exists** — only `GetAudioDeviceInfo` and `GetUnderrunTime` match; CPU is manual |
+| `TrackFX_GetFXGUID` | returns a **pointer** that does NOT survive a move — identity must be `guidToString(...)` |
 
 ---
 
@@ -2006,8 +2022,28 @@ introspected offline. Both tasks begin by checking, and each branches on the ans
 | **P1-3** The writer gate cannot invoke a GUI writer | **Accepted.** True — `reapy` sets host parameters, and doing so bypasses the writer under test. Writer correctness became a complete **source** gate (slider numbers per band, `slider_automate`, `setup_band`, the `b < N_DYN` guard, all nine writers), and the gesture-level reachability check is labelled what it always was: manual. |
 | **P1-4** The null gate can quantise a residual away | **Accepted.** 32-bit float render, dither and normalization off, per-track stems, every `RENDER_*` property saved and restored (and asserted restored), completion detected by file size plus header frame count rather than a sleep, and a float-WAV reader written here because `wave` rejects format 3. The fixture is now a named committed artifact with a generator. A **one-ULP seeded difference must fail the comparator** — otherwise the format is quantising and the gate is decorative. |
 | **P1-5** Destructive migration has no offline tests | **Accepted, and it is the project's standing rule.** `_reaper_fakes.py` has 62 functions and no `TrackFX_*`, so the fake gains FX enumeration, add/move/delete, GUIDs, parameters, named config, enabled/offline and undo counters. Nine branches are enumerated with the expected chain, undo balance and return value, all asserted before REAPER is touched. |
-| **P1-6** Detectable host state is silently discarded | **Accepted with a caveat stated in the plan.** `TrackFX_GetPinMappings` and `instance_oversample_shift` are wired into the refusal list — but neither could be verified here, because REAPER was not running and `reapy` builds its API from the live host. Task 9 Step 1a checks first and branches. Parameter aliases stay in the undetected warning; an undetected item is never called refused. |
+| **P1-6** Detectable host state is silently discarded | **Accepted, and now measured.** Both APIs exist. Pin mappings take five arguments and return a list (retval at `[0]`, default `1 << pin`); `TrackFX_GetNamedConfigParm` returns **six** elements with the value at `[4]`, so rev 4's `ok, value = …` unpack was itself wrong. Oversampling and modulation are both genuinely detectable — a clean instance answers ok=0, and after setting `param.0.mod.active` it answers ok=1/`'1'`. All four now refuse; only parameter aliases stay in the warning. |
 | **P1-7** The selector strip shares the node click area | **Accepted — confirmed.** `gc_fy = gc_py + gc_ph + 6 * gc_sc`, so the proposed strip occupied the bottom 18 logical pixels **of the plot**, where nodes can sit, and node click/drag run earlier in the frame. Moved below the plot, with an explicit `gc_strip_hot` owner computed *before* node event handling that clears `gc_hover`/`gc_hit_n`. An edge-clamped case joins the matrix. |
 | **P1-8** Spec rev 5 leaves §6.7 contradicted | **Accepted.** The rev-5 update now covers three things: the derived clear span, §6.7's prefix claim (declared-by-index plus a positional host tail), and §5's node rendering rule as built. |
 | **P2-1** The static node gains an outline instead of a thinner one | **Accepted.** One primitive, two styles: body unchanged, outline drawn as 2 rings for dynamic bands and 1 for static-only. Thickness is the redundant cue; the `DYN`/`STATIC` tag remains the accessible one. |
 | **P2-2** The one-node cycling expectation contradicts the algorithm | **Accepted.** The counter does advance; `% 1` keeps the selection. Matrix row restated as "selection unchanged regardless of counter value". |
+
+---
+
+## Rev-5 Disposition (live API pass, REAPER running, 2026-08-22)
+
+No new review. Rev 4 left three APIs used on the reviewer's word because REAPER was down; with it
+running, every one was checked, and two of the answers changed the plan.
+
+| Assumption in rev 4 | Measured | Consequence |
+|---|---|---|
+| `TrackFX_GetFXGUID` is a usable identity | **False.** It returns a pointer (`(GUID*)0x…`). After `TrackFX_CopyToTrack(..., is_move=True)` the destination slot's pointer is a different value, so every post-move lookup by that pointer fails. | **The migration's whole identity design was broken.** Identity is now `guidToString(TrackFX_GetFXGUID(...), "")[1]`, the real GUID string, verified to follow the FX across a move: `{99F84DA4-…}` before, `{99F84DA4-…}` at index 0 after. |
+| `TrackFX_GetNamedConfigParm` returns `(ok, value)` | **False.** Six elements: `[ok, track, fx, key, value, buflen]`. | Rev 4's `ok, value = …` unpack would have raised on first use. Added `_cfg()`; this is the same shape trap that cost a live session on `GetUserInputs`. |
+| `TrackFX_GetPinMappings(track, fx, isout, pin)` | Takes **five** args (`high32`) and returns a list; retval at `[0]`; default map is `1 << pin`. | Signature and comparison corrected. |
+| modulation may be undetectable | Detectable: clean → ok=0/`''`; after `SetNamedConfigParm('param.0.mod.active', '1')` → ok=1/`'1'`. | Moved from "warning" to "refused" honestly. |
+| `instance_oversample_shift` | Readable, `'0'` by default. | Refused. |
+| `GetUnderrunTime` is a counter | Timestamps: `[audio_xrun, media_xrun, curtime]`, e.g. `[0, 0, 712432281]`. | Before/after comparison, any change fails. |
+| peak block time is queryable somewhere | **No.** The only matching functions on this build are `GetAudioDeviceInfo` and `GetUnderrunTime`. | The manual Performance Meter protocol is not a fallback — it is the only branch. Recorded as measured, not assumed. |
+
+Probe hygiene: every instance added for these measurements was removed, and the track was verified
+empty afterwards.
