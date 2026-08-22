@@ -1,3 +1,8 @@
+> **SUPERSEDED 2026-08-22** by the eight *fully dynamic* band design
+> (`specs/2026-08-22-rcbitnova-v1.1-eight-dynamic-bands-design.md` and
+> `plans/2026-08-22-rcbitnova-v1.1-eight-dynamic-bands.md`). Kept for its four rounds of
+> review history; do not implement from it.
+
 # RCBitNova V1.1 — Eight Bands Implementation Plan
 
 **Revision 5** — after three plan weakness reviews, plus a live API pass
