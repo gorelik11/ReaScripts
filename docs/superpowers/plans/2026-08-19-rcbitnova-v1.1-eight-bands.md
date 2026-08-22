@@ -44,6 +44,14 @@ self-review) — one of which invalidated rev 4's identity design outright.
   `Bypass`, `Wet`, `Delta`. V1.1 inserts 36 declared sliders *before* that tail, so **V1.0's full
   parameter list is NOT a prefix of V1.1's** — only the 95 declared ones are. Any index-wise copy
   or prefix comparison must stop at 94 and handle the tail by name.
+- **Every assignment inside a ternary branch is parenthesised**, without exception. RCBitNova's own
+  refined rule says a single-level `cond ? x = 1;` is safe and only the compound-with-else form
+  broke V0.8 — but Arthur's family sweeps *all* of them (`Fable Eq Dynamic`: "poprawione WSZYSTKIE
+  nienawiasowane przypisania w gałęziach ternary"), the cost is zero, and V0.8's defect survived an
+  oracle and a full code review before the CPU meter caught it.
+- **No bit-shift operators in EEL2.** The family keeps `AND` and nothing else (`bmsk()` in
+  `Fable Eq Dynamic` is a ternary lookup table written specifically to avoid `<<`). If V1.1 ever
+  needs a per-band bitmask, write the table.
 - **Never claim a task is done without running its test and reading the output.**
 - Run from the worktree root: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`. All 221 existing tests stay green at every commit.
 
@@ -799,7 +807,7 @@ Freq +3, Q +4, Micro +6, Ratio +7):
 
 ```eel2
 function gc_w_macro(b, v, qz) (
-  qz ? v = gc_q_step(v, 1);
+  qz ? ( v = gc_q_step(v, 1); );   // parenthesised on the way past, family rule
   b == 0 ? ( slider15  = v; slider_automate(slider15);  ) :
   b == 1 ? ( slider25  = v; slider_automate(slider25);  ) :
   b == 2 ? ( slider35  = v; slider_automate(slider35);  ) :
@@ -1315,7 +1323,7 @@ loop(N_BANDS,
   gfx_set(slider(band_slider_base(gc_b) + 1) == 1 ? 0.95 : 0.45, 0.9, 0.95, 1);
   gfx_x = gc_bx + 5 * gc_sc; gfx_y = gc_sy + 4 * gc_sc;
   gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
-  gc_click && gc_bhot ? gc_sel = gc_b;
+  gc_click && gc_bhot ? ( gc_sel = gc_b; );
   gc_b += 1;
 );
 gfx_set(0.6, 0.6, 0.65, 1);
@@ -1371,7 +1379,7 @@ gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; g
 state updates, after `gc_last_cap` is stored:
 
 ```eel2
-(abs(mouse_x - gc_cyc_x) >= gc_hit_r || abs(mouse_y - gc_cyc_y) >= gc_hit_r) ? gc_cyc_n = 0;
+(abs(mouse_x - gc_cyc_x) >= gc_hit_r || abs(mouse_y - gc_cyc_y) >= gc_hit_r) ? ( gc_cyc_n = 0; );
 ```
 
 - [ ] **Step 7: Live check — the reachability matrix**
