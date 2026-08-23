@@ -225,7 +225,7 @@ slider245:0<-100,100,0.1>-B8 Hard Ceiling Micro (% bit)
 
 @init
 
-N_BANDS = 4;
+N_BANDS = 8;
 cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
 st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
 memset(st, 0, N_BANDS * 4);
