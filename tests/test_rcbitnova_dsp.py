@@ -2787,3 +2787,82 @@ def test_v11_curve_helpers_agree_with_the_tables_for_every_band():
         assert curve.band_slider(b, 0) == curve.STB[b]
         assert curve.dyn_slider(b, 0) == curve.DYNB[b]
         assert curve.ceil_slider(b, 0) == curve.CEB[b]
+
+
+# --- V1.1 source gate -------------------------------------------------------------------------
+
+from tools import rcbitnova_gates as gates   # noqa: E402
+
+
+def test_v11_gate_passes_on_the_clean_source():
+    """THE test that has to come first. Three earlier drafts of this gate could not be satisfied
+    by the very source they were written for - a row that matched nothing, a line-anchored regex
+    against four entries per line, an evaluator that read `st` as a loop counter. Mutants prove
+    rejection; only this proves the contract is satisfiable at all."""
+    gates.check_source(gates.V11, project=True)
+
+
+def test_v11_gate_pieces_agree_on_the_table_block():
+    text = open(gates.V11).read()
+    assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
+    assert gates.eval_init(text, ["st"])["st"] == 64, "the address block must beat the loop counter"
+    gates.check_tables(text, "clean")
+
+
+def test_v11_eval_init_ceils_at_and_around_a_page_boundary():
+    for expr, want in [("ceil(1 / 65536) * 65536", 65536),
+                       ("ceil(51913 / 65536) * 65536", 65536),
+                       ("ceil(65536 / 65536) * 65536", 65536),
+                       ("ceil(65537 / 65536) * 65536", 131072),
+                       ("ceil(0 / 65536) * 65536", 0)]:
+        assert gates.eval_init(f"x = {expr};", ["x"])["x"] == want, expr
+
+
+def test_v11_eval_init_reads_every_assignment_on_a_line():
+    packed = "stb = 272; dynb = 280; ceb = 288;\n"
+    assert gates.eval_init(packed, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
+
+
+SEEDED_DEFECTS = [
+    # fill bounds - the class the address gate is structurally blind to
+    (lambda t: t.replace("loop(N_BANDS * 2, egh[i] = 1;", "loop(4 * 2, egh[i] = 1;"), "fill-egh"),
+    (lambda t: t.replace("loop(N_BANDS * 2, eg[i] = 1;", "loop(4 * 2, eg[i] = 1;"), "fill-eg"),
+    (lambda t: t.replace("loop(N_BANDS * 2, mbeh[i] = 1;", "loop(4 * 2, mbeh[i] = 1;"), "fill-mbeh"),
+    (lambda t: t.replace("memset(st, 0, N_BANDS * 4);", "memset(st, 0, 4 * 4);"), "fill-st"),
+    # runtime loops
+    (lambda t: t.replace("  loop(N_BANDS,\n    slider(stb[b] + 1) == 1 ? (",
+                         "  loop(4,\n    slider(stb[b] + 1) == 1 ? ("), "sample-band-loop"),
+    (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
+     "gfx-band-setup"),
+    (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
+                         "gc_hit_n = 0;\ngc_b = 0;\nloop(4,"), "gfx-hit-test"),
+    # table contents
+    (lambda t: t.replace("stb[6]  = 170;", "stb[6]  = 175;"), "stb[6] = 175, expected 170"),
+    (lambda t: t.replace("ceb[7]  = 242;", "ceb[7]  = 260;"), "ceb[7] = 260, expected 242"),
+    (lambda t: t.replace("stb[7]  = 180;\n", ""), "stb[7] is never assigned"),
+    # addresses
+    (lambda t: t.replace("dm  = 224;", "dm  = 208;"), "dm = 208, model says 224"),
+    (lambda t: t.replace("gc_ebuf  = gc_fc + 126;", "gc_ebuf  = gc_fc + 128;"), "gc_ebuf"),
+    (lambda t: t.replace("memset(gc_trace, 0, gc_hits + 8 - gc_trace);",
+                         "memset(gc_trace, 0, 13678);"), "clear-derived"),
+    # forbidden reads - inside an @init-declared helper, which a per-SECTION exemption would miss
+    (lambda t: t.replace("  s = stb[b];                                  // slider base: 10,20,30,40",
+                         "  s = 10 * (b + 1);                            // slider base: 10,20,30,40"),
+     "static-slider arithmetic"),
+    # writers
+    (lambda t: t.replace("b == 6 ? ( slider173 = v; slider_automate(slider173); ) :",
+                         "b == 6 ? ( slider175 = v; slider_automate(slider175); ) :"),
+     "gc_w_freq writes sliders"),
+]
+
+
+@pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
+def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
+    clean = open(gates.V11).read()
+    mutated = mutate(clean)
+    assert mutated != clean, f"the seeding lambda for {expect!r} changed nothing"
+    src = tmp_path / "mutant"
+    src.write_text(mutated)
+    with pytest.raises(AssertionError) as exc:
+        gates.check_source(str(src), project=True)
+    assert expect in str(exc.value), f"rejected, but for the wrong reason: {exc.value}"
