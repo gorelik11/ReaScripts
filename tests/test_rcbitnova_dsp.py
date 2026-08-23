@@ -2606,3 +2606,154 @@ def test_v10_watched_fields_cannot_collide_like_an_arithmetic_signature():
     b = curve.watched_fields(bands=[_band(macro=0, micro=100.0)], filters=[], phase=0,
                              res0=0, res1=0, srate=48000)
     assert a != b, "two configurations with the same gain sum compared equal"
+
+
+# ===================================================================================
+# V1.1 - eight fully dynamic bands. The memory map as data.
+# Spec: docs/superpowers/specs/2026-08-22-rcbitnova-v1.1-eight-dynamic-bands-design.md (rev 3)
+# ===================================================================================
+
+from tools import rcbitnova_layout as lay   # noqa: E402
+
+
+def test_v11_low_map_reproduces_the_shipped_four_band_addresses():
+    """The model must produce V1.0's own numbers or it is describing another plugin."""
+    m = lay.low_layout(4)
+    assert m["cf"][0] == 0 and m["st"][0] == 64 and m["det"][0] == 96
+    assert m["dst"][0] == 128 and m["cst"][0] == 160 and m["dp"][0] == 192
+    assert m["dm"][0] == 208 and m["bp"][0] == 216 and m["eg"][0] == 256
+
+
+def test_v11_eight_bands_move_only_dm_and_bp():
+    """Five of seven dynamic arrays keep their base - the four-band spacing was already wide
+    enough. Only dm and bp are re-based, and that is the whole low-map change."""
+    m = lay.low_layout(8)
+    assert m["cf"] == (0, 63) and m["st"] == (64, 95)
+    assert m["det"][0] == 96 and m["dst"][0] == 128 and m["cst"][0] == 160
+    assert m["dp"][0] == 192 and m["eg"][0] == 256
+    assert m["dm"][0] == 224 and m["bp"][0] == 232
+    assert m["eg"][1] == 271
+
+
+def test_v11_low_map_leaves_room_below_mb_band():
+    m = lay.low_layout(8)
+    end = max(hi for _, hi in m.values()) + 1
+    assert end == 272
+    assert 1024 - end == 752, "mb_band is a literal 1024; this is the slack the tables live in"
+
+
+def test_v11_words_per_band_and_the_memory_ceiling():
+    """34 words per band, not 30 - rev 1 of the spec got this wrong and inverted the conclusion.
+    Thirty bands end at 1020; thirty-one at 1054, past mb_band."""
+    assert sum(w for _, w in lay.LOW) == 34
+    assert lay.max_bands_by_memory() == 30
+
+
+def test_v11_a_ninth_band_collides_with_the_base_tables():
+    """The tables are FIXED at 272..295, and low_layout(9) puts bp at 261..287 and eg at 288..305 -
+    straight through all three. Rev 2 asserted check_capacity(9) == [] because the model did not
+    know the tables existed. Eight is unaffected: the low map ends at 272, exactly where stb
+    begins."""
+    m = lay.low_layout(9)
+    assert m["bp"] == (261, 287) and m["eg"] == (288, 305)
+    problems = lay.check_capacity(9)
+    assert any("table" in p for p in problems), problems
+    assert lay.check_capacity(8) == [], "eight ends at 272 and the tables start at 272"
+
+
+def test_v11_the_real_ceiling_is_not_eight():
+    """Both earlier versions of "eight is the maximum" were asserted, not computed, and both were
+    wrong. Memory holds 30 bands; the fixed base tables stop a ninth; the slider budget stops a
+    tenth. Eight is a product decision, recorded honestly so nobody later "discovers" headroom and
+    assumes it was overlooked."""
+    assert max(hi for _, hi in lay.low_layout(9).values()) + 1 == 306, "memory is not the limit"
+    assert lay.check_capacity(8) == []
+    problems = lay.check_capacity(10)
+    assert problems and any("slider" in p for p in problems), problems
+
+
+def test_v11_base_tables_keep_the_old_bands_and_stay_under_256():
+    t = lay.base_tables(8)
+    assert t["stb"][:4] == [10, 20, 30, 40]
+    assert t["dynb"][:4] == [50, 60, 70, 80]
+    assert t["ceb"][:4] == [90, 100, 110, 120]
+    assert t["stb"][4:] == [150, 160, 170, 180]
+    assert t["dynb"][4:] == [190, 200, 210, 220]
+    assert t["ceb"][4:] == [230, 234, 238, 242]      # stride 4: at 10, band 8 would hit 261
+    highest = max(t["stb"][b] + 9 for b in range(8))
+    highest = max(highest, max(t["dynb"][b] + 8 for b in range(8)))
+    highest = max(highest, max(t["ceb"][b] + 3 for b in range(8)))
+    assert highest == 245, highest
+
+
+def test_v11_new_sliders_do_not_collide_with_anything_existing():
+    used = set(range(1, 5)) | set(range(11, 50)) | set(range(51, 89)) \
+        | set(range(91, 124)) | set(range(131, 143))
+    t = lay.base_tables(8)
+    new = set()
+    for b in range(4, 8):
+        new |= {t["stb"][b] + o for o in range(1, 10)}
+        new |= {t["dynb"][b] + o for o in range(1, 9)}
+        new |= {t["ceb"][b] + o for o in range(1, 4)}
+    assert not (new & used), sorted(new & used)
+    assert len(new) == 80
+
+
+def test_v11_audio_chain_grows_exactly_as_the_spec_says():
+    a, b = lay.audio_layout(4), lay.audio_layout(8)
+    assert a["mb_peak"] == 17408 and b["mb_peak"] == 33792
+    assert a["mb_end"] == 33792 and b["mb_end"] == 66560
+    assert a["gc_trace"] == 38275, "V1.0's own comment records 38275"
+    assert b["gc_trace"] == 71087
+
+
+def test_v11_lp_base_moves_one_page_and_stays_aligned():
+    """The single most dangerous consequence: a 32768-point FFT off a 65536-word page corrupts
+    SILENTLY. Pin both values, not just the modulus."""
+    four = lay.gui_layout(lay.audio_layout(4)["gc_trace"], 4)
+    eight = lay.gui_layout(lay.audio_layout(8)["gc_trace"], 8)
+    assert four["lp_base"] == 65536
+    assert eight["lp_base"] == 131072
+    assert eight["lp_base"] % 65536 == 0
+    assert eight["gc_hits"] + 8 <= eight["lp_base"]
+
+
+def test_v11_gui_model_reproduces_the_shipped_clear_span():
+    """V1.0 clears exactly 13638 words. Derived, the span is 13646 at four bands and 13678 at
+    eight - which is why the plugin must compute it rather than carry a literal."""
+    base = lay.audio_layout(4)["gc_trace"]
+    assert lay.gui_layout(base, 4)["clear_span"] - 8 == 13638
+    assert lay.gui_layout(base, 4)["clear_span"] == 13646
+    assert lay.gui_layout(lay.audio_layout(8)["gc_trace"], 8)["clear_span"] == 13678
+
+
+def test_v11_three_gui_region_ends_are_distinct_and_derived():
+    """Shipped V1.0, the four-band pre-flip build, and the final eight-band build are three
+    different artifacts. Rev 1 of the spec mixed the first two and printed 51953 for V1.0, whose
+    real end is 51913."""
+    four = lay.audio_layout(4)["gc_trace"]
+    eight = lay.audio_layout(8)["gc_trace"]
+    assert four + 13638 == 51913                                    # shipped V1.0
+    assert four + lay.gui_layout(four, 4)["clear_span"] == 51921    # pre-flip V1.1
+    assert eight + lay.gui_layout(eight, 8)["clear_span"] == 84765  # final V1.1
+
+
+def test_v11_all_eight_bands_access_every_array_in_bounds():
+    mem = lay.GuardedMemory(lay.low_layout(8))
+    for b in range(8):
+        lay.model_band_access(mem, b)               # static AND dynamic: every band is equal now
+
+
+def test_v11_a_ninth_band_is_rejected_by_the_instrument():
+    mem = lay.GuardedMemory(lay.low_layout(8))
+    with pytest.raises(AssertionError, match=r"cf\[64\] leaves its span 0\.\.63"):
+        lay.model_band_access(mem, 8)
+
+
+def test_v11_an_overrun_that_clears_a_guard_word_is_still_caught():
+    """Ownership checking, not sentinels: cf is indexed b*8, so a wrong band jumps well past any
+    single guard word."""
+    mem = lay.GuardedMemory(lay.low_layout(8))
+    for name, off in (("cf", 64), ("cf", 71), ("st", 32), ("dm", 8), ("bp", 24), ("eg", 16)):
+        with pytest.raises(AssertionError):
+            mem.write(name, off, 1.0)

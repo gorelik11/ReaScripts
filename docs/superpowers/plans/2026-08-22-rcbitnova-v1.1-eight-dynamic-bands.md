@@ -448,7 +448,7 @@ def model_band_access(mem, b):
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: 233 passed (221 + 12).
+Expected: 236 passed (221 + 15).
 
 - [ ] **Step 5: Commit**
 
@@ -747,8 +747,13 @@ def eval_init(text, wanted):
             except Exception:
                 continue
             if isinstance(value, (int, float)):
-                env[name] = value
-                if name in wanted:
+                # FIRST assignment wins. The map is set up once at the top of @init, but V1.0
+                # reuses several of those names as ordinary locals further down - `st` is a loop
+                # counter inside lpk_build (line 804, `st = 0; loop(nsec + 1,`). Keeping the last
+                # value read st as 0 instead of 64 and failed check_addresses on CLEAN source.
+                # Found while executing Task 1, by comparing the model against the shipped file.
+                env.setdefault(name, value)
+                if name in wanted and name not in out:
                     out[name] = int(value)
     missing = set(wanted) - set(out)
     if missing:
@@ -988,6 +993,8 @@ def test_v11_gate_pieces_agree_on_the_table_block():
     """Each checker, separately, against the exact block Task 3 inserts."""
     text = open("JSFX/RCBitNova V1.1").read()
     assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
+    # `st` is also a loop counter inside lpk_build; the address block must win.
+    assert gates.eval_init(text, ["st"])["st"] == 64
     gates.check_tables(text, "clean")                   # all 24 entries, no gaps
     gates.check_sites(text.replace("N_BANDS = 4;", "N_BANDS = 8;"), "clean")
 ```
