@@ -2757,3 +2757,33 @@ def test_v11_an_overrun_that_clears_a_guard_word_is_still_caught():
     for name, off in (("cf", 64), ("cf", 71), ("st", 32), ("dm", 8), ("bp", 24), ("eg", 16)):
         with pytest.raises(AssertionError):
             mem.write(name, off, 1.0)
+
+
+def test_v11_curve_uses_the_same_bases_as_the_layout_model():
+    """One source of truth. Two copies of this table is how a band ends up editing another band's
+    parameter - and the JSFX transcription reads these numbers out of here."""
+    t = lay.base_tables(8)
+    assert curve.STB == t["stb"]
+    assert curve.DYNB == t["dynb"]
+    assert curve.CEB == t["ceb"]
+
+
+def test_v11_curve_reads_band_five_from_the_new_range():
+    assert curve.band_slider(4, 3) == 153        # B5 Freq
+    assert curve.band_slider(0, 3) == 13         # B1 Freq, unchanged
+
+
+def test_v11_curve_covers_all_three_slider_families():
+    """Static, dynamics and ceilings are three separate blocks with three different strides above
+    band 4; every read in the JSFX goes through one of them."""
+    assert curve.band_slider(0, 1) == 11 and curve.band_slider(7, 1) == 181     # Enable
+    assert curve.dyn_slider(0, 1) == 51 and curve.dyn_slider(7, 1) == 221       # Dyn
+    assert curve.ceil_slider(0, 1) == 91 and curve.ceil_slider(7, 1) == 243     # Hard
+    assert curve.ceil_slider(7, 3) == 245, "the highest number V1.1 declares"
+
+
+def test_v11_curve_helpers_agree_with_the_tables_for_every_band():
+    for b in range(8):
+        assert curve.band_slider(b, 0) == curve.STB[b]
+        assert curve.dyn_slider(b, 0) == curve.DYNB[b]
+        assert curve.ceil_slider(b, 0) == curve.CEB[b]

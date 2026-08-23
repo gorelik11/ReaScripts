@@ -393,3 +393,43 @@ def watched_fields(bands, filters, phase, res0, res1, srate):
                 b["ratio"], b["placement"], b["qchar"]) for b in bands)
     ft = tuple((h["ftype"], h["slope"], h["freq"], h["res"], h["placement"]) for h in filters)
     return (bt, ft, phase, res0, res1, srate)
+
+
+# ---------------------------------------------------------------------------------------------
+# V1.1: slider-base tables. ONE source of truth, shared with the layout model and transcribed
+# verbatim into the JSFX @init block, where the same 24 numbers are written out as
+# stb[0..7] / dynb[0..7] / ceb[0..7].
+#
+# READS go through these. WRITES MUST NOT: V1.0 established live that assigning through
+# slider(computed_index) updates what the GUI reads back but never reaches the parameter, so
+# every writer needs an explicit named sliderNN branch.
+# ---------------------------------------------------------------------------------------------
+
+try:
+    from tools.rcbitnova_layout import base_tables as _base_tables
+except ImportError:                      # also importable directly from inside tools/
+    from rcbitnova_layout import base_tables as _base_tables
+
+_T = _base_tables(8)
+STB, DYNB, CEB = _T["stb"], _T["dynb"], _T["ceb"]
+
+
+def band_slider(b, offset):
+    """Static-block slider number for band b: Enable +1, Type +2, Freq +3, Q +4, Macro +5,
+    Micro +6, Bit Ratio +7, Placement +8, Q Character +9."""
+    return STB[b] + offset
+
+
+def dyn_slider(b, offset):
+    """Dynamics-block slider number: Dyn +1, Dyn Stereo +2, Soft Ceiling Macro +3, Soft Ceiling
+    Micro +4, Attack +5, Release +6, Dyn Mode +7, Soft +8."""
+    return DYNB[b] + offset
+
+
+def ceil_slider(b, offset):
+    """Hard-ceiling block: Hard +1, Hard Ceiling Macro +2, Hard Ceiling Micro +3.
+
+    Three sliders wide, so above band 4 it strides by 4 rather than 10 - at stride 10 band 8
+    would need 261, past the 256 limit.
+    """
+    return CEB[b] + offset

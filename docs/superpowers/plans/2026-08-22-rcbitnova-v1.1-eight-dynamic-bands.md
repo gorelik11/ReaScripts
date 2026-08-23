@@ -495,7 +495,7 @@ def band_slider(b, offset):
     return STB[b] + offset
 ```
 
-- [ ] **Step 4: Run.** Expected: 235 passed. **Step 5: Commit.**
+- [ ] **Step 4: Run.** Expected: 240 passed. **Step 5: Commit.**
 
 ---
 
