@@ -2794,12 +2794,20 @@ def test_v11_curve_helpers_agree_with_the_tables_for_every_band():
 from tools import rcbitnova_gates as gates   # noqa: E402
 
 
+def _needs_projection(text=None):
+    """The gate has two phases and this suite has to be right in both. Before Task 5 the source is
+    still four-band and the contract is checked against a projection; after it, against the real
+    text. Hard-coding project=True made sixteen tests fail the moment the count was raised."""
+    text = open(gates.V11).read() if text is None else text
+    return "N_BANDS = 4;" in text
+
+
 def test_v11_gate_passes_on_the_clean_source():
     """THE test that has to come first. Three earlier drafts of this gate could not be satisfied
     by the very source they were written for - a row that matched nothing, a line-anchored regex
     against four entries per line, an evaluator that read `st` as a loop counter. Mutants prove
     rejection; only this proves the contract is satisfiable at all."""
-    gates.check_source(gates.V11, project=True)
+    gates.check_source(gates.V11, project=_needs_projection())
 
 
 def test_v11_gate_pieces_agree_on_the_table_block():
@@ -2864,5 +2872,156 @@ def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     src = tmp_path / "mutant"
     src.write_text(mutated)
     with pytest.raises(AssertionError) as exc:
-        gates.check_source(str(src), project=True)
+        gates.check_source(str(src), project=_needs_projection(mutated))
     assert expect in str(exc.value), f"rejected, but for the wrong reason: {exc.value}"
+
+
+# --- V1.1 migration, every branch, before REAPER ------------------------------------------------
+
+import sys, os                                                              # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))                 # noqa: E402
+import _reaper_fx_fake as fake                                              # noqa: E402
+from tools.migrate_v10_to_v11 import migrate_chain, N_DECLARED_V10          # noqa: E402
+
+
+def _mid_chain():
+    tr, rpr = fake.chain("A", "JS: RCBitNova V1.0", "B")
+    return tr, rpr, fake.FakeProject(tr)
+
+
+def _undo(rpr):
+    return (rpr.undo_opened, rpr.undo_closed, rpr.undos)
+
+
+def test_v11_migration_success_keeps_chain_position_and_balances_undo():
+    tr, rpr, pr = _mid_chain()
+    src = tr.fxs[1]
+    for i in range(N_DECLARED_V10):
+        src.params[i].normalized = i / 100.0
+    src.params[N_DECLARED_V10].normalized = 0.75          # host Bypass - the one a name search skips
+    src.params[N_DECLARED_V10 + 1].normalized = 0.5       # host Wet
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out == "migrated 95 declared + 3 host parameters", out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.1", "B"], "chain order must not change"
+    dst = tr.fxs[1]
+    assert [dst.params[i].normalized for i in range(N_DECLARED_V10)] == \
+        [i / 100.0 for i in range(N_DECLARED_V10)]
+    assert dst.params[175].normalized == 0.75, "host Bypass must reach V1.1's host Bypass"
+    assert dst.params[176].normalized == 0.5
+    assert dst.params[95].normalized == 0.0, "B5 Enable must stay at its default"
+    assert _undo(rpr) == (1, 1, 0)
+
+
+def test_v11_migration_refuses_when_add_fx_returns_none():
+    tr, rpr, pr = _mid_chain()
+    tr.add_fx = lambda name: None
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out.startswith("REFUSED, source untouched"), out
+    assert "add_fx returned None" in out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
+    assert _undo(rpr) == (1, 1, 0), "opened once, closed once, even on the failure path"
+
+
+def test_v11_migration_refuses_when_add_fx_raises():
+    tr, rpr, pr = _mid_chain()
+
+    def boom(name):
+        raise RuntimeError("no such effect")
+    tr.add_fx = boom
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out.startswith("REFUSED, source untouched"), out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
+    assert _undo(rpr) == (1, 1, 0)
+
+
+def test_v11_migration_rolls_back_a_readback_mismatch():
+    tr, rpr, pr = _mid_chain()
+    real_add = tr.add_fx
+
+    class Stubborn:
+        """A parameter that accepts a write and reports something else - which is what a
+        read-back check exists to catch."""
+        def __init__(self, name):
+            self.name = name
+            self.envelope = None
+
+        @property
+        def normalized(self):
+            return 999.0
+
+        @normalized.setter
+        def normalized(self, _value):
+            pass
+
+    def add_and_break(name):
+        fx = real_add(name)
+        fx.params[7] = Stubborn(fx.params[7].name)
+        return fx
+    tr.add_fx = add_and_break
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert "did not take" in out and out.startswith("REFUSED, source untouched"), out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"], "the orphan must be removed"
+    assert _undo(rpr) == (1, 1, 0)
+
+
+def test_v11_migration_rolls_back_when_the_move_lands_wrong():
+    tr, rpr, pr = _mid_chain()
+    rpr.TrackFX_CopyToTrack = lambda *a: None             # the move silently does nothing
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert "move failed" in out and out.startswith("REFUSED, source untouched"), out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
+    assert _undo(rpr) == (1, 1, 0)
+
+
+def test_v11_migration_undoes_for_real_if_the_source_is_already_gone():
+    tr, rpr, pr = _mid_chain()
+    real_move = rpr.TrackFX_CopyToTrack
+
+    def move_and_eat_the_source(src_tr, src_idx, dst_tr, dst_idx, is_move):
+        real_move(src_tr, src_idx, dst_tr, dst_idx, is_move)
+        tr.fxs[:] = [f for f in tr.fxs if "V1.0" not in f.name]
+    rpr.TrackFX_CopyToTrack = move_and_eat_the_source
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out.startswith("FAILED after the source was removed; undone"), out
+    assert _undo(rpr) == (1, 1, 1), "grouping is not rollback - a real undo must be called"
+
+
+def test_v11_migration_never_deletes_an_unrelated_v11():
+    tr, rpr = fake.chain("JS: RCBitNova V1.1", "JS: RCBitNova V1.0")
+    pr = fake.FakeProject(tr)
+    bystander = tr.fxs[0]
+    rpr.TrackFX_CopyToTrack = lambda *a: None             # force the failure path
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out.startswith("REFUSED, source untouched"), out
+    assert tr.fxs[0] is bystander, "the pre-existing V1.1 must survive"
+    assert [f.name for f in tr.fxs] == ["RCBitNova V1.1", "RCBitNova V1.0"]
+
+
+def test_v11_migration_refuses_an_ambiguous_chain():
+    tr, rpr = fake.chain("JS: RCBitNova V1.0", "X", "JS: RCBitNova V1.0")
+    out = migrate_chain(tr, rpr, fake.FakeProject(tr), dry_run=False)
+    assert out == "REFUSED: 2 V1.0 instances on this track; migrate them one by one", out
+    assert _undo(rpr) == (0, 0, 0), "nothing may be created before the chain is unambiguous"
+
+
+@pytest.mark.parametrize("wreck,expect", [
+    (lambda fx, rpr: setattr(fx.params[3], "envelope", object()), "automation"),
+    (lambda fx, rpr: fx.config.__setitem__("param.3.mod.active", "1"), "parameter modulation"),
+    (lambda fx, rpr: fx.pins.__setitem__((0, 1), 3), "non-default pin map"),
+    (lambda fx, rpr: fx.config.__setitem__("instance_oversample_shift", "2"), "oversampling"),
+])
+def test_v11_migration_refuses_unmigratable_state_before_creating_anything(wreck, expect):
+    tr, rpr, pr = _mid_chain()
+    wreck(tr.fxs[1], rpr)
+    out = migrate_chain(tr, rpr, pr, dry_run=False)
+    assert out.startswith("REFUSED") and expect in out, out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
+    assert _undo(rpr) == (0, 0, 0), "refusals happen before the undo block opens"
+
+
+def test_v11_migration_dry_run_names_what_it_cannot_detect():
+    tr, rpr, pr = _mid_chain()
+    out = migrate_chain(tr, rpr, pr, dry_run=True)
+    assert "would copy 95 declared + 3 host parameters into chain position 1" in out
+    assert "aliases are not migrated" in out, "an undetected item must never read as refused"
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
