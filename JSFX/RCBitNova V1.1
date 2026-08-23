@@ -823,6 +823,7 @@ hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
 // earlier draft of this file typed 13670 - a constant here cannot be right in both phases.
 memset(gc_trace, 0, gc_hits + 8 - gc_trace);
 gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1; gc_hit_n = 0;
+gc_cyc_n = 0; gc_cyc_x = -1000000; gc_cyc_y = -1000000; gc_cyc_t = -1000000;
 gc_edit = -1; gc_elen = 0; gc_fdrag = -1; gc_fnode = -1;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
 mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
@@ -1858,6 +1859,27 @@ gc_pw = gfx_w - gc_px - 10 * gc_sc;
 gc_ph = gfx_h - gc_py - 84 * gc_sc;
 gc_small = (gfx_w / gc_ret < 480 || gfx_h / gc_ret < 280);
 gc_small ? gc_ph = gfx_h - gc_py - 24 * gc_sc;    // below minimum size the readout strip goes first
+
+// ---- V1.1: the whole layout, computed HERE rather than near the end of @gfx, because pointer
+// ownership has to be decided before the node hit test runs.
+//   gc_fy        .. +20   readout fields
+//   gc_fy + 26   .. +40   "Bx effective ... bits" summary (V1.0, unchanged)
+//   gc_sy        .. +18   band strip
+gc_fy = gc_py + gc_ph + 6 * gc_sc;
+gc_fh = 20 * gc_sc;
+// Six fields now, not five. Keep them on one row by shrinking rather than overflowing.
+gc_fw = min(150 * gc_sc, (gc_pw - 5 * 8 * gc_sc) / 6);
+gc_sy = gc_fy + gc_fh + 24 * gc_sc;
+gc_sh = 18 * gc_sc;
+// Small mode reserves only 24 px below the plot, which the fields alone fill: the strip is hidden
+// there rather than clipped. Nodes and the right-click menu still reach every band.
+gc_strip_on = gc_small ? 0 : 1;
+gc_strip_hot = gc_strip_on && mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh &&
+               mouse_x >= gc_px && mouse_x < gc_px + N_BANDS * 34 * gc_sc;
+// Nodes may only be picked while the pointer is inside the plot. That is what keeps a strip click
+// from also enabling or dragging whatever sits nearest to it.
+gc_in_plot = mouse_x >= gc_px && mouse_x <= gc_px + gc_pw &&
+             mouse_y >= gc_py && mouse_y <= gc_py + gc_ph;
 gc_hit_r = max(8 * gc_sc, 6);                      // node hit radius, never smaller than a finger
 
 
@@ -1941,6 +1963,7 @@ gc_mixed ? (
 // is the two-parameter hazard coming back through the side door.
 
 gc_click = (mouse_cap & 1) && !(gc_last_cap & 1);
+gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);   // ONE detection, two consumers
 
 // Collect EVERY node under the pointer, disabled ones included - that is how a band gets
 // enabled. The selection rule below is still V1.0's (the last match wins, i.e. the topmost band
@@ -1952,12 +1975,42 @@ gc_b = 0;
 loop(N_BANDS,
   gc_nx = gc_x_of_f(slider(stb[gc_b]+3));
   gc_ny = gc_y_of_bits((slider(stb[gc_b]+5) + slider(stb[gc_b]+6) * 0.01) * slider(stb[gc_b]+7));
-  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
+  (gc_in_plot && abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
     gc_hits[gc_hit_n] = gc_b; gc_hit_n += 1;
   );
   gc_b += 1;
 );
-gc_hover = gc_hit_n > 0 ? gc_hits[gc_hit_n - 1] : -1;
+// V1.1: repeated clicks in the same spot walk the stack. Movement, timeout, or a click elsewhere
+// resets to the lowest band. This overrides "topmost band wins": otherwise a node sitting on top
+// of another traps the pointer and the one underneath is unreachable.
+gc_click ? (
+  (abs(mouse_x - gc_cyc_x) < gc_hit_r && abs(mouse_y - gc_cyc_y) < gc_hit_r
+   && (time_precise() - gc_cyc_t) < 0.4) ? ( gc_cyc_n += 1; ) : ( gc_cyc_n = 0; );
+  gc_cyc_x = mouse_x; gc_cyc_y = mouse_y; gc_cyc_t = time_precise();
+);
+// Modulo the CURRENT count every frame: the hit set shrinks when a node moves or a band is
+// disabled, and a free-running counter would then point past it and select nothing.
+gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; gc_cyc_n = 0; );
+
+// ---- V1.1: right-click a band node for the parameters no gesture reaches. V1.0's graph could
+// set six of a band's nine and had no way to switch a band OFF - clicking a disabled node enables
+// it, and that gesture had no inverse.
+// gfx_showmenu takes ONE string; a ternary sitting beside string literals is not concatenation in
+// EEL2, it is a syntax error. Assemble it.
+gc_rclick && gc_hover >= 0 ? (
+  slider(stb[gc_hover] + 1) == 1 ? ( strcpy(#gc_menu, "Disable band||"); )
+                                 : ( strcpy(#gc_menu, "Enable band||"); );
+  strcat(#gc_menu, "Bell|Low Shelf|High Shelf||");
+  strcat(#gc_menu, ">Placement|Both|Mid|Side|Left|Right|<|");
+  strcat(#gc_menu, ">Q Character|0.00 constant|0.25|0.50|0.75|1.00 proportional|<");
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  gc_bm = gfx_showmenu(#gc_menu);
+  gc_bm == 1 ? ( gc_w_enable(gc_hover, slider(stb[gc_hover] + 1) == 1 ? 0 : 1); ) :
+  gc_bm >= 2 && gc_bm <= 4 ? ( gc_w_type(gc_hover, gc_bm - 2); ) :
+  gc_bm >= 5 && gc_bm <= 9 ? ( gc_w_place(gc_hover, gc_bm - 5); ) :
+  gc_bm >= 10 && gc_bm <= 14 ? ( gc_w_qchar(gc_hover, (gc_bm - 10) * 0.25); );
+  gc_sel = gc_hover;
+);
 
 // a click on a DISABLED band's node switches it on - otherwise the only way to enable a band
 // would be the Param list, which defeats the point of having a graph
@@ -2045,6 +2098,36 @@ loop(N_BANDS,
   gc_pl == 3 ? gfx_set(0.94, 0.79, 0.11, gc_a) :
                gfx_set(0.84, 0.25, 0.26, gc_a);
   gfx_circle(gc_nx, gc_ny, 6 * gc_sc, gc_en ? 1 : 0, 1);
+  // ---- V1.1: live gain reduction, so the graph shows which bands are working. Adapted from
+  // Fable Eq Dynamic, where a band's CARD glows in proportion to current GR; here it goes on the
+  // node. Node tint only - the V1.2 dynamics display is not pulled in.
+  //
+  // The applied gain is a two-stage cascade PER CHANNEL, and which pair is live depends on the
+  // mode. A disabled stage must contribute exactly 1: @sample uses a local 1 and never resets the
+  // stored envelope (`) : ( gsA = 1; );`), so reading eg[] unconditionally would show a reduction
+  // nobody hears. Channel B is only maintained for Placement=Both with a Dual stereo mode; under
+  // Linked, or Mid/Side/Left/Right, mirror A rather than trusting a stale word.
+  gc_gr = 0;
+  (gc_en && slider(dynb[gc_b] + 1) == 1) ? (
+    gc_soft = slider(dynb[gc_b] + 8) == 1;
+    gc_hard = slider(ceb[gc_b] + 1) == 1;
+    gc_bch  = slider(stb[gc_b] + 8) == 0 && slider(dynb[gc_b] + 2) != 0;
+    mbmode[gc_b] == 1 ? (
+      gc_ga = (gc_soft ? mbgc[gc_b * 2] : 1) * (gc_hard ? mbeh[gc_b * 2] : 1);
+      gc_gb = gc_bch ? ((gc_soft ? mbgc[gc_b * 2 + 1] : 1) * (gc_hard ? mbeh[gc_b * 2 + 1] : 1))
+                     : gc_ga;
+    ) : (
+      gc_ga = (gc_soft ? eg[gc_b * 2] : 1) * (gc_hard ? egh[gc_b * 2] : 1);
+      gc_gb = gc_bch ? ((gc_soft ? eg[gc_b * 2 + 1] : 1) * (gc_hard ? egh[gc_b * 2 + 1] : 1))
+                     : gc_ga;
+    );
+    gc_gr = 1 - min(gc_ga, gc_gb);        // the DEEPEST reduction across the two channels
+  );
+  gc_gr > 0.002 ? (
+    gc_gl = min(gc_gr * 6, 1);
+    gfx_set(1.0, 0.5, 0.12, 0.3 + 0.6 * gc_gl);
+    gfx_circle(gc_nx, gc_ny, (8 + 2 * gc_gl) * gc_sc, 0, 1);
+  );
   (gc_hover == gc_b || gc_drag == gc_b) ? gfx_circle(gc_nx, gc_ny, 9 * gc_sc, 0, 1);
   // locked states, drawn so they do not read as an unresponsive GUI
   slider(gc_s + 7) == 0 ? (
@@ -2071,8 +2154,9 @@ loop(N_BANDS,
 
 
 // right-click menu: slope, then placement. One menu, one write.
-gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);
-gc_rclick && gc_fnode >= 0 ? (
+// Band nodes are drawn on top and own the event when the pointer is on one; the HP/LP handles
+// take it otherwise. Detection itself moved up beside gc_click.
+gc_rclick && gc_hover < 0 && gc_fnode >= 0 ? (
   gfx_x = mouse_x; gfx_y = mouse_y;
   gc_mres = gfx_showmenu(
     "Off|12 dB/oct|24 dB/oct|36 dB/oct|48 dB/oct|96 dB/oct|FIR Brick||>Placement|Both|Mid|Side|Left|Right|<");
@@ -2155,9 +2239,6 @@ gc_click ? (
 // number must mean exactly one parameter.
 gc_sel < 0 ? gc_sel = 0;
 gc_s = stb[gc_sel];
-gc_fy = gc_py + gc_ph + 6 * gc_sc;
-gc_fh = 20 * gc_sc;
-gc_fw = 150 * gc_sc;
 
 
 gc_h0 = gc_field(0, "Freq ",  slider(gc_s + 3), 0);
@@ -2165,6 +2246,9 @@ gc_h1 = gc_field(1, "Macro ", slider(gc_s + 5), 0);
 gc_h2 = gc_field(2, "Micro ", slider(gc_s + 6), 1);
 gc_h3 = gc_field(3, "Ratio ", slider(gc_s + 7), 2);
 gc_h4 = gc_field(4, "Q ",     slider(gc_s + 4), 3);
+// V1.1: Q Character reaches its declared 0.001 grid. The menu's five presets cannot reproduce an
+// existing 0.333, which would leave the GUI unable to represent a value the engine plays.
+gc_h5 = gc_field(5, "QChar ", slider(gc_s + 9), 3);
 
 gfx_set(0.55, 0.55, 0.6, 1);
 gfx_x = gc_px; gfx_y = gc_fy + gc_fh + 6 * gc_sc;
@@ -2173,6 +2257,25 @@ gfx_drawstr("   effective ");
 gfx_drawnumber((slider(gc_s+5) + slider(gc_s+6)*0.01) * slider(gc_s+7), 2);
 gfx_drawstr(" bits");
 
+// ---- V1.1: B1..B8 selector strip, in its OWN row below the summary line. A deterministic way to
+// reach any band regardless of node overlap. Hidden in small mode, where there is no room for it.
+gc_strip_on ? (
+  gc_b = 0;
+  loop(N_BANDS,
+    gc_bx = gc_px + gc_b * 34 * gc_sc;
+    gc_bhot = mouse_x >= gc_bx && mouse_x < gc_bx + 30 * gc_sc &&
+              mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh;
+    gc_sel == gc_b ? ( gfx_set(0.3, 0.45, 0.6, 1); ) : ( gfx_set(0.16, 0.16, 0.18, 1); );
+    gc_bhot ? ( gfx_set(0.35, 0.5, 0.66, 1); );
+    gfx_rect(gc_bx, gc_sy, 30 * gc_sc, gc_sh);
+    slider(stb[gc_b] + 1) == 1 ? ( gfx_set(0.95, 0.9, 0.95, 1); ) : ( gfx_set(0.45, 0.45, 0.5, 1); );
+    gfx_x = gc_bx + 5 * gc_sc; gfx_y = gc_sy + 4 * gc_sc;
+    gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
+    gc_click && gc_bhot ? ( gc_sel = gc_b; );
+    gc_b += 1;
+  );
+);
+
 // click a field to focus it
 gc_click ? (
   gc_h0 ? ( gc_edit = 0; gc_elen = 0; ) :
@@ -2180,6 +2283,7 @@ gc_click ? (
   gc_h2 ? ( gc_edit = 2; gc_elen = 0; ) :
   gc_h3 ? ( gc_edit = 3; gc_elen = 0; ) :
   gc_h4 ? ( gc_edit = 4; gc_elen = 0; ) :
+  gc_h5 ? ( gc_edit = 5; gc_elen = 0; ) :
            ( gc_edit = -1; );
 );
 
@@ -2206,7 +2310,15 @@ gc_edit >= 0 ? (
         gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16),   0) :
         gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100), 0) :
         gc_edit == 3 ? gc_w_ratio(gc_sel, min(max(gc_val,0),3),      0) :
-                       gc_w_q    (gc_sel, min(max(gc_val,0.1),10),   0);
+        gc_edit == 4 ? gc_w_q    (gc_sel, min(max(gc_val,0.1),10),   0) :
+        // Q Character is CLAMPED AND QUANTISED to its declared 0.001 step, unlike the five fields
+        // above. "Full resolution" means the whole grid instead of five coarse presets, not
+        // off-grid values: V1.0 measured what those cost - a continuous 59.752306 Hz written to a
+        // step-1 slider left -62 dB of null residue - and an off-grid 0.3335 would be reachable
+        // from the graph and unreachable from the host. Arthur's family rounds typed entry the
+        // same way. The five existing fields keep their typed-exact behaviour; changing them is
+        // its own version.
+                       gc_w_qchar(gc_sel, floor(min(max(gc_val,0),1) / 0.001 + 0.5) * 0.001);
       );
       gc_edit = -1; gc_elen = 0;
     ) : gc_key == 27 ? ( gc_edit = -1; gc_elen = 0; )
@@ -2216,4 +2328,6 @@ gc_edit >= 0 ? (
   );
 );
 
+// Pointer moved away without clicking: the next click starts the stack again from the lowest band.
+(abs(mouse_x - gc_cyc_x) >= gc_hit_r || abs(mouse_y - gc_cyc_y) >= gc_hit_r) ? ( gc_cyc_n = 0; );
 gc_last_cap = mouse_cap;
