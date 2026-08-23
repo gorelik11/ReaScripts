@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development or
 > superpowers:executing-plans to implement this task-by-task. Steps use `- [ ]` for tracking.
 
-**Revision 2**, 2026-08-23 (after the rev-1 weakness review: 4 P0, 7 P1, 2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands.md` (rev 5).
+**Revision 3**, 2026-08-23 (after the rev-2 weakness review: 2 P0, 4 P1, 2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands.md` (rev 5).
 That plan built eight *static* bands with dynamics on the first four; four review rounds of its
 `N_DYN` split produced three P0s that existed only because of the split. Everything it learned that
 still applies — the gate design, the migration, the live API facts, the GUI work — is carried over
@@ -12,7 +12,7 @@ here.
 **Goal:** eight identical bands. Static SVF, Mode A, Mode B, both ceilings, detector, placement,
 proportional Q on every one.
 
-**Spec:** `docs/superpowers/specs/2026-08-22-rcbitnova-v1.1-eight-dynamic-bands-design.md` (rev 1).
+**Spec:** `docs/superpowers/specs/2026-08-22-rcbitnova-v1.1-eight-dynamic-bands-design.md` (rev 3).
 
 ## Global Constraints
 
@@ -108,14 +108,24 @@ def test_v11_words_per_band_and_the_memory_ceiling():
     assert lay.max_bands_by_memory() == 30
 
 
+def test_v11_a_ninth_band_collides_with_the_base_tables():
+    """The tables are FIXED at 272..295, and low_layout(9) puts bp at 261..287 and eg at 288..305 -
+    straight through all three. Rev 2 asserted check_capacity(9) == [] because the model did not
+    know the tables existed. Eight is unaffected: the low map ends at 272, exactly where stb begins."""
+    m = lay.low_layout(9)
+    assert m["bp"] == (261, 287) and m["eg"] == (288, 305)
+    problems = lay.check_capacity(9)
+    assert any("table" in p for p in problems), problems
+    assert lay.check_capacity(8) == [], "eight ends at 272 and the tables start at 272"
+
+
 def test_v11_the_real_ceiling_is_ten_bands_not_eight():
     """Both earlier versions of "eight is the maximum" were asserted, not computed, and both were
-    wrong. Memory holds ~34 bands; the slider budget holds nine (scattered across the free runs);
+    wrong. Memory holds 30 bands; the base tables stop a ninth; the slider budget holds nine;
     ten is where it actually breaks. Eight is a product decision, and this test records that
     honestly so nobody later "discovers" headroom and assumes it was overlooked."""
     assert max(hi for _, hi in lay.low_layout(9).values()) + 1 == 306, "memory is not the limit"
     assert lay.check_capacity(8) == []
-    assert lay.check_capacity(9) == [], "a ninth band fits, on scattered bases"
     problems = lay.check_capacity(10)
     assert problems and any("slider" in p for p in problems), problems
 
@@ -265,6 +275,8 @@ def low_layout(n_bands):
 
 # Numbers bands 1-4 already own, plus the globals and the filter section. Immovable: REAPER
 # stores parameters by number.
+TABLES_FIRST, TABLES_LAST = 272, 295          # stb 272..279, dynb 280..287, ceb 288..295
+
 RESERVED = (set(range(1, 5)) | set(range(11, 50)) | set(range(51, 89))
             | set(range(91, 124)) | set(range(131, 143)))
 PER_BAND_BLOCKS = (9, 8, 3)          # static, dynamics, ceilings
@@ -282,13 +294,20 @@ def check_capacity(n_bands):
     """Empty when this band count fits. Reports BOTH real constraints.
 
     The superseded design said eight was the maximum because cf would overrun st. That was true
-    only while det was pinned at 96; here arrays float, and the low map would hold ~34 bands. The
-    binding constraint is the 256-slider limit against blocks that must be contiguous.
+    only while det was pinned at 96; here arrays float. At 34 words per band the low map holds 30,
+    the fixed base tables at 272..295 stop a ninth band, and the 256-slider limit stops a tenth.
     """
     problems = []
-    end = max(hi for _, hi in low_layout(n_bands).values()) + 1
+    spans = low_layout(n_bands)
+    end = max(hi for _, hi in spans.values()) + 1
     if end > 1024:
         problems.append(f"low map ends at {end}, past mb_band's literal 1024")
+    # The three base tables are fixed at 272..295 and are NOT part of low_layout. At eight bands
+    # the low map ends at exactly 272; a ninth pushes bp and eg straight through them.
+    for name, (first, last) in spans.items():
+        if last >= TABLES_FIRST and first <= TABLES_LAST:
+            problems.append(f"{name} occupies {first}..{last} and collides with the base tables "
+                            f"at {TABLES_FIRST}..{TABLES_LAST}")
 
     taken = set(RESERVED)
     t = base_tables(min(n_bands, 8))
@@ -519,16 +538,36 @@ ceb  = 288;   // TABLE-DECL: ceiling base per band
 // value by value. A fill loop cannot be evaluated by the gate's parser and would let
 // stb[6] = 175, a wrong ceiling stride, or an uninitialised B8 entry redirect a whole band
 // while every address, writer and forbidden-pattern check still passed.
-stb[0]  = 10;  stb[1]  = 20;  stb[2]  = 30;  stb[3]  = 40;
-stb[4]  = 150; stb[5]  = 160; stb[6]  = 170; stb[7]  = 180;
-dynb[0] = 50;  dynb[1] = 60;  dynb[2] = 70;  dynb[3] = 80;
-dynb[4] = 190; dynb[5] = 200; dynb[6] = 210; dynb[7] = 220;
-ceb[0]  = 90;  ceb[1]  = 100; ceb[2]  = 110; ceb[3]  = 120;
-ceb[4]  = 230; ceb[5]  = 234; ceb[6]  = 238; ceb[7]  = 242;   // stride 4: at 10, B8 needs 261
+stb[0]  = 10;
+stb[1]  = 20;
+stb[2]  = 30;
+stb[3]  = 40;
+stb[4]  = 150;
+stb[5]  = 160;
+stb[6]  = 170;
+stb[7]  = 180;
+dynb[0] = 50;
+dynb[1] = 60;
+dynb[2] = 70;
+dynb[3] = 80;
+dynb[4] = 190;
+dynb[5] = 200;
+dynb[6] = 210;
+dynb[7] = 220;
+ceb[0]  = 90;
+ceb[1]  = 100;
+ceb[2]  = 110;
+ceb[3]  = 120;
+ceb[4]  = 230;
+ceb[5]  = 234;
+ceb[6]  = 238;
+ceb[7]  = 242;   // stride 4: at 10, B8 needs 261
 ```
 
-One declaration per line, because the gate's `eval_init` anchors one assignment per line — three on
-one line would leave `dynb` and `ceb` unevaluated and fail the gate before it checked anything.
+**One assignment per line, all 27 of them.** Rev 2 packed four table entries per line and the gate's
+`TABLE_ENTRY` regex is line-anchored, so it saw 6 of 24 and reported the other 18 missing — the clean
+source failing its own gate. One per line removes the class rather than patching the regex, and it
+is what `eval_init` needs from the three base declarations anyway.
 
 A table, not a helper: these are read in `@sample` per band per sample, and a memory read costs less
 than a call plus a branch.
@@ -746,7 +785,21 @@ SITES = {
     "gc_fc-sizing":       (r"^gc_fc\s+= gc_kc \+ (\w+) \* 8;", "N_BANDS"),
     "clear-derived":      (r"^memset\(gc_trace, 0, (gc_hits \+ 8 - gc_trace)\);",
                            "gc_hits + 8 - gc_trace"),
-    "base-tables":        (r"stb = (\d+); dynb = (\d+); ceb = (\d+);", ("272", "280", "288")),
+    "table-decl-stb":     (r"^stb\s+= (\d+);", "272"),
+    "table-decl-dynb":    (r"^dynb\s+= (\d+);", "280"),
+    "table-decl-ceb":     (r"^ceb\s+= (\d+);", "288"),
+    # --- FILL BOUNDS. These write state and produce no address, so the address gate is blind to
+    # them: `loop(4 * 2, egh[i] = 1)` leaves B5-B8's Mode-A hard envelopes at zero while every
+    # base in AUDIO, GUI and the low map stays correct. Each one needs its own row.
+    "fill-st":            (r"^memset\(st, 0, (\w+) \* 4\);", "N_BANDS"),
+    "fill-dst":           (r"^memset\(dst, 0, (\w+) \* 4\);", "N_BANDS"),
+    "fill-cst":           (r"^memset\(cst, 0, (\w+) \* 4\);", "N_BANDS"),
+    "fill-eg":            (r"loop\((\w+) \* 2, eg\[i\] = 1;", "N_BANDS"),
+    "fill-mbenv":         (r"loop\((\w+) \* 2, mbenv\[i\] = 1;", "N_BANDS"),
+    "fill-mbwpos":        (r"^memset\(mbwpos, 0, (\w+)\);", "N_BANDS"),
+    "fill-mbgc":          (r"loop\((\w+) \* 2, mbgc\[i\] = 1;", "N_BANDS"),
+    "fill-mbeh":          (r"loop\((\w+) \* 2, mbeh\[i\] = 1;", "N_BANDS"),
+    "fill-egh":           (r"loop\((\w+) \* 2, egh\[i\] = 1;", "N_BANDS"),
     "slider-setup":       (r"loop\((\w+), setup_band\(b\); setup_band_dyn\(b\); b \+= 1;\);",
                            "N_BANDS"),
     "slider-modeb-scan":  (r"loop\((\w+),\s*\n\s*mbmode\[b\] = slider\(dynb\[b\] \+ 7\);",
@@ -771,7 +824,9 @@ an uninitialised `stb[7]` redirects every read for a band while the address comp
 manifest and the forbidden patterns all pass. The values are part of the source:
 
 ```python
-TABLE_ENTRY = re.compile(r"^(stb|dynb|ceb)\[(\d+)\]\s*=\s*(\d+);", re.M)
+# Line-anchored, and Task 3 writes one assignment per line so that this holds. Rev 2 packed four
+# per line and this regex found 6 of 24 - the clean source failing its own gate.
+TABLE_ENTRY = re.compile(r"^\s*(stb|dynb|ceb)\[(\d+)\]\s*=\s*(\d+);", re.M)
 
 
 def check_tables(text, path):
@@ -791,6 +846,11 @@ def check_tables(text, path):
 Seeded defects for this class, each of which must be rejected: one wrong entry per table
 (`stb[6] = 175`, `dynb[5] = 210`, `ceb[6] = 248`), a missing final entry (`stb[7]` deleted), and the
 ceiling table written at stride 10 (`ceb[7] = 260`, which also exceeds 256).
+
+**And for the fill bounds (review P0.2):** `loop(4 * 2, egh[i] = 1;)`, `loop(4 * 2, eg[i] = 1;)`,
+`loop(4 * 2, mbenv[i] = 1;)`, `loop(4 * 2, mbgc[i] = 1;)`, `loop(4 * 2, mbeh[i] = 1;)` and
+`memset(st, 0, 4 * 4);` — every one leaves B5–B8 in an invalid initial state while **every address
+remains correct**, so only their own site rows can catch them.
 
 - [ ] **Step 3: Forbidden reads and the writer manifest**
 
@@ -852,6 +912,84 @@ for name, (first, _) in model_low.items():
 assert (v11["stb"], v11["dynb"], v11["ceb"]) == (272, 280, 288)
 assert v11["lp_base"] == 131072, "one page up from V1.0 - and it MUST stay page-aligned"
 assert v11["gc_hits"] + 8 <= v11["lp_base"]
+```
+
+- [ ] **Step 4a: The remaining functions, in full (review P1.4)**
+
+Rev 2 named `check_sites`, `check_writers`, `check_addresses`, the CLI and `SEEDED_DEFECTS` without
+defining them — and the two P0s above are exactly what a clean-source acceptance test would have
+caught on the first run.
+
+```python
+def check_sites(text, path):
+    for name, (pattern, want) in SITES.items():
+        m = re.search(pattern, text, re.M)
+        assert m, f"{path}: site {name!r} not found - renamed, moved or deleted"
+        got = m.groups() if isinstance(want, tuple) else m.group(1)
+        assert got == want, f"{path}: site {name!r} carries {got!r}, expected {want!r}"
+
+
+def _function_body(text, name):
+    m = re.search(rf"^function {re.escape(name)}\(", text, re.M)
+    if not m:
+        return None
+    depth, i, start = 0, m.end(), None
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+            start = start if start is not None else i
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return text[m.start():i + 1]
+        i += 1
+    return None
+
+
+def check_writers(text, path):
+    for fn, off in WRITERS.items():
+        body = _function_body(text, fn)
+        assert body, f"{path}: writer {fn} not found"
+        want = [str(base + off) for base in BASES]
+        got = re.findall(r"slider(\d+)\s*=", body)
+        assert got == want, f"{path}: {fn} writes sliders {got}, expected {want}"
+        assert len(re.findall(r"slider_automate\(", body)) == 8, \
+            f"{path}: {fn} must call slider_automate in all eight branches"
+        assert "setup_band(b)" in body, f"{path}: {fn} does not rebuild static coefficients"
+        assert "setup_band_dyn(b)" in body, f"{path}: {fn} does not rebuild dynamics"
+
+
+def main(argv):
+    mode = argv[1] if len(argv) > 1 else "--source-only"
+    path = "JSFX/RCBitNova V1.1"
+    try:
+        check_source(path, project=(mode == "--preflip"))
+    except AssertionError as exc:
+        print(f"FAIL {mode}: {exc}")
+        return 1
+    print(f"OK {mode}")
+    return 0
+```
+
+`--preflip` and `--source-only` differ only in the projection; `--live` is Task 8's.
+
+- [ ] **Step 4b: The clean-source acceptance test — run this before any mutant**
+
+```python
+def test_v11_the_exact_task3_source_passes_the_whole_gate(tmp_path):
+    """The one test that would have caught both rev-2 P0s on the first run: the base declarations
+    matched no site row, and the line-anchored TABLE_ENTRY saw 6 of 24 entries."""
+    src = tmp_path / "clean"
+    src.write_text(open("JSFX/RCBitNova V1.1").read())
+    gates.check_source(str(src), project=True)          # must not raise
+
+
+def test_v11_gate_pieces_agree_on_the_table_block():
+    """Each checker, separately, against the exact block Task 3 inserts."""
+    text = open("JSFX/RCBitNova V1.1").read()
+    assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
+    gates.check_tables(text, "clean")                   # all 24 entries, no gaps
+    gates.check_sites(text.replace("N_BANDS = 4;", "N_BANDS = 8;"), "clean")
 ```
 
 - [ ] **Step 5: Self-test — seed a defect in every class**
@@ -994,10 +1132,19 @@ fits at +24..+42 with room to spare.
 gc_fy = gc_py + gc_ph + 6 * gc_sc;    // readout fields
 gc_fh = 20 * gc_sc;
 gc_fw = 150 * gc_sc;
-gc_sy = gc_fy + gc_fh + 4 * gc_sc;    // band strip: its own row, below the fields
+// V1.0 already draws the "Bx effective ... bits" summary at gc_fy + gc_fh + 6*gc_sc, so the strip
+// cannot start at +4 - rev 2 put it straight through that line. Three distinct rows:
+//   gc_fy            .. +20   readout fields
+//   gc_fy + 26       .. +40   effective-value summary (V1.0, unchanged)
+//   gc_fy + 44       .. +62   band strip
+gc_sy = gc_fy + gc_fh + 24 * gc_sc;
 gc_sh = 18 * gc_sc;
-gc_strip_hot = (mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh &&
-                mouse_x >= gc_px && mouse_x < gc_px + N_BANDS * 34 * gc_sc);
+// Small mode reserves only 24 px below the plot (gc_small ? gc_ph = gfx_h - gc_py - 24*gc_sc),
+// which the fields alone fill. The strip is HIDDEN there rather than clipped or overlapping the
+// window edge; nodes and the right-click menu still reach every band.
+gc_strip_on = !gc_small;
+gc_strip_hot = gc_strip_on && (mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh &&
+               mouse_x >= gc_px && mouse_x < gc_px + N_BANDS * 34 * gc_sc);
 ```
 
 **Ownership is a guard, not a cleanup.** Clearing `gc_hover` before the hit-test loop achieves
@@ -1031,6 +1178,7 @@ loop(N_BANDS,
   gc_click && gc_bhot ? ( gc_sel = gc_b; );
   gc_b += 1;
 );
+);
 ```
 
 No DYN/STATIC tag: every band is dynamic.
@@ -1045,17 +1193,29 @@ mode. Reading `min(eg[b*2], mbgc[b*2])` — one channel, soft stage only, both m
 ignore the hard stage entirely and let the idle mode's stale envelope light a node after a mode
 change, a dynamics disable or a band disable.
 
+**Reading the stored envelopes unconditionally is not enough.** V1.0 line 1357 is
+`) : ( gsA = 1; );` — when the Soft stage is off the audio path uses a **local** 1 and never touches
+`eg[]`, which keeps whatever it last held. Same for `ghA`/`egh[]`. And channel B's words are only
+maintained for Placement=Both with a Dual stereo mode; under Linked, or Mid/Side/Left/Right, `eg[b*2+1]`
+is stale or was never written. So the display must apply the **same predicates as `@sample`**:
+
 ```eel2
-// Live GR. Mode A gain = eg * egh; Mode B gain = mbgc * mbeh; both are per (band, channel) and
-// 1 means no reduction. Show the DEEPEST reduction across the two channels.
+// Live GR, derived from the same stage/mode/placement predicates the audio path uses. A stage that
+// is off contributes exactly 1, because that is what the audio does - the stored envelope word is
+// NOT reset and would otherwise show a reduction nobody hears.
 gc_gr = 0;
 slider(stb[gc_b] + 1) == 1 && slider(dynb[gc_b] + 1) == 1 ? (
+  gc_soft = slider(dynb[gc_b] + 8) == 1;      // B<n> Soft
+  gc_hard = slider(ceb[gc_b] + 1) == 1;       // B<n> Hard
+  gc_bch  = slider(stb[gc_b] + 8) == 0 && slider(dynb[gc_b] + 2) != 0;  // Both AND a Dual mode
   mbmode[gc_b] == 1 ? (
-    gc_ga = mbgc[gc_b * 2]     * mbeh[gc_b * 2];
-    gc_gb = mbgc[gc_b * 2 + 1] * mbeh[gc_b * 2 + 1];
+    gc_ga = (gc_soft ? mbgc[gc_b * 2] : 1) * (gc_hard ? mbeh[gc_b * 2] : 1);
+    gc_gb = gc_bch ? ((gc_soft ? mbgc[gc_b * 2 + 1] : 1) * (gc_hard ? mbeh[gc_b * 2 + 1] : 1))
+                   : gc_ga;                   // Linked or single-channel: mirror A
   ) : (
-    gc_ga = eg[gc_b * 2]     * egh[gc_b * 2];
-    gc_gb = eg[gc_b * 2 + 1] * egh[gc_b * 2 + 1];
+    gc_ga = (gc_soft ? eg[gc_b * 2] : 1) * (gc_hard ? egh[gc_b * 2] : 1);
+    gc_gb = gc_bch ? ((gc_soft ? eg[gc_b * 2 + 1] : 1) * (gc_hard ? egh[gc_b * 2 + 1] : 1))
+                   : gc_ga;
   );
   gc_gr = 1 - min(gc_ga, gc_gb);
 );
@@ -1073,8 +1233,10 @@ Read-only from `@gfx`, four words per band per frame, no writes — the same thr
 V1.0 accepted for `cf`/`hplp_cf`. **Scope guard:** node tint only; the V1.2 dynamics display
 (per-band GR meters, history) is not pulled in.
 
-Live cases: Mode A and Mode B; Linked and Dual L/R and Dual M/S; soft-only; hard-only; dynamics off;
-band off. In the last three the node must not glow at all — that is the stale-state failure.
+Live cases, each asserting **both** that the tint appears while the band works **and that it
+returns to nothing when it stops** — release is where stale state shows: Mode A and Mode B; Linked,
+Dual L/R, Dual M/S; Placement Mid (no B channel); soft-only; hard-only; dynamics off; band off. Turn
+Soft off *while it is reducing* — the tint must drop immediately, because the audio does.
 
 - [ ] **Step 6: Coincident-node cycling**
 
@@ -1139,6 +1301,8 @@ the interaction for each parameter so the split is auditable rather than implied
 | Click, move away, return, click | back to the lowest band |
 | Coincident nodes, then drag | the drag moves the band the last click selected |
 | A node at the plot's bottom edge, strip below it | the strip click selects the band and does **not** enable or drag the node |
+| Fields, effective-value line and strip, at 1× and Retina | three distinct rows, nothing overlapping, nothing clipped |
+| Window below 480×280 (`gc_small`) | strip hidden, fields intact, every band still reachable by node and menu |
 | B5 with Mode A pumping | the node tints orange in proportion to GR, and stops when the band is bypassed |
 
 - [ ] **Step 8: Commit**
@@ -1328,13 +1492,28 @@ exists.
 | **P0.1** 11 of 20 parameters unreachable from the GUI | **Accepted, contract narrowed.** The GUI covers nine; the dynamics and ceiling blocks are reached through **Param**, exactly as bands 1–4's always have been (every slider carries the `-` prefix — hidden, automatable, reachable). Spec §8.1 states it, and the live matrix now names the interaction for each of the twenty. A dynamics editor is V1.2 work, not an implied deliverable. |
 | **P0.2** The pre-flip gate needs Task 6 code | **Accepted — confirmed in the source.** V1.0 has **six** writers; `gc_w_type`/`gc_w_place`/`gc_w_qchar` do not exist, and `gc_hit_n` is introduced only by cycling. Task 3 now creates all three writers and restructures the hit test around `gc_hits`/`gc_hit_n` **keeping V1.0's last-match rule**, so the pre-flip build is still behaviour-identical and the gate's rows match at the commit where it runs. Task 6 changes exactly one line to the cycling rule. |
 | **P0.3** `eval_init` cannot parse the table declaration | **Accepted.** `ASSIGN.match` per line would have read `stb` and lost `dynb` and `ceb`. Now `finditer` over every assignment on a line, the declarations are one per line anyway, and a parser test uses both forms. |
-| **P0.4** The gate checks table addresses, never contents | **Accepted — this was the real hole.** Those 24 words decide which parameter every read touches. The fill loop is replaced by 24 explicit assignments, `check_tables` compares all of them to the model and rejects a missing or extra entry, and seeded defects cover one wrong entry per table, a deleted final entry, and the stride-10 ceiling table. |
+| **P0.4** The gate checks table addresses, never contents | **PARTIAL in rev 2, closed in rev 3.** The checker could not read the block it was written for (line-anchored regex vs four entries per line: 6 of 24 found). Those 24 words decide which parameter every read touches. The fill loop is replaced by 24 explicit assignments, `check_tables` compares all of them to the model and rejects a missing or extra entry, and seeded defects cover one wrong entry per table, a deleted final entry, and the stride-10 ceiling table. |
 | **P1.1** The strip lands on the readout fields | **Accepted — confirmed.** `gc_fy` is the fields' top and they are `20*gc_sc` tall, so `gc_fy + 2*gc_sc` sits on them. The strip gets its own row at `gc_fy + gc_fh + 4*gc_sc`; the layout block moves **above** hit testing (V1.0 computes it near the end of `@gfx`); and ownership became a `!gc_strip_hot` guard around the loop instead of a clear before it — clearing achieved nothing, since the loop repopulates. |
-| **P1.2** The GR tint misreads the applied gain | **Accepted.** Gain is a two-stage cascade per channel — `eg * egh` in Mode A, `mbgc * mbeh` in Mode B. Rev 1 read one channel, the soft stage only, and `min()` across both modes, so an idle mode's stale envelope could light a node. Now the active mode is selected, both stages multiply, the aggregate is documented (deepest reduction across channels), and band/dyn guards mean a disabled band cannot glow. Six live cases added. |
+| **P1.2** The GR tint misreads the applied gain | **PARTIAL in rev 2, closed in rev 3** — mode selection and both stages were right, but a disabled stage's stored envelope is never reset, and channel B is unmaintained under Linked or single-channel placement. Gain is a two-stage cascade per channel — `eg * egh` in Mode A, `mbgc * mbeh` in Mode B. Rev 1 read one channel, the soft stage only, and `min()` across both modes, so an idle mode's stale envelope could light a node. Now the active mode is selected, both stages multiply, the aggregate is documented (deepest reduction across channels), and band/dyn guards mean a disabled band cannot glow. Six live cases added. |
 | **P1.3** 34 words per band, not 30 | **Accepted — my arithmetic.** 8+4+4+4+4+4+1+3+2 = 34, so the low map holds **30** bands (1020 words), not ~34; 31 would end at 1054. The model derives the ceiling now instead of the prose carrying an estimate. |
 | **P1.4** The V1.0 GUI-region arithmetic is inconsistent | **Accepted — also mine.** V1.0 ends at **51913** (38275 + 13638); rev 1 printed 51953 by mixing the eight-band span into V1.0's row. The table now distinguishes three artifacts — shipped V1.0 (51913), four-band pre-flip V1.1 (51921), final V1.1 (84765) — each derived by the model. |
 | **P1.5** Migration not self-contained; points at a dirty external repo | **Accepted, and the repo is dirty** (`tests/_reaper_fakes.py` has uncommitted changes, alongside five other modified files). The algorithm and its invariants are written out in this plan, and the fake becomes `tests/_reaper_fx_fake.py` **in this worktree**, so implementation and tests travel on the same branch. |
-| **P1.6** The gate's strongest pieces are pseudocode; the `@init` exemption is too broad | **Accepted.** The exemption is now per **line** — only `TABLE-DECL`/`TABLE-FILL` markers — because `setup_band`, `band_qeff` and the `gc_*` helpers are all declared inside `@init` and would otherwise be exempt. A seeded defect reintroduces `10 * (b + 1)` **inside `setup_band`** and must be rejected. `check_forbidden` and `check_tables` are given in full. |
+| **P1.6** The gate's strongest pieces are pseudocode; the `@init` exemption is too broad | **PARTIAL in rev 2, closed in rev 3** — `check_sites`, `check_writers`, `_function_body` and the CLI were still missing, and a clean-source acceptance test would have caught both rev-2 P0s immediately. The exemption is now per **line** — only `TABLE-DECL`/`TABLE-FILL` markers — because `setup_band`, `band_qeff` and the `gc_*` helpers are all declared inside `@init` and would otherwise be exempt. A seeded defect reintroduces `10 * (b + 1)` **inside `setup_band`** and must be rejected. `check_forbidden` and `check_tables` are given in full. |
 | **P1.7** The null claim and the manual gates lack rigour | **Accepted.** The claim is stated as **exact equality of the rendered 32-bit float output** — a render quantises, so nothing stronger is provable this way. The fixture, format, bounds, rate, channel count, block size, tail, completion test, reader and comparator are pinned in a table. CPU and `lp_base` results get checked-in schemas (`cpu_runs.schema.json`, `lp_base_live.json`) that their scripts validate. |
 | **P2.1** Stale task references | **Accepted.** Four references to "Task 9" for the null and `lp_base` checks now point at Task 8 Steps 2 and 3. |
 | **P2.2** The 28 sites are no longer auditable here | **Accepted.** Spec §8.2 carries the inventory, each site mapped to its gate row, with the eighteen `@init` sites explicitly covered by **computed address comparison** rather than one regex each — a documented many-to-one mapping, and a stronger check than matching the text. |
+
+---
+
+## Rev-3 Disposition (weakness review of rev 2, target `95c3d6e`)
+
+| Finding | Disposition |
+|---|---|
+| **P0.1** The table checks contradict Task 3's own source, twice | **Accepted — reproduced.** The `base-tables` row required all three declarations on one line with single spaces and matched **nothing**; `TABLE_ENTRY`, line-anchored against four entries per line, found **6 of 24** and reported eighteen missing. Both would have failed `--preflip` on clean source. Fixed at the source rather than the regex: one assignment per line, three separate declaration rows, and a **clean-source acceptance test** that runs the exact block through `eval_init`, `check_sites` and `check_tables` before any mutant. |
+| **P0.2** The address gate does not cover the initialisation sites mapped to it | **Accepted — my §8.2 claim was wrong.** Fill bounds produce no address: `loop(4 * 2, egh[i] = 1;)` leaves B5–B8's hard envelopes at zero with every modelled address still correct. Nine `fill-*` rows added (`st`, `dst`, `cst`, `mbwpos`, `eg`, `mbenv`, `mbgc`, `mbeh`, `egh`), each with a seeded four-band bound, and the spec now separates address-producing from state-initialising sites. |
+| **P1.1** The GR formula still shows stale or inactive envelopes | **Accepted — confirmed in the source.** V1.0 line 1357 is `) : ( gsA = 1; );`: a disabled stage uses a local 1 and leaves `eg[]` holding its last value; channel B is unmaintained under Linked and under Mid/Side/Left/Right. The tint now applies the same stage, mode and placement predicates as `@sample`, mirrors A when there is no live B, and the live cases assert release as well as activation. |
+| **P1.2** The strip overlaps the effective-value line and breaks small mode | **Accepted — confirmed.** V1.0 draws that summary at `gc_fy + gc_fh + 6*gc_sc`, exactly inside the proposed row. Three distinct rows now: fields, summary, strip at +44. Small mode reserves 24 px, so the strip is **hidden** there rather than clipped — nodes and the menu still reach every band — and the matrix checks 1×, Retina, narrow and short windows. |
+| **P1.3** The ninth-band capacity test ignores the base tables | **Accepted.** The tables are fixed at 272..295 and were not in the model, so `check_capacity(9) == []` was asserting something false: `bp` reaches 287 and `eg` 305, through all three. The tables are now part of the capacity check, a ninth band is reported as a table collision, and the eight-band layout is untouched — it ends at exactly 272, where `stb` begins. |
+| **P1.4** The gate is fragments, not the contract Task 4 invokes | **Accepted.** `check_sites`, `check_writers`, `_function_body` and `main` are written out, and the clean-source test runs first. The order matters: mutants prove rejection, but only the clean-source pass proves the gate can be satisfied at all. |
+| **P2.1** Stale rev-1 capacity language | **Accepted.** The two "~34" statements and the docstring now say 30, and the plan's spec pointer says rev 3. |
+| **P2.2** The rev-2 disposition overstates closure | **Accepted.** P0.4, P1.6 and P1.2 are re-marked **partial in rev 2, closed in rev 3**, with the reason each was still open. |

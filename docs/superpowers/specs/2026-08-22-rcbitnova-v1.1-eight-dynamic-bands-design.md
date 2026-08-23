@@ -1,6 +1,6 @@
 # RCBitNova V1.1 — Eight Fully Dynamic Bands
 
-**Revision 2**, 2026-08-23 (after the rev-1 weakness review: 4 P0, 7 P1, 2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`
+**Revision 3**, 2026-08-23 (after two weakness reviews: rev 1 → 4 P0/7 P1/2 P2, rev 2 → 2 P0/4 P1/2 P2). **Supersedes** `2026-08-19-rcbitnova-v1.1-eight-bands-design.md`
 (rev 4) and its plan, which built eight *static* bands with dynamics on the first four only.
 
 ## 1. Goal
@@ -257,12 +257,22 @@ into one gate row; that is a documented many-to-one mapping, not an omission.
 | `@sample` Mode-B pass | `sample-modeb-pass` |
 | `@gfx` coefficients, hit-test, node draw | `gfx-band-setup`, `gfx-hit-test`, `gfx-node-draw` |
 
-The eighteen `@init` sites are covered by comparing **computed word addresses** rather than one
-regex each: a site left on the wrong count moves an address, and the address gate compares every one
-of them to the model. That is strictly stronger than matching the text that produces them.
+**Two kinds of `@init` site, and only one of them is covered by addresses.**
+
+*Address-producing* sites (`mbeh = mbgc + N_BANDS * 2;` and its eleven siblings) are covered by
+comparing **computed word addresses**: a wrong count moves an address, and the gate compares every
+one to the model. That is stronger than matching the text.
+
+*State-initialising* sites are **not**. `memset(st, 0, N_BANDS * 4)`, `memset(dst, …)`,
+`memset(cst, …)`, `memset(mbwpos, …)` and the `loop(N_BANDS * 2, …)` fills for `eg`, `mbenv`,
+`mbgc`, `mbeh` and `egh` write state and produce no address. Change the last one to `loop(4 * 2, …)`
+and B5–B8's Mode-A hard envelopes start at zero while **every address in the model still matches**.
+Rev 2 mapped these to "computed address comparison" and was wrong to. Each has its own `fill-*` gate
+row and its own seeded defect.
 
 ## 9. Out of scope
 
-A ninth band (it would fit, on scattered bases — see §3.1 — but eight is the chosen shape); a dynamics editor in the GUI (§8.1); the V1.2 dynamics *display* beyond the node tint;
+A ninth band — it collides with the fixed base tables at 272..295 (`bp` would reach 287, `eg` 305)
+and would need all three relocated first; a dynamics editor in the GUI (§8.1); the V1.2 dynamics *display* beyond the node tint;
 parameter aliases in migration; bringing V1.0's five existing numeric fields onto their declared
 steps.
