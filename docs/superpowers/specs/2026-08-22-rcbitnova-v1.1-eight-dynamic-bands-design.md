@@ -288,8 +288,29 @@ The parameters as declared:
 So a sub-bit ceiling is already *reachable* — Micro = 5 is 0.05 bit — but only as a second
 parameter, and a TCP knob on it turns in percent rather than in 0.05-bit steps.
 
-**The design answer, and it needs no new parameter:** give a ceiling handle the same gesture map the
-band node already has, so the rule "one gesture writes one slider" survives intact.
+**Corrected the same day, after the owner clarified:** the fine value must be settable in **Macro
+itself**, "even by primitive text entry" — 0.25 bits typed into the Macro field. Micro-as-percent
+does not answer that, because REAPER quantises typed entry to the parameter's declared step and
+Macro was declared `<0,16,1>`, so 0.25 was unreachable by construction.
+
+**Done in V1.1** (not deferred): all sixteen ceiling Macro sliders — `Bx Soft Ceiling Macro` and
+`Bx Hard Ceiling Macro`, eight bands each — are re-declared `<0,16,0.05>`. Verified live: typing
+0.25 stores 0.25 exactly and reads back as a −1.51 dBFS ceiling; 1.35 gives −8.13 dBFS.
+
+**Why this is value-safe for existing projects:** REAPER stores a parameter normalised over its
+range, and the range is unchanged at 0..16. The step governs UI increments and typed-entry
+quantisation, nothing else, so a project saved with a ceiling of 3 reopens with a ceiling of 3.
+
+It *is* a record difference, so the `--live` manifest gate no longer says "all 95 declared records
+are identical" and pretends otherwise — it demands the step change happen on **exactly those
+sixteen** parameters, verifies every other field of them is untouched, and still requires the other
+79 to match completely.
+
+**Band Macro is deliberately left at whole bits.** Its fine axis is Bit Ratio under Shift, and
+plain vertical drag meaning "whole bits" is the owner's own rule for the node.
+
+**Still for the dynamics editor:** give a ceiling handle the same gesture map the band node has, so
+"one gesture writes one slider" survives when the ceiling becomes draggable.
 
 | Gesture | Writes | Step |
 |---|---|---|

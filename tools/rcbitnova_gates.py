@@ -234,9 +234,116 @@ def check_source(path=V11, project=False):
     check_addresses(text, path)
 
 
+# --------------------------------------------------------------------------------------------
+# --live: the parameter manifest. Needs REAPER.
+#
+# Records, not names. An earlier draft returned `p.formatted` - the CURRENT value's display
+# string, which is neither the step nor the default - so two incompatible declarations whose
+# current values happened to format alike would have compared equal.
+# --------------------------------------------------------------------------------------------
+
+N_DECLARED_V10 = 95
+N_DECLARED_V11 = 175
+HOST_TAIL = ["Bypass", "Wet", "Delta"]
+
+
+def _records(RPR, track, fx_index, n_params, defaults=None):
+    out = []
+    for i in range(n_params):
+        r = RPR.TrackFX_GetParam(track.id, fx_index, i, 0, 0)
+        value, lo, hi = r[0], r[4], r[5]
+        st = RPR.TrackFX_GetParameterStepSizes(track.id, fx_index, i, 0, 0, 0, 0)
+        step, is_toggle = st[4], st[7]
+        name = RPR.TrackFX_GetParamName(track.id, fx_index, i, "", 128)[4]
+        default = value if defaults is None else defaults[i]
+        trips = []
+        for probe in (0.0, 0.5, 1.0):
+            RPR.TrackFX_SetParamNormalized(track.id, fx_index, i, probe)
+            trips.append(round(RPR.TrackFX_GetParamNormalized(track.id, fx_index, i), 9))
+        RPR.TrackFX_SetParamNormalized(
+            track.id, fx_index, i, (value - lo) / (hi - lo) if hi != lo else 0)
+        back = RPR.TrackFX_GetParam(track.id, fx_index, i, 0, 0)[0]
+        assert abs(back - value) <= 1e-6, f"parameter {i} ({name}) did not restore: {value} -> {back}"
+        out.append((i, name, lo, hi, step, is_toggle, default, tuple(trips)))
+    return out
+
+
+def _fine_ceiling_indices():
+    """Declared-parameter indices of the sixteen ceiling Macro sliders, derived from the source's
+    own declaration order rather than counted by hand."""
+    text = open(V11, encoding="utf-8", errors="replace").read()
+    order = [int(n) for n in re.findall(r"^slider(\d+):", text, re.M)]
+    t = layout.base_tables(8)
+    targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
+    out = {order.index(n) for n in targets}
+    assert len(out) == 16, f"expected sixteen ceiling Macro sliders, found {len(out)}"
+    return out
+
+
+def check_live(track_index=0):
+    """Compare V1.0's and V1.1's declared parameters as full records, and the host tail by
+    POSITION - declared parameter 0 is also called "Bypass", so a name search finds the wrong one.
+    """
+    import reapy
+    with reapy.inside_reaper():
+        from reapy import reascript_api as RPR
+        pr = reapy.Project()
+        tr = pr.tracks[track_index]
+        assert not [f for f in tr.fxs if "RCBitNova" in f.name], \
+            f"track {track_index} already holds an RCBitNova; use an empty scratch track"
+
+        def manifest(name, n_declared):
+            fx = tr.add_fx(name)
+            i = fx.index
+            n = fx.n_params
+            # defaults FIRST, from an untouched instance - a default cannot be recovered from one
+            # that has already been written to.
+            defaults = [RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)[0] for k in range(n)]
+            recs = _records(RPR, tr, i, n, defaults)
+            fx.delete()
+            return n, recs[:n_declared], recs[n_declared:]
+
+        n10, dec10, host10 = manifest("JS: RCBitNova V1.0", N_DECLARED_V10)
+        n11, dec11, host11 = manifest("JS: RCBitNova V1.1", N_DECLARED_V11)
+
+    assert n10 == N_DECLARED_V10 + 3, f"V1.0 reports {n10} parameters, expected 98"
+    assert n11 == N_DECLARED_V11 + 3, f"V1.1 reports {n11} parameters, expected 178"
+    assert [r[1] for r in host10] == HOST_TAIL, f"V1.0 host tail is {[r[1] for r in host10]}"
+    assert [r[1] for r in host11] == HOST_TAIL, f"V1.1 host tail is {[r[1] for r in host11]}"
+    # The ONE documented deviation from "the 95 declared records are identical": the ceiling Macro
+    # sliders were re-declared with a 0.05 step so a value like 0.25 bits can be typed at all
+    # (owner, 2026-08-24). Value-safe - a stored parameter is normalised over an unchanged 0..16
+    # range, so existing projects reopen with the same ceilings - but it IS a record difference,
+    # so the gate demands it happen on exactly these sixteen parameters and nowhere else.
+    fine_ceilings = _fine_ceiling_indices()
+    for a, b in zip(dec10, dec11):
+        if a[0] in fine_ceilings:
+            assert a[:4] == b[:4] and a[5:] == b[5:], \
+                f"ceiling parameter {a[0]} differs beyond its step:\n  V1.0 {a}\n  V1.1 {b}"
+            assert a[4] == 1.0 and b[4] == 0.05, \
+                f"ceiling parameter {a[0]} step went {a[4]} -> {b[4]}, expected 1 -> 0.05"
+        else:
+            assert a == b, f"declared parameter {a[0]} differs:\n  V1.0 {a}\n  V1.1 {b}"
+    assert len(dec11) == N_DECLARED_V11
+    for rec in dec11:
+        i, name, lo, hi, step, is_toggle, default, trips = rec
+        assert hi > lo, f"parameter {i} ({name}) has an empty range"
+        assert trips[0] != trips[2], f"parameter {i} ({name}) does not move between its extremes"
+    return n10, n11, len(dec11) - len(dec10)
+
+
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--source-only"
-    assert mode in ("--preflip", "--source-only"), f"unknown mode {mode}"
+    assert mode in ("--preflip", "--source-only", "--live"), f"unknown mode {mode}"
+    if mode == "--live":
+        try:
+            n10, n11, added = check_live()
+        except AssertionError as exc:
+            print(f"FAIL --live: {exc}")
+            return 1
+        print(f"OK --live: V1.0 {n10} params, V1.1 {n11}, {added} added; "
+              f"the 95 declared records are identical and the host tail matches by position")
+        return 0
     try:
         check_source(V11, project=(mode == "--preflip"))
     except AssertionError as exc:
