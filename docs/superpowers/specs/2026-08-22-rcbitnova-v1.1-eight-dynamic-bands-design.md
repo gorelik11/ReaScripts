@@ -270,6 +270,40 @@ and B5–B8's Mode-A hard envelopes start at zero while **every address in the m
 Rev 2 mapped these to "computed address comparison" and was wrong to. Each has its own `fill-*` gate
 row and its own seeded defect.
 
+## 8.3 Recorded for the dynamics editor (owner, 2026-08-24)
+
+The GR tint is live and confirmed working. Looking at it, the owner asked for the thing that will
+matter once the **ceiling** itself gets a control in the GUI:
+
+> the ceiling must be operable in **0.05-bit steps**, the way the EQ is — from the track controls
+> today you can only move it in whole bits.
+
+The parameters as declared:
+
+| | Declaration | Meaning |
+|---|---|---|
+| `Bx Soft/Hard Ceiling Macro` | `<0,16,1>` | whole bits below 0 |
+| `Bx Soft/Hard Ceiling Micro` | `<-100,100,0.1>` | percent of a bit, so 0.1 % = 0.001 bit |
+
+So a sub-bit ceiling is already *reachable* — Micro = 5 is 0.05 bit — but only as a second
+parameter, and a TCP knob on it turns in percent rather than in 0.05-bit steps.
+
+**The design answer, and it needs no new parameter:** give a ceiling handle the same gesture map the
+band node already has, so the rule "one gesture writes one slider" survives intact.
+
+| Gesture | Writes | Step |
+|---|---|---|
+| plain vertical drag | Ceiling **Macro** | whole bits |
+| **Shift** + vertical drag | Ceiling **Micro** | **5 % = 0.05 bit** |
+| typed | either field | exact, quantised to the declared step |
+
+That mirrors the band node exactly (plain = Macro in whole bits, Shift = the fine axis in 0.05
+units), and the readout shows the combined `Macro + Micro / 100` bits below 0 — 4.05 bits being
+−24.38 dBFS.
+
+Not V1.1 work: the eleven dynamics and ceiling parameters are reached through **Param** in this
+version (§8.1), and the editor that would carry this handle is V1.2.
+
 ## 9. Out of scope
 
 A ninth band — it collides with the fixed base tables at 272..295 (`bp` would reach 287, `eg` 305)
