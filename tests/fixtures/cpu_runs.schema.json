@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RCBitNova V1.1 CPU measurement",
+  "description": "There is no peak-block-time API on this REAPER build - all 957 ReaScript functions, SWS included, expose only GetUnderrunTime. So the record carries an automated offline throughput measurement plus a real-time xrun pass, and leaves peak_ms as an optional slot for a Performance Meter reading taken by hand.",
+  "type": "object",
+  "required": ["reaper_srate", "fixture_seconds", "runs", "play"],
+  "properties": {
+    "reaper_srate": {"type": "integer"},
+    "block_size": {"type": ["string", "null"]},
+    "fixture_seconds": {"type": "number"},
+    "runs": {
+      "type": "array",
+      "description": "Six timed apply-FX renders per configuration; the first is discarded and the median of the rest is used. 'baseline' has no plugin at all, and its median is subtracted so the disk write and REAPER's own overhead do not dilute the ratio.",
+      "items": {
+        "type": "object",
+        "required": ["config", "run", "seconds"],
+        "properties": {
+          "config": {"enum": ["baseline", "v10", "v11_4on", "v11_8on"]},
+          "run": {"type": "integer", "minimum": 0},
+          "seconds": {"type": "number", "exclusiveMinimum": 0},
+          "peak_ms": {"type": ["number", "null"],
+                      "description": "Optional: peak block time read from the Performance Meter by a human. Not gated - throughput is a mean and cannot see a single pathological block, which is what the xrun pass covers."}
+        }
+      }
+    },
+    "play": {
+      "type": "array",
+      "description": "Sixty seconds of real-time playback per configuration. GetUnderrunTime returns TIMESTAMPS, not counts, so any change is a failure.",
+      "items": {
+        "type": "object",
+        "required": ["config", "seconds", "audio_xrun_before", "audio_xrun_after"],
+        "properties": {
+          "config": {"enum": ["v10", "v11_4on", "v11_8on"]},
+          "seconds": {"type": "number"},
+          "audio_xrun_before": {"type": "number"},
+          "audio_xrun_after": {"type": "number"},
+          "media_xrun_before": {"type": "number"},
+          "media_xrun_after": {"type": "number"}
+        }
+      }
+    }
+  }
+}

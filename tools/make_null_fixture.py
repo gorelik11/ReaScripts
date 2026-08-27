@@ -22,13 +22,13 @@ SECONDS = 30
 OUT = os.path.join("tests", "fixtures", "null_30s.wav")
 
 
-def _samples(SR):
-    n = SR * SECONDS
+def _samples(SR, secs):
+    n = SR * secs
     left = array.array("f", [0.0]) * n
     right = array.array("f", [0.0]) * n
 
     # --- log sweep, phase from a closed form so it cannot drift ---
-    f0, f1, dur = 20.0, 20000.0, 12.0
+    f0, f1, dur = 20.0, 20000.0, secs * 0.4
     k = math.log(f1 / f0)
     for i in range(int(dur * SR)):
         t = i / SR
@@ -39,7 +39,7 @@ def _samples(SR):
 
     # --- deterministic noise, integer LCG (glibc constants) ---
     state = 12345
-    for i in range(int(12.0 * SR), int(20.0 * SR)):
+    for i in range(int(secs * 0.4 * SR), int(secs * 0.667 * SR)):
         state = (1103515245 * state + 12345) & 0x7FFFFFFF
         left[i] = (state / 0x3FFFFFFF - 1.0) * 0.25
         state = (1103515245 * state + 12345) & 0x7FFFFFFF
@@ -48,7 +48,7 @@ def _samples(SR):
     # --- 20..22 s stays exactly zero ---
 
     # --- full-scale transients, one per second, 3 ms decay ---
-    for s in range(22, 30):
+    for s in range(int(secs * 0.733), secs):
         start = s * SR
         for i in range(int(0.003 * SR)):
             env = 1.0 - i / (0.003 * SR)
@@ -58,10 +58,10 @@ def _samples(SR):
     return left, right
 
 
-def write_wav(path=OUT, SR=48000):
+def write_wav(path=OUT, SR=48000, secs=SECONDS):
     """Written at the PROJECT's sample rate, not a fixed 48 kHz: anything else is resampled on the
     way in, which adds a stage neither plugin controls and buys nothing."""
-    left, right = _samples(SR)
+    left, right = _samples(SR, secs)
     n = len(left)
     inter = array.array("f", [0.0]) * (n * 2)
     for i in range(n):
