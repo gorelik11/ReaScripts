@@ -222,8 +222,9 @@ def record(v10_pct, v11_4on_pct, v11_8on_pct=None, note=""):
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--check"
     if mode == "--record":
+        eight = argv[4] if len(argv) > 4 else ""
         m = record(float(argv[2]), float(argv[3]),
-                   float(argv[4]) if len(argv) > 4 else None,
+                   float(eight) if eight.strip() else None,
                    argv[5] if len(argv) > 5 else "")
         verdict = "OK" if m["passes"] else "FAIL"
         print(f"{verdict} cpu: V1.0 {m['v10_pct']}%, V1.1 four bands {m['v11_4on_pct']}% "

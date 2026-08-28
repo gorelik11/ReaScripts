@@ -249,6 +249,13 @@ eg  = 256;  // env_gain: 2/band (chA, chB)
 stb  = 272;   // TABLE-DECL: static base per band
 dynb = 280;   // TABLE-DECL: dynamics base per band
 ceb  = 288;   // TABLE-DECL: ceiling base per band
+// V1.1: indices of the ENABLED bands, rebuilt in @slider. The @sample loop walks this instead of
+// all N_BANDS, so the per-sample cost follows how many bands are ON rather than how many exist.
+// Measured on the Performance Meter before this existed: V1.1 with two bands on cost 0.19% where
+// V1.0 cost 0.16% - eight iterations each calling slider() to ask "am I enabled?", 96000 times a
+// second, for six bands that then did nothing.
+nb_list = 296;   // 8 words
+nb_n    = 0;
 // TABLE-FILL
 stb[0]  = 10;
 stb[1]  = 20;
@@ -1295,6 +1302,14 @@ out_gain = pow(2, slider2 + slider3 * 0.01);
 b = 0;
 loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
 
+// Rebuild the enabled-band list. @slider runs on every parameter change, automation included, so
+// this cache cannot go stale: nothing can enable a band without passing through here.
+nb_n = 0; b = 0;
+loop(N_BANDS,
+  slider(stb[b] + 1) == 1 ? ( nb_list[nb_n] = b; nb_n += 1; );
+  b += 1;
+);
+
 // Mode-B global lookahead + PDC
 Lk = floor(slider4 * 0.001 * srate + 0.5);
 Lk = min(max(Lk, 1), MAX_LOOK - 1);
@@ -1486,9 +1501,10 @@ slider1 != 1 ? (
     lpk_process(0, act_hp_pl);                          // HP engine + ACTIVE HP placement
     lpk_process(1, act_lp_pl);                          // LP engine + ACTIVE LP placement
   );
-  b = 0;
-  loop(N_BANDS,
-    slider(stb[b] + 1) == 1 ? (         // enable
+  nbi = 0;
+  loop(nb_n,
+    b = nb_list[nbi];                   // enabled bands only; the list is built in @slider
+    (
       base = b * 8; sb = b * 4;
       a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
       m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
@@ -1678,7 +1694,7 @@ slider1 != 1 ? (
       pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
                 ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
     );
-    b += 1;
+    nbi += 1;
   );
 
   // ===== Mode B (Brick, band-split, bit-exact) on the globally-delayed bus =====

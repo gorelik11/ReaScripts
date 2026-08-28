@@ -1,0 +1,15 @@
+{
+  "reaper_srate": null,
+  "block_size": null,
+  "fixture_seconds": null,
+  "runs": [],
+  "play": [],
+  "meter": {
+    "v10_pct": 0.16,
+    "v11_4on_pct": 0.19,
+    "v11_8on_pct": null,
+    "note": "equalised: both B1+B2 on, no dynamics, Phase Min, V1.1 bands 5-8 off; 96 kHz 512 spls",
+    "gate_ratio": 1.1875,
+    "passes": false
+  }
+}

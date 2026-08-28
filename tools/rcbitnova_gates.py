@@ -91,7 +91,13 @@ SITES = {
                               "N_BANDS"),
     "slider-modeb-scan":     (r"loop\((\w+),\s*\n\s*mbmode\[b\] = slider\(dynb\[b\] \+ 7\);",
                               "N_BANDS"),
-    "sample-band-loop":      (r"loop\((\w+),\s*\n\s*slider\(stb\[b\] \+ 1\) == 1 \? \(", "N_BANDS"),
+    # The enabled-band cache and the loop that walks it. These two rows were ONE row until the
+    # cache existed, and the moment it did the old pattern started matching the BUILDER instead of
+    # the audio loop - passing for the wrong reason. Anchor each to something only it contains.
+    "slider-nb-list":        (r"loop\((\w+),\s*\n\s*slider\(stb\[b\] \+ 1\) == 1 \? "
+                              r"\( nb_list\[nb_n\] = b;", "N_BANDS"),
+    "sample-band-loop":      (r"nbi = 0;\s*\n\s*loop\((\w+),\s*\n\s*b = nb_list\[nbi\];",
+                              "nb_n"),
     "sample-modeb-pass":     (r"corrL = 0; corrR = 0;\s*\n\s*b = 0;\s*\n\s*loop\((\w+),",
                               "N_BANDS"),
     "gfx-band-setup":        (r"^loop\((\w+), gc_band_setup\(gc_b\); gc_b \+= 1;\);", "N_BANDS"),
