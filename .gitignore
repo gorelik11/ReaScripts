@@ -16,3 +16,4 @@ venv/
 # Local Claude Code state (per-project, not portable)
 .claude/settings.local.json
 tests/fixtures/null_30s.wav
+tests/fixtures/cpu_10s.wav

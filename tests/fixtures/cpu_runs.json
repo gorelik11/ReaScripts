@@ -5,11 +5,11 @@
   "runs": [],
   "play": [],
   "meter": {
-    "v10_pct": 0.16,
-    "v11_4on_pct": 0.19,
+    "v10_pct": 0.14,
+    "v11_4on_pct": 0.14,
     "v11_8on_pct": null,
-    "note": "equalised: both B1+B2 on, no dynamics, Phase Min, V1.1 bands 5-8 off; 96 kHz 512 spls",
-    "gate_ratio": 1.1875,
-    "passes": false
+    "note": "after the enabled-band cache; both instances equalised beforehand (B1+B2 on, no dynamics, Phase Min, V1.1 bands 5-8 off); one Performance Meter reading, 96 kHz 512 spls; RT xruns unchanged at 4, media 2",
+    "gate_ratio": 1.0,
+    "passes": true
   }
 }
