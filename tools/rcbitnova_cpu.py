@@ -168,6 +168,10 @@ def measure():
 
 def check(data=None):
     data = data or json.load(open(RESULT))
+    if data.get("meter"):
+        m = data["meter"]
+        return ([] if m["passes"] else
+                [f"regression: V1.1 four bands is {m['gate_ratio']}x V1.0, limit {GATE}"]), m
     problems = []
     by = {}
     for r in data["runs"]:
@@ -193,8 +197,40 @@ def check(data=None):
                       "gate_ratio": ratio_gate, "eight_vs_four": ratio_info}
 
 
+def record(v10_pct, v11_4on_pct, v11_8on_pct=None, note=""):
+    """Write a Performance Meter reading into the schema-validated record.
+
+    Percentages, as REAPER shows them, taken in ONE session with both versions on their own tracks
+    playing the same material - which removes the whole class of "different run, different
+    machine state" objection that a stopwatch method would have had to argue away.
+    """
+    data = {"reaper_srate": None, "block_size": None, "fixture_seconds": None,
+            "runs": [], "play": [],
+            "meter": {"v10_pct": v10_pct, "v11_4on_pct": v11_4on_pct,
+                      "v11_8on_pct": v11_8on_pct, "note": note}}
+    ratio = v11_4on_pct / v10_pct if v10_pct else float("inf")
+    data["meter"]["gate_ratio"] = round(ratio, 4)
+    data["meter"]["passes"] = ratio <= GATE
+    if v11_8on_pct:
+        data["meter"]["eight_vs_four"] = round(v11_8on_pct / v11_4on_pct, 4)
+    os.makedirs(os.path.dirname(RESULT), exist_ok=True)
+    with open(RESULT, "w") as f:
+        json.dump(data, f, indent=2)
+    return data["meter"]
+
+
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--check"
+    if mode == "--record":
+        m = record(float(argv[2]), float(argv[3]),
+                   float(argv[4]) if len(argv) > 4 else None,
+                   argv[5] if len(argv) > 5 else "")
+        verdict = "OK" if m["passes"] else "FAIL"
+        print(f"{verdict} cpu: V1.0 {m['v10_pct']}%, V1.1 four bands {m['v11_4on_pct']}% "
+              f"= {m['gate_ratio']}x (limit {GATE})"
+              + (f"; eight bands {m['v11_8on_pct']}% = {m['eight_vs_four']}x of four, "
+                 f"informational" if m.get("eight_vs_four") else ""))
+        return 0 if m["passes"] else 1
     if mode == "--measure":
         raise SystemExit("--measure is disabled: apply-FX runs at 1x realtime on this setup, so "
                          "the timing it produces is the clock, not the DSP. See the module "
