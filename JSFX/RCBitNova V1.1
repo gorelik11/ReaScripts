@@ -1258,14 +1258,9 @@ function gc_draw_trace(dom, r, g, b, dashed) local(i, x, y, py, first) (
 
 function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
 
-gc_fnode = -1;
-gc_e = 0;
-loop(2,
-  gc_nx = gc_filt_x(gc_e);
-  gc_ny = gc_y_of_bits(0);
-  (abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? gc_fnode = gc_e;
-  gc_e += 1;
-);
+// (the HP/LP handle hit test used to sit HERE, at @init file scope, so it ran once at load with
+//  a meaningless mouse position and never again: gc_fnode was frozen and the handles answered
+//  neither right-click nor drag. Moved into @gfx, where it belongs. Broken since V1.0.)
 function gc_button(bx, by, bw, label, on) local(hot) (
   hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
   on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
@@ -2008,12 +2003,36 @@ gc_click ? (
 // disabled, and a free-running counter would then point past it and select nothing.
 gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; gc_cyc_n = 0; );
 
+// ---- HP/LP handles, hit-tested EVERY FRAME. Also keep how far each candidate is, because a
+// filter handle sits on the 0-bit line at its cutoff and a band node at unity gain sits on the
+// same line: they can overlap, and then the nearer one must win rather than a fixed precedence.
+gc_fnode = -1; gc_fd = 1000000000;    // EEL2 has no 1e18 literal - written out
+gc_e = 0;
+loop(2,
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  (gc_in_plot && abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
+    gc_d = sqr(mouse_x - gc_nx) + sqr(mouse_y - gc_ny);
+    gc_d < gc_fd ? ( gc_fd = gc_d; gc_fnode = gc_e; );
+  );
+  gc_e += 1;
+);
+gc_bd = 1000000000;
+gc_hover >= 0 ? (
+  gc_nx = gc_x_of_f(slider(stb[gc_hover] + 3));
+  gc_ny = gc_y_of_bits((slider(stb[gc_hover] + 5) + slider(stb[gc_hover] + 6) * 0.01)
+                       * slider(stb[gc_hover] + 7));
+  gc_bd = sqr(mouse_x - gc_nx) + sqr(mouse_y - gc_ny);
+);
+gc_band_wins = gc_hover >= 0 && (gc_fnode < 0 || gc_bd <= gc_fd);
+gc_filt_wins = gc_fnode >= 0 && !gc_band_wins;
+
 // ---- V1.1: right-click a band node for the parameters no gesture reaches. V1.0's graph could
 // set six of a band's nine and had no way to switch a band OFF - clicking a disabled node enables
 // it, and that gesture had no inverse.
 // gfx_showmenu takes ONE string; a ternary sitting beside string literals is not concatenation in
 // EEL2, it is a syntax error. Assemble it.
-gc_rclick && gc_hover >= 0 ? (
+gc_rclick && gc_band_wins ? (
   slider(stb[gc_hover] + 1) == 1 ? ( strcpy(#gc_menu, "Disable band||"); )
                                  : ( strcpy(#gc_menu, "Enable band||"); );
   strcat(#gc_menu, "Bell|Low Shelf|High Shelf||");
@@ -2033,7 +2052,7 @@ gc_rclick && gc_hover >= 0 ? (
 gc_click && gc_hover >= 0 && slider(stb[gc_hover]+1) == 0 ? gc_w_enable(gc_hover, 1);
 
 // start a drag: capture the band, the origin, the modifier and every value we may write
-gc_click && gc_hover >= 0 ? (
+gc_click && gc_band_wins ? (
   gc_drag = gc_hover;
   gc_dx = mouse_x; gc_dy = mouse_y;
   gc_mod = mouse_cap & (8 | 16);                    // 8 = Shift -> Ratio, 16 = Alt -> Q
@@ -2172,7 +2191,7 @@ loop(N_BANDS,
 // right-click menu: slope, then placement. One menu, one write.
 // Band nodes are drawn on top and own the event when the pointer is on one; the HP/LP handles
 // take it otherwise. Detection itself moved up beside gc_click.
-gc_rclick && gc_hover < 0 && gc_fnode >= 0 ? (
+gc_rclick && gc_filt_wins ? (
   gfx_x = mouse_x; gfx_y = mouse_y;
   gc_mres = gfx_showmenu(
     "Off|12 dB/oct|24 dB/oct|36 dB/oct|48 dB/oct|96 dB/oct|FIR Brick||>Placement|Both|Mid|Side|Left|Right|<");
@@ -2188,7 +2207,7 @@ gc_rclick && gc_hover < 0 && gc_fnode >= 0 ? (
 );
 
 // start a filter drag
-gc_click && gc_fnode >= 0 ? (
+gc_click && gc_filt_wins ? (
   gc_fdrag = gc_fnode;
   gc_fdx = mouse_x; gc_fdy = mouse_y;
   gc_fmod = mouse_cap & 8;

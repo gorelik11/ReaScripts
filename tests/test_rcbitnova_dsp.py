@@ -2838,8 +2838,10 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("loop(N_BANDS * 2, mbeh[i] = 1;", "loop(4 * 2, mbeh[i] = 1;"), "fill-mbeh"),
     (lambda t: t.replace("memset(st, 0, N_BANDS * 4);", "memset(st, 0, 4 * 4);"), "fill-st"),
     # runtime loops
-    (lambda t: t.replace("  loop(N_BANDS,\n    slider(stb[b] + 1) == 1 ? (",
-                         "  loop(4,\n    slider(stb[b] + 1) == 1 ? ("), "sample-band-loop"),
+    (lambda t: t.replace("  nbi = 0;\n  loop(nb_n,", "  nbi = 0;\n  loop(4,"),
+     "sample-band-loop"),
+    (lambda t: t.replace("nb_n = 0; b = 0;\nloop(N_BANDS,", "nb_n = 0; b = 0;\nloop(4,"),
+     "slider-nb-list"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
