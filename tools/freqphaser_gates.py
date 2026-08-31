@@ -110,3 +110,28 @@ def assert_transition_structure(source: str) -> None:
     assert "floor(srate * 0.05)" in source
     assert "fp_convolve_bank(fp_hinj_target" in source
     assert "fp_convolve_bank(fp_hrem_target" in source
+
+
+def assert_gui_structure(source: str) -> None:
+    for token in (
+        "@gfx 900 620",
+        "gfx_ext_retina",
+        "function fp_freq_to_x",
+        "function fp_x_to_freq",
+        "function fp_draw_knob",
+        "function fp_gui_write_cut",
+        "function fp_gui_write_amount",
+        "function fp_gui_write_phase",
+        "function fp_gui_write_listen",
+        "slider_automate(slider1)",
+        "slider_automate(slider11)",
+        "slider_automate(slider12)",
+        "gfx_getchar()",
+        "fp_double_click",
+        "floor(value / 0.05 + 0.5) * 0.05",
+        "floor(value + 0.5)",
+    ):
+        assert token in source, token
+
+    for slider in (14, 24, 34, 44, 54):
+        assert f"slider{slider} = 0" in source

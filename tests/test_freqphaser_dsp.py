@@ -150,3 +150,7 @@ def test_listen_selection_and_monitoring_priority():
 
 def test_freqphaser_transitions_are_dual_kernel_and_queued():
     gates.assert_transition_structure(PLUGIN.read_text())
+
+
+def test_freqphaser_gui_has_exact_controls_and_writers():
+    gates.assert_gui_structure(PLUGIN.read_text())
