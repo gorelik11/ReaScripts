@@ -72,6 +72,7 @@ def test_transfer_spectra_are_conjugate_symmetric():
 def test_engine_layout_is_page_safe_and_reports_high_resolution_latency():
     layout = dsp.engine_layout(32768, 2048, outputs=2, targets=True)
     assert layout.latency == 18432
+    assert layout.top == 978944
     for start, span in layout.fft_spans:
         assert start // 65536 == (start + span - 1) // 65536
 
@@ -116,6 +117,38 @@ def test_crossovers_are_sanitized_at_kernel_boundary():
     assert cuts[-1] <= 20000.0
     weights = dsp.band_weights(700.0, cuts, 96.0)
     assert min(weights) >= -1e-15
+
+
+def test_single_host_crossover_edit_clamps_only_that_crossover():
+    previous = (200.0, 1500.0, 7000.0, 10000.0)
+    cuts = dsp.sanitize_cuts(
+        (9000.0, 1500.0, 7000.0, 10000.0),
+        sample_rate=48000.0,
+        slope_db_oct=24.0,
+        size=32768,
+        previous=previous,
+    )
+    assert cuts[1:] == previous[1:]
+    assert cuts[0] < cuts[1]
+
+
+def test_zero_kernel_changes_do_not_arm_empty_rebuilds():
+    assert not dsp.kernel_rebuild_needed(
+        bits=(0.0,) * 5,
+        listen_band=-1,
+        active_injection=False,
+        active_removal=False,
+        target_injection=False,
+        target_removal=False,
+    )
+    assert dsp.kernel_rebuild_needed(
+        bits=(0.0, 0.0, 0.05, 0.0, 0.0),
+        listen_band=-1,
+        active_injection=False,
+        active_removal=False,
+        target_injection=False,
+        target_removal=False,
+    )
 
 
 def test_freqphaser_slider_manifest_is_exact():

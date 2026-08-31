@@ -146,6 +146,7 @@ def sanitize_cuts(
     sample_rate: float,
     slope_db_oct: float,
     size: int,
+    previous: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Clamp malformed/automated crossover values before kernel construction."""
 
@@ -157,11 +158,39 @@ def sanitize_cuts(
     upper = min(20000.0, sample_rate * 0.49)
     step = minimum_crossover_step(sample_rate, slope_db_oct, size)
     lower = max(20.0, step)
+    if previous is not None:
+        changed = [
+            index for index, (value, old) in enumerate(zip(values, previous))
+            if value != old
+        ]
+        if len(changed) == 1:
+            index = changed[0]
+            low = lower if index == 0 else previous[index - 1] + step
+            high = upper if index == 3 else previous[index + 1] - step
+            values[index] = min(max(values[index], low), max(high, low))
+            return tuple(values)  # type: ignore[return-value]
     values[0] = min(max(values[0], lower), upper - 3.0 * step)
     values[1] = min(max(values[1], values[0] + step), upper - 2.0 * step)
     values[2] = min(max(values[2], values[1] + step), upper - step)
     values[3] = min(max(values[3], values[2] + step), upper)
     return tuple(values)  # type: ignore[return-value]
+
+
+def kernel_rebuild_needed(
+    *,
+    bits: tuple[float, float, float, float, float],
+    listen_band: int,
+    active_injection: bool,
+    active_removal: bool,
+    target_injection: bool,
+    target_removal: bool,
+) -> bool:
+    """Match the JSFX rule that suppresses zero-to-zero kernel rebuilds."""
+
+    requested = listen_band >= 0 or any(value > 0.0 for value in bits)
+    return requested or any(
+        (active_injection, active_removal, target_injection, target_removal)
+    )
 
 
 def transfer_at(
@@ -250,8 +279,7 @@ def engine_layout(
         add_fft_block(partitions * complex_partition, complex_partition)
     add_fft_block(partitions * complex_partition, complex_partition)  # shared FDL
     add_fft_block(complex_partition)  # runtime FFT input
-    for _ in range(outputs):
-        add_fft_block(complex_partition)  # accumulator
+    add_fft_block(complex_partition)  # one accumulator, reused by both outputs
     add_fft_block(complex_partition)  # convolve scratch
     ptr += runtime_size
     ptr += outputs * 16384

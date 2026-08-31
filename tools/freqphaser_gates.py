@@ -151,6 +151,12 @@ def assert_realtime_safety(source: str) -> None:
         "fp_last_cuts",
         "fp_last_bits",
         "fp_last_phase",
+        "fp_last_move",
+        "fp_last_listen",
+        "fp_last_slope",
+        "fp_last_mono",
+        "function fp_sanitize_discrete",
+        "function fp_arm_kernel_change",
         "fp_finite(fp_left)",
         "fp_finite(fp_injection)",
         "function fp_gui_cut_bounds",
@@ -165,3 +171,5 @@ def assert_realtime_safety(source: str) -> None:
     assert "p = fp_align(p, FP_BD * 2);" in layout
     assert "fp_desbuf = p; p += FP_BD * 2;" in layout
     assert "fp_rem_spectrum = p; p += FP_BD * 2;" in layout
+    assert "fp_accum = p; p += FP_PB2;" in layout
+    assert "fp_accum_r" not in layout

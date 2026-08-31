@@ -126,7 +126,7 @@ function fp_finite(value) (
 // This guard lives on the kernel boundary, not only in @slider/@gfx: host
 // automation and malformed presets must never create crossed masks.
 function fp_sanitize_cuts()
-  local(step_bins, step_hz, lower, upper, b) (
+  local(step_bins, step_hz, lower, upper, b, changed, changed_count, low_bound, high_bound) (
   fp_finite(fp_cuts[0]) ? 0 : fp_cuts[0] = fp_last_cuts[0];
   fp_finite(fp_cuts[1]) ? 0 : fp_cuts[1] = fp_last_cuts[1];
   fp_finite(fp_cuts[2]) ? 0 : fp_cuts[2] = fp_last_cuts[2];
@@ -135,22 +135,79 @@ function fp_sanitize_cuts()
   step_hz = max(1, step_bins * srate / FP_BD);
   lower = max(20, step_hz);
   upper = min(20000, srate * 0.49);
-  fp_cuts[0] = min(max(fp_cuts[0], lower), upper - 3*step_hz);
-  fp_cuts[1] = min(max(fp_cuts[1], fp_cuts[0] + step_hz), upper - 2*step_hz);
-  fp_cuts[2] = min(max(fp_cuts[2], fp_cuts[1] + step_hz), upper - step_hz);
-  fp_cuts[3] = min(max(fp_cuts[3], fp_cuts[2] + step_hz), upper);
+  changed = -1; changed_count = 0; b = 0;
+  loop(4,
+    fp_cuts[b] != fp_last_cuts[b] ? ( changed = b; changed_count += 1; );
+    b += 1;
+  );
+  changed_count == 1 ? (
+    low_bound = changed == 0 ? lower : fp_last_cuts[changed-1] + step_hz;
+    high_bound = changed == 3 ? upper : fp_last_cuts[changed+1] - step_hz;
+    high_bound = max(high_bound, low_bound);
+    fp_cuts[changed] = min(max(fp_cuts[changed], low_bound), high_bound);
+  ) : (
+    fp_cuts[0] = min(max(fp_cuts[0], lower), upper - 3*step_hz);
+    fp_cuts[1] = min(max(fp_cuts[1], fp_cuts[0] + step_hz), upper - 2*step_hz);
+    fp_cuts[2] = min(max(fp_cuts[2], fp_cuts[1] + step_hz), upper - step_hz);
+    fp_cuts[3] = min(max(fp_cuts[3], fp_cuts[2] + step_hz), upper);
+  );
   b = 0;
   loop(5,
     fp_finite(fp_bits[b]) ? 0 : fp_bits[b] = fp_last_bits[b];
     fp_finite(fp_phase[b]) ? 0 : fp_phase[b] = fp_last_phase[b];
     fp_bits[b] = min(max(fp_bits[b], 0), 1);
     fp_phase[b] = min(max(fp_phase[b], -180), 180);
+    fp_finite(fp_move[b]) ? 0 : fp_move[b] = fp_last_move[b];
     fp_move[b] = fp_move[b] > 0.5;
     fp_last_bits[b] = fp_bits[b];
     fp_last_phase[b] = fp_phase[b];
+    fp_last_move[b] = fp_move[b];
     b += 1;
   );
   memcpy(fp_last_cuts, fp_cuts, 4);
+);
+
+function fp_sanitize_discrete()
+  local(v, b) (
+  v = slider5;
+  (!fp_finite(v) || v < 0 || v > 3) ? v = fp_last_slope : v = floor(v + 0.5);
+  fp_last_slope = v; slider5 = v;
+  fp_slope = v == 0 ? 12 : v == 1 ? 24 : v == 2 ? 48 : 96;
+
+  v = slider6;
+  (!fp_finite(v) || v < 0 || v > 1) ? v = fp_last_mono : v = v > 0.5;
+  fp_last_mono = v; fp_mono_check = v; slider6 = v;
+
+  fp_listen_values[0] = slider14; fp_listen_values[1] = slider24;
+  fp_listen_values[2] = slider34; fp_listen_values[3] = slider44;
+  fp_listen_values[4] = slider54;
+  b = 0;
+  loop(5,
+    v = fp_listen_values[b];
+    (!fp_finite(v) || v < 0 || v > 1) ? v = fp_last_listen[b] : v = v > 0.5;
+    fp_listen_values[b] = v; fp_last_listen[b] = v;
+    b += 1;
+  );
+  slider14 = fp_listen_values[0]; slider24 = fp_listen_values[1];
+  slider34 = fp_listen_values[2]; slider44 = fp_listen_values[3];
+  slider54 = fp_listen_values[4];
+  fp_listen_band = -1;
+  fp_listen_values[0] > 0.5 ? fp_listen_band = 0;
+  fp_listen_band < 0 && fp_listen_values[1] > 0.5 ? fp_listen_band = 1;
+  fp_listen_band < 0 && fp_listen_values[2] > 0.5 ? fp_listen_band = 2;
+  fp_listen_band < 0 && fp_listen_values[3] > 0.5 ? fp_listen_band = 3;
+  fp_listen_band < 0 && fp_listen_values[4] > 0.5 ? fp_listen_band = 4;
+);
+
+function fp_arm_kernel_change() local(b, requested) (
+  requested = fp_listen_band >= 0;
+  b = 0;
+  loop(5,
+    fp_bits[b] > 0 ? requested = 1;
+    b += 1;
+  );
+  requested || fp_active_injection_needed || fp_active_removal_needed ||
+  fp_target_injection_needed || fp_target_removal_needed ? fp_dirty = 1 : fp_dirty = 0;
 );
 
 // Writes the current combined response to fp_tr/fp_ti (Mid injection)
@@ -405,7 +462,6 @@ function fp_route_values(route) (
 // @gfx only writes named sliders and this flag.  The audio thread imports the
 // new values here, so GUI drawing never mutates live DSP arrays directly.
 function fp_poll_gui_values() (
-  fp_slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
   fp_cuts[0] = slider1; fp_cuts[1] = slider2;
   fp_cuts[2] = slider3; fp_cuts[3] = slider4;
   fp_bits[0] = slider11; fp_phase[0] = slider12; fp_move[0] = slider13;
@@ -413,16 +469,11 @@ function fp_poll_gui_values() (
   fp_bits[2] = slider31; fp_phase[2] = slider32; fp_move[2] = slider33;
   fp_bits[3] = slider41; fp_phase[3] = slider42; fp_move[3] = slider43;
   fp_bits[4] = slider51; fp_phase[4] = slider52; fp_move[4] = slider53;
-  fp_listen_band = -1;
-  slider14 > 0.5 ? fp_listen_band = 0;
-  fp_listen_band < 0 && slider24 > 0.5 ? fp_listen_band = 1;
-  fp_listen_band < 0 && slider34 > 0.5 ? fp_listen_band = 2;
-  fp_listen_band < 0 && slider44 > 0.5 ? fp_listen_band = 3;
-  fp_listen_band < 0 && slider54 > 0.5 ? fp_listen_band = 4;
+  fp_sanitize_discrete();
   fp_sanitize_cuts();
-  fp_listen_band >= 0 ? fp_requested_route = 2 : slider6 > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
+  fp_listen_band >= 0 ? fp_requested_route = 2 : fp_mono_check > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
   fp_request_route(fp_requested_route);
-  fp_dirty = 1;
+  fp_arm_kernel_change();
 );
 
 fp_cuts = 0;
@@ -433,6 +484,9 @@ fp_move = 32;
 fp_last_cuts = 40;
 fp_last_bits = 48;
 fp_last_phase = 56;
+fp_last_move = 112;
+fp_last_listen = 120;
+fp_listen_values = 136;
 fp_gain_re = 88;
 fp_gain_im = 96;
 fp_gain_rem = 104;
@@ -448,8 +502,8 @@ fp_out_read = 0;
 fp_out_write = FP_P;
 fp_fdl_write = 0;
 fp_dry_write = 0;
-fp_kernel_valid = 0;
-fp_dirty = 1;
+fp_kernel_valid = 1;
+fp_dirty = 0;
 fp_build_clock = FP_REBUILD_INTERVAL;
 fp_listen_band = -1;
 fp_active_injection_needed = 0;
@@ -459,6 +513,8 @@ fp_target_removal_needed = 0;
 fp_last_cuts[0] = 200; fp_last_cuts[1] = 1500;
 fp_last_cuts[2] = 7000; fp_last_cuts[3] = 10000;
 memset(fp_last_bits, 0, 5); memset(fp_last_phase, 0, 5);
+memset(fp_last_move, 0, 5); memset(fp_last_listen, 0, 5);
+fp_last_slope = 1; fp_last_mono = 0; fp_mono_check = 0;
 fp_fading = 0;
 fp_fade_pos = 0;
 fp_fade_len = max(1, floor(srate * 0.05));
@@ -473,7 +529,6 @@ fp_publish_pdc();
 
 @slider
 
-fp_slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
 fp_cuts[0] = slider1; fp_cuts[1] = slider2;
 fp_cuts[2] = slider3; fp_cuts[3] = slider4;
 
@@ -483,18 +538,13 @@ fp_bits[2] = slider31; fp_phase[2] = slider32; fp_move[2] = slider33;
 fp_bits[3] = slider41; fp_phase[3] = slider42; fp_move[3] = slider43;
 fp_bits[4] = slider51; fp_phase[4] = slider52; fp_move[4] = slider53;
 
-fp_listen_band = -1;
-slider14 > 0.5 ? fp_listen_band = 0;
-fp_listen_band < 0 && slider24 > 0.5 ? fp_listen_band = 1;
-fp_listen_band < 0 && slider34 > 0.5 ? fp_listen_band = 2;
-fp_listen_band < 0 && slider44 > 0.5 ? fp_listen_band = 3;
-fp_listen_band < 0 && slider54 > 0.5 ? fp_listen_band = 4;
+fp_sanitize_discrete();
 fp_sanitize_cuts();
 slider1 = fp_cuts[0]; slider2 = fp_cuts[1];
 slider3 = fp_cuts[2]; slider4 = fp_cuts[3];
-fp_listen_band >= 0 ? fp_requested_route = 2 : slider6 > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
+fp_listen_band >= 0 ? fp_requested_route = 2 : fp_mono_check > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
 fp_request_route(fp_requested_route);
-fp_dirty = 1;
+fp_arm_kernel_change();
 fp_publish_pdc();
 
 @block
