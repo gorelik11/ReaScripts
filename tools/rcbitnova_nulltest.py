@@ -20,6 +20,10 @@ import os
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tools.make_null_fixture import write_wav   # noqa: E402
+
 FIXTURE = os.path.abspath(os.path.join("tests", "fixtures", "null_30s.wav"))
 TRACK = "RCBN NULL TEMP"
 
@@ -39,6 +43,19 @@ CASES = {
     "linear_hplp": {"HP Slope (dB/oct)": 3, "HP Freq (Hz)": 80,
                     "LP Slope (dB/oct)": 2, "LP Freq (Hz)": 12000, "Phase": 1,
                     "HP Resolution (Linear only)": 1, "LP Resolution (Linear only)": 1},
+}
+
+# The ONE configuration where V1.1 is meant to differ, and the test demands that it does.
+#
+# V1.0 gated Mode B on Dyn + Mode + Type and never on the band's own Enable, so a band switched
+# OFF but left with Dyn on and Mode B still ran its split limiter on the delayed bus, still forced
+# the lookahead and PDC machinery active, and was audible. V1.1 adds Enable to that gate: disabled
+# means disabled. A suite that only asserted sameness would have let this divergence through
+# silently, and a fix nobody can see the boundary of is a fix nobody can trust.
+DIVERGENT = {
+    "modeB_disabled_band": {"B1 Enable": 0, "B1 Freq": 200, "B1 Dyn": 1, "B1 Dyn Mode": 1,
+                            "B1 Soft Ceiling Macro (bits below 0)": 3, "B1 Soft": 1,
+                            "B2 Enable": 1, "B2 Macro (bits)": 1, "B2 Freq": 1000},
 }
 
 
@@ -113,21 +130,31 @@ def main():
     import reapy
     with reapy.inside_reaper():
         from reapy import reascript_api as RPR
+        # ---- work in the CURRENT project, and only if it is empty ----
+        # An earlier revision opened a project tab of its own, to stop the owner's tab-switching
+        # from changing the sample rate under the test. That killed reapy outright: its server is
+        # a DEFERRED SCRIPT living in a project context, and switching the active project stops it
+        # being called. The run hung with zero output and died on RELEASE with
+        # ConnectionAbortedError. Refusing to run in a project that has content is the same
+        # protection without fighting the architecture.
         pr = reapy.Project()
-        sr = int(RPR.GetSetProjectInfo(pr.id, "PROJECT_SRATE", 0, False))
-        fix_sr = read_float_wav(FIXTURE)[1]
-        assert fix_sr == sr, (f"the fixture is {fix_sr} Hz and the project is {sr} Hz; regenerate "
-                              f"with `python3 tools/make_null_fixture.py {sr}` so nothing is "
-                              f"resampled on the way in")
+        assert len(pr.tracks) == 0, (
+            f"this project has {len(pr.tracks)} tracks; open an empty project before running the "
+            f"null test - it renders, and it will not do that in a session with work in it")
 
-        existing = [t for t in pr.tracks if t.name == TRACK]
-        if existing:
-            idx = existing[0].index
-        else:
-            idx = len(pr.tracks)
-            RPR.InsertTrackAtIndex(idx, False)
-            RPR.TrackList_AdjustWindows(False)
-            RPR.GetSetMediaTrackInfo_String(reapy.Project().tracks[idx].id, "P_NAME", TRACK, True)
+        sr = int(RPR.GetSetProjectInfo(pr.id, "PROJECT_SRATE", 0, False))
+        if sr == 0:
+            sr = 48000
+            RPR.GetSetProjectInfo(pr.id, "PROJECT_SRATE", sr, True)
+            RPR.GetSetProjectInfo(pr.id, "PROJECT_SRATE_USE", 1, True)
+        # The fixture follows the project rather than the project being asked to follow it.
+        if not os.path.exists(FIXTURE) or read_float_wav(FIXTURE)[1] != sr:
+            write_wav(FIXTURE, SR=sr)
+
+        idx = len(pr.tracks)
+        RPR.InsertTrackAtIndex(idx, False)
+        RPR.TrackList_AdjustWindows(False)
+        RPR.GetSetMediaTrackInfo_String(reapy.Project().tracks[idx].id, "P_NAME", TRACK, True)
 
         def track():
             return reapy.Project().tracks[idx]
@@ -173,27 +200,44 @@ def main():
             return RPR.GetMediaSourceFileName(src, "", 1024)[1], got
 
         outcomes = []
-        for case, values in CASES.items():
+        only = sys.argv[1] if len(sys.argv) > 1 else None
+        for case, values in {**CASES, **DIVERGENT}.items():
+            if only and case != only:
+                continue
             a, norms10 = render("JS: RCBitNova V1.0", values=values)
             keep = a + ".v10.wav"
             os.rename(a, keep)
             b, norms11 = render("JS: RCBitNova V1.1", norms=norms10)
             assert norms10 == norms11, \
                 f"{case}: the two instances do not hold the same 95 declared values"
+            if case in DIVERGENT:
+                try:
+                    compare(keep, b, case)
+                except AssertionError as exc:
+                    print(f"  {case:20s} DIVERGES as intended: {str(exc)[:66]}", flush=True)
+                    outcomes.append((case, 0, 0, 0, keep, b))
+                    continue
+                raise AssertionError(
+                    f"{case}: V1.1 matched V1.0, but this is the configuration where the Enable "
+                    f"gate on Mode B is supposed to change the output. Either the gate does "
+                    f"nothing, or this case does not exercise it.")
             n, rate, bits = compare(keep, b, case)
             outcomes.append((case, n, rate, bits, keep, b))
-            print(f"  {case:12s} identical: {n} samples, {rate} Hz, {bits}-bit float", flush=True)
+            print(f"  {case:20s} identical: {n} samples, {rate} Hz, {bits}-bit float", flush=True)
         clear()
+        RPR.DeleteTrack(track().id)                      # leave the project as it was found
 
     # the comparator must be able to fail below PCM resolution
     proof = _self_test_comparator(outcomes[0][4])
     print(f"  comparator rejects a one-ULP difference: {proof}", flush=True)
     assert proof, "a one-ULP edit passed - the render is quantising and this gate proves nothing"
-    assert len(outcomes) == len(CASES), f"{len(outcomes)} cases ran, expected {len(CASES)}"
+    want = len(CASES) + len(DIVERGENT) if not only else 1
+    assert len(outcomes) == want, f"{len(outcomes)} cases ran, expected {want}"
     for _case, _n, _rate, _bits, keep, b in outcomes:
         for f in (keep, b):
             os.path.exists(f) and os.unlink(f)
-    print(f"OK null: {len(outcomes)} cases, zero tolerance")
+    print(f"OK null: {len(outcomes)} cases, zero tolerance "
+          f"({len(DIVERGENT)} of them deliberately divergent)")
     return 0
 
 
