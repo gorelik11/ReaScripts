@@ -782,11 +782,13 @@ lp_fs  = lp_off + 32;     // 8 words  (2 engines * 4: fading, fade_pos, fade_len
 // and calls freembuf(lp_top + 1), so anything above lp_base can be freed or overwritten while
 // @gfx reads it on another thread. @gfx never allocates and never relocates audio memory.
 //
-// Verified fit: the static chain ends at 38275 words and lp_base = 65536, leaving 27261 words
-// of padding. This block is 13638 words (5120+8192+128+16+32+126+24), ending the region at
-// 51913 - still ~13600 short of the boundary, so lp_base does NOT move and V0.7's page
-// alignment is untouched. NOTE the formula's input changed (lp_fs+8 -> gc_ebuf+24); lp_base is
-// unmoved because the region still fits under the page, not because the expression is the same.
+// V1.1: lp_base DOES move, and that is the most dangerous single consequence of eight bands.
+// The numbers here used to be V1.0's four-band ones and concluded the opposite; at N_BANDS = 8
+// the static chain ends at 71087, this block is 13678 words, the region ends at 84765, and
+// lp_base = ceil(84765 / 65536) * 65536 = 131072 - one page up, with 46307 words of padding.
+// The formula below recomputes it, so the engine block stays page-aligned by construction; a
+// 32768-point FFT off a 65536-word page corrupts SILENTLY (V0.7). Do not re-derive these by hand:
+// tools/rcbitnova_layout.py is the source of truth and the source gate compares against it.
 GC_N     = 512;                       // display points per trace
 GC_LIN_N = 2048;                      // realized-kernel points PER ENGINE. Not 256: resampling
                                       // BD/2 dense bins to a coarse grid would re-create the
@@ -2039,6 +2041,9 @@ gc_rclick && gc_band_wins ? (
   strcat(#gc_menu, ">Placement|Both|Mid|Side|Left|Right|<|");
   strcat(#gc_menu, ">Q Character|0.00 constant|0.25|0.50|0.75|1.00 proportional|<");
   gfx_x = mouse_x; gfx_y = mouse_y;
+  // Index arithmetic below follows V1.0's proven scheme: "||" separators and a ">Header" submenu
+  // opener consume no number, so items run 1 / 2-4 / 5-9 / 10-14. It is not obvious from the
+  // string alone - RE-VERIFY LIVE if this menu is ever re-strung.
   gc_bm = gfx_showmenu(#gc_menu);
   gc_bm == 1 ? ( gc_w_enable(gc_hover, slider(stb[gc_hover] + 1) == 1 ? 0 : 1); ) :
   gc_bm >= 2 && gc_bm <= 4 ? ( gc_w_type(gc_hover, gc_bm - 2); ) :
