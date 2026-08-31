@@ -921,16 +921,11 @@ fp_right_pressed = fp_right_now && !(fp_mouse_last & 2);
 fp_left_released = !fp_left_now && (fp_mouse_last & 1);
 
 fp_left_pressed && fp_hit >= 0 ? (
-  fp_now = time_precise();
-  fp_double_click = fp_hit == fp_last_click_target && fp_now-fp_last_click_time < 0.32;
-  fp_last_click_target = fp_hit; fp_last_click_time = fp_now;
   fp_hit >= 100 && fp_hit < 200 ? ( fp_drag_type = 1; fp_drag_band = fp_hit-100; ) :
   fp_hit >= 200 && fp_hit < 300 ? (
     fp_drag_type = 2; fp_drag_band = fp_hit-200;
-    fp_double_click ? fp_gui_write_amount(fp_drag_band, 0);
   ) : fp_hit >= 300 && fp_hit < 400 ? (
     fp_drag_type = 3; fp_drag_band = fp_hit-300;
-    fp_double_click ? fp_gui_write_phase(fp_drag_band, 0);
   ) : fp_hit >= 400 && fp_hit < 500 ? (
     fp_b = fp_hit-400; fp_gui_write_mode(fp_b, 1-fp_gui_mode(fp_b)); fp_drag_type = 0;
   ) : fp_hit >= 500 && fp_hit < 600 ? (

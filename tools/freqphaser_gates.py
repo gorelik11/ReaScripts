@@ -127,11 +127,16 @@ def assert_gui_structure(source: str) -> None:
         "slider_automate(slider11)",
         "slider_automate(slider12)",
         "gfx_getchar()",
-        "fp_double_click",
+        "(fp_drag_y-mouse_y)*0.005",
         "floor(value / 0.05 + 0.5) * 0.05",
         "floor(value + 0.5)",
     ):
         assert token in source, token
+
+    # A drag press must never be treated as a second click and reset to zero.
+    # That made a quick follow-up downward drag start from the lower clamp, so
+    # the Amount knobs appeared to move only upward.
+    assert "fp_double_click" not in source
 
     for slider in (14, 24, 34, 44, 54):
         assert f"slider{slider} = 0" in source
