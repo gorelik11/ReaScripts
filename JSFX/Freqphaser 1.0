@@ -853,59 +853,59 @@ gfx_set(0.08, 0.10, 0.13, 1); gfx_rect(fp_strip_x, fp_strip_y, fp_strip_w, fp_st
 gfx_set(0.25, 0.28, 0.34, 1); gfx_rect(fp_strip_x, fp_strip_y, fp_strip_w, fp_strip_h, 0);
 
 // Draw the realized design masks, not misleading solid band rectangles.
-fp_b = 0;
+fp_band = 0;
 loop(5,
-  fp_set_band_color(fp_b, 0.9);
+  fp_set_band_color(fp_band, 0.9);
   fp_i = 0;
   loop(floor(fp_strip_w)+1,
     fp_fx = fp_strip_x + fp_i;
     fp_ff = fp_x_to_freq(fp_fx);
-    fp_fy = fp_strip_y + fp_strip_h - fp_gui_weight(fp_b, fp_ff) * (fp_strip_h-12) - 6;
+    fp_fy = fp_strip_y + fp_strip_h - fp_gui_weight(fp_band, fp_ff) * (fp_strip_h-12) - 6;
     fp_i == 0 ? ( gfx_x = fp_fx; gfx_y = fp_fy; ) : gfx_lineto(fp_fx, fp_fy, 1);
     fp_i += 1;
   );
-  fp_b += 1;
+  fp_band += 1;
 );
 
 fp_hit = -1;
-fp_b = 0;
+fp_band = 0;
 loop(4,
-  fp_hx = fp_freq_to_x(fp_gui_cut(fp_b));
-  fp_set_band_color(fp_b+1, 1);
+  fp_hx = fp_freq_to_x(fp_gui_cut(fp_band));
+  fp_set_band_color(fp_band+1, 1);
   gfx_line(fp_hx, fp_strip_y, fp_hx, fp_strip_y+fp_strip_h, 1);
   gfx_circle(fp_hx, fp_strip_y+fp_strip_h*0.5, 6, 1, 1);
-  abs(mouse_x-fp_hx) <= 10 && mouse_y >= fp_strip_y && mouse_y <= fp_strip_y+fp_strip_h ? fp_hit = 100+fp_b;
+  abs(mouse_x-fp_hx) <= 10 && mouse_y >= fp_strip_y && mouse_y <= fp_strip_y+fp_strip_h ? fp_hit = 100+fp_band;
   gfx_set(0.80, 0.83, 0.88, 1); gfx_x = fp_hx-24; gfx_y = fp_strip_y+fp_strip_h+5;
-  gfx_printf("%.0f", fp_gui_cut(fp_b));
-  fp_b += 1;
+  gfx_printf("%.0f", fp_gui_cut(fp_band));
+  fp_band += 1;
 );
 
-fp_b = 0;
+fp_band = 0;
 loop(5,
-  fp_cx = fp_strip_x + fp_col_w*(fp_b+0.5);
+  fp_cx = fp_strip_x + fp_col_w*(fp_band+0.5);
   fp_amount_y = 295; fp_phase_y = 415;
   fp_hot_amount = (mouse_x-fp_cx)*(mouse_x-fp_cx) + (mouse_y-fp_amount_y)*(mouse_y-fp_amount_y) <= 34*34;
   fp_hot_phase = (mouse_x-fp_cx)*(mouse_x-fp_cx) + (mouse_y-fp_phase_y)*(mouse_y-fp_phase_y) <= 34*34;
-  fp_hot_amount ? fp_hit = 200+fp_b;
-  fp_hot_phase ? fp_hit = 300+fp_b;
-  fp_draw_band = fp_b;
-  fp_draw_knob(fp_cx, fp_amount_y, 30, fp_gui_amount(fp_b), fp_hot_amount);
-  fp_draw_knob(fp_cx, fp_phase_y, 30, (fp_gui_phase(fp_b)+180)/360, fp_hot_phase);
+  fp_hot_amount ? fp_hit = 200+fp_band;
+  fp_hot_phase ? fp_hit = 300+fp_band;
+  fp_draw_band = fp_band;
+  fp_draw_knob(fp_cx, fp_amount_y, 30, fp_gui_amount(fp_band), fp_hot_amount);
+  fp_draw_knob(fp_cx, fp_phase_y, 30, (fp_gui_phase(fp_band)+180)/360, fp_hot_phase);
   gfx_set(0.68, 0.72, 0.79, 1); gfx_x = fp_cx-28; gfx_y = 235; gfx_drawstr("AMOUNT", 0);
   gfx_x = fp_cx-22; gfx_y = 355; gfx_drawstr("PHASE", 0);
   gfx_set(0.94, 0.95, 0.98, 1); gfx_x = fp_cx-30; gfx_y = 329;
-  gfx_printf("%.2f bit", fp_gui_amount(fp_b));
-  gfx_x = fp_cx-28; gfx_y = 449; gfx_printf("%+.0f deg", fp_gui_phase(fp_b));
+  gfx_printf("%.2f bit", fp_gui_amount(fp_band));
+  gfx_x = fp_cx-28; gfx_y = 449; gfx_printf("%+.0f deg", fp_gui_phase(fp_band));
 
-  fp_bx = fp_strip_x + fp_col_w*fp_b + 10; fp_bw = fp_col_w-20;
+  fp_bx = fp_strip_x + fp_col_w*fp_band + 10; fp_bw = fp_col_w-20;
   fp_hot_mode = fp_inside(fp_bx, 490, fp_bw, 30);
   fp_hot_listen = fp_inside(fp_bx, 528, fp_bw, 30);
-  fp_hot_mode ? fp_hit = 400+fp_b;
-  fp_hot_listen ? fp_hit = 500+fp_b;
-  fp_gui_mode(fp_b) > 0.5 ? #fp_mode = "MOVE" : #fp_mode = "ADD";
-  fp_draw_button(fp_bx, 490, fp_bw, 30, #fp_mode, fp_gui_mode(fp_b)>0.5, fp_hot_mode);
-  fp_draw_button(fp_bx, 528, fp_bw, 30, "LISTEN", fp_gui_listen(fp_b)>0.5, fp_hot_listen);
-  fp_b += 1;
+  fp_hot_mode ? fp_hit = 400+fp_band;
+  fp_hot_listen ? fp_hit = 500+fp_band;
+  fp_gui_mode(fp_band) > 0.5 ? #fp_mode = "MOVE" : #fp_mode = "ADD";
+  fp_draw_button(fp_bx, 490, fp_bw, 30, #fp_mode, fp_gui_mode(fp_band)>0.5, fp_hot_mode);
+  fp_draw_button(fp_bx, 528, fp_bw, 30, "LISTEN", fp_gui_listen(fp_band)>0.5, fp_hot_listen);
+  fp_band += 1;
 );
 
 fp_hot_slope = fp_inside(42, 578, 170, 30); fp_hot_slope ? fp_hit = 600;
@@ -927,9 +927,9 @@ fp_left_pressed && fp_hit >= 0 ? (
   ) : fp_hit >= 300 && fp_hit < 400 ? (
     fp_drag_type = 3; fp_drag_band = fp_hit-300;
   ) : fp_hit >= 400 && fp_hit < 500 ? (
-    fp_b = fp_hit-400; fp_gui_write_mode(fp_b, 1-fp_gui_mode(fp_b)); fp_drag_type = 0;
+    fp_band = fp_hit-400; fp_gui_write_mode(fp_band, 1-fp_gui_mode(fp_band)); fp_drag_type = 0;
   ) : fp_hit >= 500 && fp_hit < 600 ? (
-    fp_b = fp_hit-500; fp_gui_write_listen(fp_b, 1-fp_gui_listen(fp_b)); fp_drag_type = 0;
+    fp_band = fp_hit-500; fp_gui_write_listen(fp_band, 1-fp_gui_listen(fp_band)); fp_drag_type = 0;
   ) : fp_hit == 600 ? ( fp_gui_write_slope((slider5+1)%4); fp_drag_type = 0; )
     : fp_hit == 601 ? ( fp_gui_write_mono(1-slider6); fp_drag_type = 0; );
   fp_drag_y = mouse_y;
@@ -942,10 +942,10 @@ fp_left_now && fp_drag_type == 3 ? fp_gui_write_phase(fp_drag_band, fp_drag_valu
 fp_left_released ? fp_drag_type = 0;
 
 mouse_wheel != 0 && fp_hit >= 200 && fp_hit < 300 ? (
-  fp_b = fp_hit-200; fp_gui_write_amount(fp_b, fp_gui_amount(fp_b) + sign(mouse_wheel)*0.05);
+  fp_band = fp_hit-200; fp_gui_write_amount(fp_band, fp_gui_amount(fp_band) + sign(mouse_wheel)*0.05);
 );
 mouse_wheel != 0 && fp_hit >= 300 && fp_hit < 400 ? (
-  fp_b = fp_hit-300; fp_gui_write_phase(fp_b, fp_gui_phase(fp_b) + sign(mouse_wheel));
+  fp_band = fp_hit-300; fp_gui_write_phase(fp_band, fp_gui_phase(fp_band) + sign(mouse_wheel));
 );
 mouse_wheel = 0;
 

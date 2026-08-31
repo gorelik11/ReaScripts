@@ -190,3 +190,7 @@ def assert_realtime_safety(source: str) -> None:
     scientific = re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?[eE][+-]?\d+")
     assert scientific.search(executable) is None
     assert "FP_FINITE_LIMIT = pow(2, 300);" in source
+
+    # EEL2 identifiers are case-insensitive.  A GUI counter named fp_b therefore
+    # overwrites the DSP constant FP_B and silently changes the FFT size.
+    assert re.search(r"\bfp_b\b", executable) is None
