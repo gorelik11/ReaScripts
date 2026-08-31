@@ -179,3 +179,9 @@ def assert_realtime_safety(source: str) -> None:
     assert "fp_rem_spectrum = p; p += FP_BD * 2;" in layout
     assert "fp_accum = p; p += FP_PB2;" in layout
     assert "fp_accum_r" not in layout
+
+    # EEL2 rejects C-style scientific numeric literals (for example 1e-30).
+    executable = "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+    scientific = re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?[eE][+-]?\d+")
+    assert scientific.search(executable) is None
+    assert "FP_FINITE_LIMIT = pow(2, 300);" in source

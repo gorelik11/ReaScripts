@@ -55,6 +55,7 @@ FP_PB2 = FP_B * 2;
 FP_OUTN = 16384;
 FP_DRYN = 32768;
 FP_ONE_BIT_DB = 6.020599913279624;
+FP_FINITE_LIMIT = pow(2, 300);
 
 // JSFX FFT buffers may not cross a 65536-word page.  A 32768-point
 // complex FFT occupies a full page, so its buffer must begin on one.
@@ -120,7 +121,7 @@ function fp_high_fraction(freq, cutoff, slope) local(z) (
 );
 
 function fp_finite(value) (
-  value == value && abs(value) < 1e100;
+  value == value && abs(value) < FP_FINITE_LIMIT;
 );
 
 // This guard lives on the kernel boundary, not only in @slider/@gfx: host
