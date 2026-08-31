@@ -116,6 +116,37 @@ function fp_high_fraction(freq, cutoff, slope) local(z) (
   );
 );
 
+function fp_finite(value) (
+  value == value && abs(value) < 1e100;
+);
+
+// This guard lives on the kernel boundary, not only in @slider/@gfx: host
+// automation and malformed presets must never create crossed masks.
+function fp_sanitize_cuts()
+  local(step_bins, step_hz, lower, upper, b) (
+  fp_finite(fp_cuts[0]) ? 0 : fp_cuts[0] = 200;
+  fp_finite(fp_cuts[1]) ? 0 : fp_cuts[1] = 1500;
+  fp_finite(fp_cuts[2]) ? 0 : fp_cuts[2] = 7000;
+  fp_finite(fp_cuts[3]) ? 0 : fp_cuts[3] = 10000;
+  step_bins = max(2, ceil(fp_slope / 12) * 2);
+  step_hz = max(1, step_bins * srate / FP_BD);
+  lower = max(20, step_hz);
+  upper = min(20000, srate * 0.49);
+  fp_cuts[0] = min(max(fp_cuts[0], lower), upper - 3*step_hz);
+  fp_cuts[1] = min(max(fp_cuts[1], fp_cuts[0] + step_hz), upper - 2*step_hz);
+  fp_cuts[2] = min(max(fp_cuts[2], fp_cuts[1] + step_hz), upper - step_hz);
+  fp_cuts[3] = min(max(fp_cuts[3], fp_cuts[2] + step_hz), upper);
+  b = 0;
+  loop(5,
+    fp_finite(fp_bits[b]) ? 0 : fp_bits[b] = 0;
+    fp_finite(fp_phase[b]) ? 0 : fp_phase[b] = 0;
+    fp_bits[b] = min(max(fp_bits[b], 0), 1);
+    fp_phase[b] = min(max(fp_phase[b], -180), 180);
+    fp_move[b] = fp_move[b] > 0.5;
+    b += 1;
+  );
+);
+
 // Writes the current combined response to fp_tr/fp_ti (Mid injection)
 // and fp_rr (unrotated Side removal).  pow(2, bits) - 1 is the agreed
 // zero-origin bit scale inherited from RCBitRangeGain.
@@ -202,18 +233,31 @@ function fp_spectrum_to_kernel(destination, response_kind)
   fp_partition_kernel(destination);
 );
 
-function fp_build_kernels() local(words) (
-  fp_spectrum_to_kernel(fp_hinj_target, 0);
-  fp_spectrum_to_kernel(fp_hrem_target, 1);
+function fp_commit_targets() local(words) (
   words = FP_KMAX * FP_PB2;
   memcpy(fp_hinj_active, fp_hinj_target, words);
   memcpy(fp_hrem_active, fp_hrem_target, words);
-  fp_kernel_valid = 1;
+  fp_fading = 0;
+  fp_fade_pos = 0;
+);
+
+function fp_build_kernels() local(words) (
+  fp_sanitize_cuts();
+  fp_spectrum_to_kernel(fp_hinj_target, 0);
+  fp_spectrum_to_kernel(fp_hrem_target, 1);
+  words = FP_KMAX * FP_PB2;
+  fp_kernel_valid ? (
+    fp_fading = 1;
+    fp_fade_pos = 0;
+  ) : (
+    fp_commit_targets();
+    fp_kernel_valid = 1;
+  );
   fp_dirty = 0;
 );
 
-function fp_convolve_bank(hspec, outbuf)
-  local(k, idx, i, out_index, scale) (
+function fp_convolve_bank(hspec, outbuf, mix_mode)
+  local(k, idx, i, out_index, scale, value, alpha) (
   memset(fp_accum, 0, FP_PB2);
   k = 0;
   loop(FP_KMAX,
@@ -232,7 +276,16 @@ function fp_convolve_bank(hspec, outbuf)
   i = 0;
   loop(FP_P,
     out_index = fp_out_write + i; out_index >= FP_OUTN ? out_index -= FP_OUTN;
-    outbuf[out_index] = fp_accum[(FP_P + i)*2] * scale;
+    value = fp_accum[(FP_P + i)*2] * scale;
+    mix_mode == 0 ? (
+      outbuf[out_index] = value;
+    ) : mix_mode == 1 ? (
+      alpha = min((fp_fade_pos + i) / fp_fade_len, 1);
+      outbuf[out_index] = value * (1 - alpha);
+    ) : (
+      alpha = min((fp_fade_pos + i) / fp_fade_len, 1);
+      outbuf[out_index] += value * alpha;
+    );
     i += 1;
   );
 );
@@ -249,8 +302,17 @@ function fp_run_hop() local(i, source_index) (
   fft(fp_fftw, FP_B); fft_permute(fp_fftw, FP_B);
   memcpy(fp_fdl + fp_fdl_write * FP_PB2, fp_fftw, FP_PB2);
 
-  fp_convolve_bank(fp_hinj_active, fp_out_inj);
-  fp_convolve_bank(fp_hrem_active, fp_out_rem);
+  fp_fading ? (
+    fp_convolve_bank(fp_hinj_active, fp_out_inj, 1);
+    fp_convolve_bank(fp_hinj_target, fp_out_inj, 2);
+    fp_convolve_bank(fp_hrem_active, fp_out_rem, 1);
+    fp_convolve_bank(fp_hrem_target, fp_out_rem, 2);
+    fp_fade_pos += FP_P;
+    fp_fade_pos >= fp_fade_len ? fp_commit_targets();
+  ) : (
+    fp_convolve_bank(fp_hinj_active, fp_out_inj, 0);
+    fp_convolve_bank(fp_hrem_active, fp_out_rem, 0);
+  );
 
   fp_out_write += FP_P; fp_out_write >= FP_OUTN ? fp_out_write -= FP_OUTN;
   fp_fdl_write += 1; fp_fdl_write >= FP_KMAX ? fp_fdl_write = 0;
@@ -278,6 +340,33 @@ function fp_publish_pdc() (
   ext_tail_size = FP_BD + 2 * FP_P + 64;
 );
 
+function fp_request_route(route) (
+  fp_route_boot ? (
+    fp_route_current = route;
+    fp_route_target = route;
+    fp_route_boot = 0;
+  ) : fp_route_fading ? (
+    route != fp_route_target ? fp_route_pending = route;
+  ) : route != fp_route_current ? (
+    fp_route_target = route;
+    fp_route_pos = 0;
+    fp_route_fading = 1;
+  );
+);
+
+function fp_route_values(route) (
+  route == 2 ? (
+    fp_route_l = fp_injection;
+    fp_route_r = fp_injection;
+  ) : route == 1 ? (
+    fp_route_l = fp_mid_out;
+    fp_route_r = fp_mid_out;
+  ) : (
+    fp_route_l = fp_normal_l;
+    fp_route_r = fp_normal_r;
+  );
+);
+
 fp_cuts = 0;
 fp_weights = 8;
 fp_bits = 16;
@@ -298,20 +387,23 @@ fp_dry_write = 0;
 fp_kernel_valid = 0;
 fp_dirty = 1;
 fp_listen_band = -1;
+fp_fading = 0;
+fp_fade_pos = 0;
+fp_fade_len = max(1, floor(srate * 0.05));
+fp_route_current = 0;
+fp_route_target = 0;
+fp_route_pending = -1;
+fp_route_fading = 0;
+fp_route_pos = 0;
+fp_route_len = max(1, floor(srate * 0.05));
+fp_route_boot = 1;
 fp_publish_pdc();
 
 @slider
 
-fp_min_step = max(srate / FP_BD, 1);
-fp_max_cut = min(20000, srate * 0.49);
-slider1 = min(max(slider1, 20), fp_max_cut - 3*fp_min_step);
-slider2 = min(max(slider2, slider1 + fp_min_step), fp_max_cut - 2*fp_min_step);
-slider3 = min(max(slider3, slider2 + fp_min_step), fp_max_cut - fp_min_step);
-slider4 = min(max(slider4, slider3 + fp_min_step), fp_max_cut);
-
+fp_slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
 fp_cuts[0] = slider1; fp_cuts[1] = slider2;
 fp_cuts[2] = slider3; fp_cuts[3] = slider4;
-fp_slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
 
 fp_bits[0] = slider11; fp_phase[0] = slider12; fp_move[0] = slider13;
 fp_bits[1] = slider21; fp_phase[1] = slider22; fp_move[1] = slider23;
@@ -325,12 +417,17 @@ fp_listen_band < 0 && slider24 > 0.5 ? fp_listen_band = 1;
 fp_listen_band < 0 && slider34 > 0.5 ? fp_listen_band = 2;
 fp_listen_band < 0 && slider44 > 0.5 ? fp_listen_band = 3;
 fp_listen_band < 0 && slider54 > 0.5 ? fp_listen_band = 4;
+fp_sanitize_cuts();
+slider1 = fp_cuts[0]; slider2 = fp_cuts[1];
+slider3 = fp_cuts[2]; slider4 = fp_cuts[3];
+fp_listen_band >= 0 ? fp_requested_route = 2 : slider6 > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
+fp_request_route(fp_requested_route);
 fp_dirty = 1;
 fp_publish_pdc();
 
 @block
 
-fp_dirty ? fp_build_kernels();
+fp_dirty && !fp_fading ? fp_build_kernels();
 
 @sample
 
@@ -348,17 +445,31 @@ fp_dry_write += 1; fp_dry_write >= FP_DRYN ? fp_dry_write = 0;
 
 fp_process(fp_side);
 
-fp_listen_band >= 0 ? (
-  spl0 = fp_injection;
-  spl1 = fp_injection;
-) : (
-  fp_mid_out = fp_mid_delayed + fp_injection;
-  fp_side_out = fp_side_delayed - fp_removal;
-  slider6 > 0.5 ? (
-    spl0 = fp_mid_out;
-    spl1 = fp_mid_out;
-  ) : (
-    spl0 = fp_mid_out + fp_side_out;
-    spl1 = fp_mid_out - fp_side_out;
+fp_mid_out = fp_mid_delayed + fp_injection;
+fp_side_out = fp_side_delayed - fp_removal;
+fp_normal_l = fp_mid_out + fp_side_out;
+fp_normal_r = fp_mid_out - fp_side_out;
+
+fp_route_fading ? (
+  fp_route_values(fp_route_current);
+  fp_old_l = fp_route_l; fp_old_r = fp_route_r;
+  fp_route_values(fp_route_target);
+  fp_route_alpha = min(fp_route_pos / fp_route_len, 1);
+  spl0 = fp_old_l * (1 - fp_route_alpha) + fp_route_l * fp_route_alpha;
+  spl1 = fp_old_r * (1 - fp_route_alpha) + fp_route_r * fp_route_alpha;
+  fp_route_pos += 1;
+  fp_route_pos >= fp_route_len ? (
+    fp_route_current = fp_route_target;
+    fp_route_fading = 0;
+    fp_route_pos = 0;
+    fp_route_pending >= 0 ? (
+      fp_queued_route = fp_route_pending;
+      fp_route_pending = -1;
+      fp_request_route(fp_queued_route);
+    );
   );
+) : (
+  fp_route_values(fp_route_current);
+  spl0 = fp_route_l;
+  spl1 = fp_route_r;
 );

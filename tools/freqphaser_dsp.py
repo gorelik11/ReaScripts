@@ -34,6 +34,34 @@ def amount_from_bits(bits: float) -> float:
     return 2.0**bits - 1.0
 
 
+def crossfade_length(sample_rate: float) -> int:
+    """Return the fixed 50 ms kernel/route transition length."""
+
+    return max(1, math.floor(sample_rate * 0.05))
+
+
+def crossfade_alpha(position: int, length: int) -> float:
+    """Return the clamped linear transition coefficient."""
+
+    return min(max(position / max(length, 1), 0.0), 1.0)
+
+
+def selected_listen_band(values: tuple[bool, bool, bool, bool, bool]) -> int:
+    """Resolve conflicting automation deterministically to the lowest band."""
+
+    return next((index for index, enabled in enumerate(values) if enabled), -1)
+
+
+def monitor_route(*, listen_band: int, mono_check: bool) -> str:
+    """Resolve Listen over Mono Check over the normal stereo route."""
+
+    if listen_band >= 0:
+        return "listen"
+    if mono_check:
+        return "mono"
+    return "stereo"
+
+
 def phase_factor(degrees: float) -> complex:
     """Return the unit complex factor for a phase rotation in degrees."""
 
@@ -64,6 +92,39 @@ def band_weights(
         high_fraction(freq, cutoff, slope_db_oct) for cutoff in cuts
     )
     return 1.0 - c1, c1 - c2, c2 - c3, c3 - c4, c4
+
+
+def minimum_crossover_step(
+    sample_rate: float, slope_db_oct: float, size: int
+) -> float:
+    """Require more resolvable bins as the requested crossover gets steeper."""
+
+    transition_bins = max(2, math.ceil(slope_db_oct / 12.0) * 2)
+    return max(1.0, transition_bins * sample_rate / size)
+
+
+def sanitize_cuts(
+    cuts: tuple[float, float, float, float],
+    *,
+    sample_rate: float,
+    slope_db_oct: float,
+    size: int,
+) -> tuple[float, float, float, float]:
+    """Clamp malformed/automated crossover values before kernel construction."""
+
+    defaults = (200.0, 1500.0, 7000.0, 10000.0)
+    values = [
+        float(value) if math.isfinite(value) else defaults[index]
+        for index, value in enumerate(cuts)
+    ]
+    upper = min(20000.0, sample_rate * 0.49)
+    step = minimum_crossover_step(sample_rate, slope_db_oct, size)
+    lower = max(20.0, step)
+    values[0] = min(max(values[0], lower), upper - 3.0 * step)
+    values[1] = min(max(values[1], values[0] + step), upper - 2.0 * step)
+    values[2] = min(max(values[2], values[1] + step), upper - step)
+    values[3] = min(max(values[3], values[2] + step), upper)
+    return tuple(values)  # type: ignore[return-value]
 
 
 def transfer_at(
@@ -201,6 +262,49 @@ def fft(values: list[complex], *, inverse: bool = False) -> list[complex]:
 
 def ifft(values: list[complex]) -> list[complex]:
     return fft(values, inverse=True)
+
+
+def kaiser_i0(value: float) -> float:
+    """Modified Bessel I0 matching the 40-term EEL2 implementation."""
+
+    total = 1.0
+    term = 1.0
+    half = value * 0.5
+    for index in range(1, 40):
+        term *= (half / index) ** 2
+        total += term
+    return total
+
+
+def kaiser_window(size: int, beta: float) -> list[float]:
+    """Return the exact symmetric window used by the JSFX kernel builder."""
+
+    normalization = 1.0 / kaiser_i0(beta)
+    denominator = size - 1
+    return [
+        kaiser_i0(
+            beta
+            * math.sqrt(max(1.0 - (2.0 * index / denominator - 1.0) ** 2, 0.0))
+        )
+        * normalization
+        for index in range(size)
+    ]
+
+
+def realize_spectrum(
+    spectrum: list[complex], *, beta: float
+) -> tuple[list[float], list[complex]]:
+    """IFFT, centre, window, and re-FFT exactly as the JSFX builder does."""
+
+    size = len(spectrum)
+    impulse = ifft(spectrum)
+    window = kaiser_window(size, beta)
+    half = size // 2
+    kernel = [
+        impulse[(index + half) % size].real * window[index]
+        for index in range(size)
+    ]
+    return kernel, fft([complex(value, 0.0) for value in kernel])
 
 
 def partitioned_convolve(

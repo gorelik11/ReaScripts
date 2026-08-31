@@ -86,6 +86,38 @@ def test_partitioned_convolution_adds_one_hop_of_runtime_latency():
     assert output[peak] == 1.0
 
 
+def test_full_resolution_identity_peak_is_at_reported_latency():
+    kernel = [0.0] * 32768
+    kernel[16384] = 1.0
+    signal = [1.0] + [0.0] * 18440
+    output = dsp.partitioned_convolve(signal, kernel, 2048)
+    peak = max(range(len(output)), key=lambda index: abs(output[index]))
+    assert peak == 18432
+    assert math.isclose(output[peak], 1.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_kernel_realization_preserves_unity_move_sum():
+    spectrum = [1 + 0j] * 32768
+    _, realized = dsp.realize_spectrum(spectrum, beta=14.0)
+    assert max(abs(abs(value) - 1.0) for value in realized) < 1e-8
+
+
+def test_crossovers_are_sanitized_at_kernel_boundary():
+    cuts = dsp.sanitize_cuts(
+        (200.0, 1500.0, 500.0, float("nan")),
+        sample_rate=192000.0,
+        slope_db_oct=96.0,
+        size=32768,
+    )
+    minimum_step = dsp.minimum_crossover_step(192000.0, 96.0, 32768)
+    assert all(math.isfinite(value) for value in cuts)
+    assert cuts[0] >= max(20.0, minimum_step)
+    assert all(b - a >= minimum_step for a, b in zip(cuts, cuts[1:]))
+    assert cuts[-1] <= 20000.0
+    weights = dsp.band_weights(700.0, cuts, 96.0)
+    assert min(weights) >= -1e-15
+
+
 def test_freqphaser_slider_manifest_is_exact():
     gates.assert_slider_manifest(PLUGIN.read_text())
 
@@ -98,3 +130,23 @@ def test_freqphaser_layout_and_eel2_source_are_safe():
 
 def test_freqphaser_dsp_structure_uses_shared_side_fdl():
     gates.assert_dsp_structure(PLUGIN.read_text())
+
+
+def test_crossfade_is_50_ms_at_common_sample_rates():
+    for sample_rate in (44100, 48000, 88200, 96000):
+        length = dsp.crossfade_length(sample_rate)
+        assert length == math.floor(sample_rate * 0.05)
+        assert dsp.crossfade_alpha(0, length) == 0.0
+        assert dsp.crossfade_alpha(length, length) == 1.0
+
+
+def test_listen_selection_and_monitoring_priority():
+    assert dsp.selected_listen_band((False, True, True, False, False)) == 1
+    assert dsp.selected_listen_band((False,) * 5) == -1
+    assert dsp.monitor_route(listen_band=3, mono_check=True) == "listen"
+    assert dsp.monitor_route(listen_band=-1, mono_check=True) == "mono"
+    assert dsp.monitor_route(listen_band=-1, mono_check=False) == "stereo"
+
+
+def test_freqphaser_transitions_are_dual_kernel_and_queued():
+    gates.assert_transition_structure(PLUGIN.read_text())

@@ -78,6 +78,8 @@ def assert_dsp_structure(source: str) -> None:
         "fp_hrem_active",
         "fp_hrem_target",
         "pow(2, bits) - 1",
+        "function fp_sanitize_cuts",
+        "function fp_finite",
     ):
         assert token in source, token
 
@@ -87,3 +89,24 @@ def assert_dsp_structure(source: str) -> None:
     )[0]
     assert run_hop.count("fft(fp_fftw, FP_B)") == 1
     assert run_hop.count("memcpy(fp_fdl + fp_fdl_write") == 1
+    build = source.split("function fp_build_kernels", 1)[1].split(
+        "function fp_convolve_bank", 1
+    )[0]
+    assert "fp_sanitize_cuts();" in build
+
+
+def assert_transition_structure(source: str) -> None:
+    for token in (
+        "fp_fading",
+        "fp_fade_pos",
+        "fp_fade_len",
+        "function fp_commit_targets",
+        "fp_dirty && !fp_fading",
+        "fp_route_fading",
+        "fp_route_pending",
+    ):
+        assert token in source, token
+
+    assert "floor(srate * 0.05)" in source
+    assert "fp_convolve_bank(fp_hinj_target" in source
+    assert "fp_convolve_bank(fp_hrem_target" in source
