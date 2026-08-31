@@ -28,6 +28,43 @@ class EngineLayout:
     fft_spans: tuple[tuple[int, int], ...]
 
 
+@dataclass
+class KernelTransition:
+    """Small oracle for the JSFX active/target/latest-pending state machine."""
+
+    current: object
+    length: int
+    target: object | None = None
+    pending: object | None = None
+    position: int = 0
+    fading: bool = False
+
+    def request(self, target: object) -> None:
+        if self.fading:
+            if target != self.target:
+                self.pending = target
+            return
+        if target != self.current:
+            self.target = target
+            self.position = 0
+            self.fading = True
+
+    def advance(self, samples: int) -> None:
+        if not self.fading:
+            return
+        self.position += samples
+        if self.position < self.length:
+            return
+        self.current = self.target
+        self.target = None
+        self.position = 0
+        self.fading = False
+        if self.pending is not None:
+            queued = self.pending
+            self.pending = None
+            self.request(queued)
+
+
 def amount_from_bits(bits: float) -> float:
     """Map the zero-origin bit control to a linear transfer coefficient."""
 
@@ -205,7 +242,8 @@ def engine_layout(
                 spans.append((ptr + offset, unit))
         ptr += span
 
-    add_fft_block(design_size * 2)
+    add_fft_block(design_size * 2)  # injection design spectrum
+    add_fft_block(design_size * 2)  # removal design spectrum
     ptr += design_size * 2  # real kernel and Kaiser window
     banks = outputs * (2 if targets else 1)
     for _ in range(banks):

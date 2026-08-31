@@ -48,6 +48,7 @@ FP_P = 2048;
 FP_B = 4096;
 FP_KMAX = 16;
 FP_LATENCY = 18432;
+FP_REBUILD_INTERVAL = floor(srate * 0.1);
 ext_noinit = 1;
 
 FP_PB2 = FP_B * 2;
@@ -65,6 +66,8 @@ function fp_align(p, unit) local(u) (
 function fp_layout(base) local(p, bank_words) (
   p = fp_align(base, FP_BD * 2);
   fp_desbuf = p; p += FP_BD * 2;
+  p = fp_align(p, FP_BD * 2);
+  fp_rem_spectrum = p; p += FP_BD * 2;
   fp_ktime = p; p += FP_BD;
   fp_window = p; p += FP_BD;
 
@@ -82,8 +85,8 @@ function fp_layout(base) local(p, bank_words) (
   fp_in_side = p; p += FP_B;
   fp_out_inj = p; p += FP_OUTN;
   fp_out_rem = p; p += FP_OUTN;
-  fp_dry_mid = p; p += FP_DRYN;
-  fp_dry_side = p; p += FP_DRYN;
+  fp_dry_left = p; p += FP_DRYN;
+  fp_dry_right = p; p += FP_DRYN;
   p;
 );
 
@@ -124,10 +127,10 @@ function fp_finite(value) (
 // automation and malformed presets must never create crossed masks.
 function fp_sanitize_cuts()
   local(step_bins, step_hz, lower, upper, b) (
-  fp_finite(fp_cuts[0]) ? 0 : fp_cuts[0] = 200;
-  fp_finite(fp_cuts[1]) ? 0 : fp_cuts[1] = 1500;
-  fp_finite(fp_cuts[2]) ? 0 : fp_cuts[2] = 7000;
-  fp_finite(fp_cuts[3]) ? 0 : fp_cuts[3] = 10000;
+  fp_finite(fp_cuts[0]) ? 0 : fp_cuts[0] = fp_last_cuts[0];
+  fp_finite(fp_cuts[1]) ? 0 : fp_cuts[1] = fp_last_cuts[1];
+  fp_finite(fp_cuts[2]) ? 0 : fp_cuts[2] = fp_last_cuts[2];
+  fp_finite(fp_cuts[3]) ? 0 : fp_cuts[3] = fp_last_cuts[3];
   step_bins = max(2, ceil(fp_slope / 12) * 2);
   step_hz = max(1, step_bins * srate / FP_BD);
   lower = max(20, step_hz);
@@ -138,20 +141,42 @@ function fp_sanitize_cuts()
   fp_cuts[3] = min(max(fp_cuts[3], fp_cuts[2] + step_hz), upper);
   b = 0;
   loop(5,
-    fp_finite(fp_bits[b]) ? 0 : fp_bits[b] = 0;
-    fp_finite(fp_phase[b]) ? 0 : fp_phase[b] = 0;
+    fp_finite(fp_bits[b]) ? 0 : fp_bits[b] = fp_last_bits[b];
+    fp_finite(fp_phase[b]) ? 0 : fp_phase[b] = fp_last_phase[b];
     fp_bits[b] = min(max(fp_bits[b], 0), 1);
     fp_phase[b] = min(max(fp_phase[b], -180), 180);
     fp_move[b] = fp_move[b] > 0.5;
+    fp_last_bits[b] = fp_bits[b];
+    fp_last_phase[b] = fp_phase[b];
     b += 1;
   );
+  memcpy(fp_last_cuts, fp_cuts, 4);
 );
 
 // Writes the current combined response to fp_tr/fp_ti (Mid injection)
 // and fp_rr (unrotated Side removal).  pow(2, bits) - 1 is the agreed
 // zero-origin bit scale inherited from RCBitRangeGain.
+function fp_prepare_band_gains()
+  local(b, bits, amount, phase) (
+  fp_target_injection_needed = fp_listen_band >= 0;
+  fp_target_removal_needed = 0;
+  b = 0;
+  loop(5,
+    bits = fp_bits[b];
+    amount = pow(2, bits) - 1;
+    fp_listen_band >= 0 ? amount = fp_listen_band == b;
+    phase = fp_phase[b] * $pi / 180;
+    fp_gain_re[b] = amount * cos(phase);
+    fp_gain_im[b] = amount * sin(phase);
+    fp_gain_rem[b] = fp_listen_band < 0 && fp_move[b] > 0.5 ? amount : 0;
+    amount != 0 ? fp_target_injection_needed = 1;
+    fp_gain_rem[b] != 0 ? fp_target_removal_needed = 1;
+    b += 1;
+  );
+);
+
 function fp_transfer(freq, negative_bin)
-  local(c1, c2, c3, c4, w, b, bits, amount, phase, move, listen_amount) (
+  local(c1, c2, c3, c4, w, b) (
   c1 = fp_high_fraction(freq, fp_cuts[0], fp_slope);
   c2 = fp_high_fraction(freq, fp_cuts[1], fp_slope);
   c3 = fp_high_fraction(freq, fp_cuts[2], fp_slope);
@@ -166,15 +191,9 @@ function fp_transfer(freq, negative_bin)
   b = 0;
   loop(5,
     w = fp_weights[b];
-    bits = fp_bits[b];
-    amount = pow(2, bits) - 1;
-    listen_amount = fp_listen_band == b ? 1 : 0;
-    fp_listen_band >= 0 ? amount = listen_amount;
-    phase = fp_phase[b] * $pi / 180;
-    fp_tr += w * amount * cos(phase);
-    fp_ti += w * amount * sin(phase);
-    move = fp_move[b];
-    fp_listen_band < 0 && move > 0.5 ? fp_rr += w * amount;
+    fp_tr += w * fp_gain_re[b];
+    fp_ti += w * fp_gain_im[b];
+    fp_rr += w * fp_gain_rem[b];
     b += 1;
   );
   negative_bin ? fp_ti = -fp_ti;
@@ -203,8 +222,8 @@ function fp_partition_kernel(destination)
   );
 );
 
-function fp_spectrum_to_kernel(destination, response_kind)
-  local(i, kk, freq, negative_bin, src, inv, half) (
+function fp_build_spectra()
+  local(i, kk, freq, negative_bin, half) (
   half = FP_BD * 0.5;
   i = 0;
   loop(FP_BD,
@@ -212,22 +231,23 @@ function fp_spectrum_to_kernel(destination, response_kind)
     freq = kk * srate / FP_BD;
     negative_bin = i > half;
     fp_transfer(freq, negative_bin);
-    response_kind == 0 ? (
-      fp_desbuf[i*2] = fp_tr;
-      fp_desbuf[i*2+1] = (i == 0 || i == half) ? 0 : fp_ti;
-    ) : (
-      fp_desbuf[i*2] = fp_rr;
-      fp_desbuf[i*2+1] = 0;
-    );
+    fp_desbuf[i*2] = fp_tr;
+    fp_desbuf[i*2+1] = (i == 0 || i == half) ? 0 : fp_ti;
+    fp_rem_spectrum[i*2] = fp_rr;
+    fp_rem_spectrum[i*2+1] = 0;
     i += 1;
   );
+);
 
-  fft_ipermute(fp_desbuf, FP_BD); ifft(fp_desbuf, FP_BD);
+function fp_spectrum_to_kernel(source_spectrum, destination)
+  local(i, src, inv, half) (
+  half = FP_BD * 0.5;
+  fft_ipermute(source_spectrum, FP_BD); ifft(source_spectrum, FP_BD);
   inv = 1 / FP_BD;
   i = 0;
   loop(FP_BD,
     src = i + half; src >= FP_BD ? src -= FP_BD;
-    fp_ktime[i] = fp_desbuf[src*2] * inv * fp_window[i];
+    fp_ktime[i] = source_spectrum[src*2] * inv * fp_window[i];
     i += 1;
   );
   fp_partition_kernel(destination);
@@ -237,14 +257,18 @@ function fp_commit_targets() local(words) (
   words = FP_KMAX * FP_PB2;
   memcpy(fp_hinj_active, fp_hinj_target, words);
   memcpy(fp_hrem_active, fp_hrem_target, words);
+  fp_active_injection_needed = fp_target_injection_needed;
+  fp_active_removal_needed = fp_target_removal_needed;
   fp_fading = 0;
   fp_fade_pos = 0;
 );
 
 function fp_build_kernels() local(words) (
   fp_sanitize_cuts();
-  fp_spectrum_to_kernel(fp_hinj_target, 0);
-  fp_spectrum_to_kernel(fp_hrem_target, 1);
+  fp_prepare_band_gains();
+  fp_build_spectra();
+  fp_spectrum_to_kernel(fp_desbuf, fp_hinj_target);
+  fp_spectrum_to_kernel(fp_rem_spectrum, fp_hrem_target);
   words = FP_KMAX * FP_PB2;
   fp_kernel_valid ? (
     fp_fading = 1;
@@ -254,6 +278,7 @@ function fp_build_kernels() local(words) (
     fp_kernel_valid = 1;
   );
   fp_dirty = 0;
+  fp_build_clock = 0;
 );
 
 function fp_convolve_bank(hspec, outbuf, mix_mode)
@@ -290,6 +315,15 @@ function fp_convolve_bank(hspec, outbuf, mix_mode)
   );
 );
 
+function fp_zero_output(outbuf) local(i, out_index) (
+  i = 0;
+  loop(FP_P,
+    out_index = fp_out_write + i; out_index >= FP_OUTN ? out_index -= FP_OUTN;
+    outbuf[out_index] = 0;
+    i += 1;
+  );
+);
+
 // One Side FFT feeds both the injection and removal convolutions.
 function fp_run_hop() local(i, source_index) (
   i = 0;
@@ -303,15 +337,16 @@ function fp_run_hop() local(i, source_index) (
   memcpy(fp_fdl + fp_fdl_write * FP_PB2, fp_fftw, FP_PB2);
 
   fp_fading ? (
-    fp_convolve_bank(fp_hinj_active, fp_out_inj, 1);
-    fp_convolve_bank(fp_hinj_target, fp_out_inj, 2);
-    fp_convolve_bank(fp_hrem_active, fp_out_rem, 1);
-    fp_convolve_bank(fp_hrem_target, fp_out_rem, 2);
+    fp_zero_output(fp_out_inj); fp_zero_output(fp_out_rem);
+    fp_active_injection_needed ? fp_convolve_bank(fp_hinj_active, fp_out_inj, 1);
+    fp_target_injection_needed ? fp_convolve_bank(fp_hinj_target, fp_out_inj, 2);
+    fp_active_removal_needed ? fp_convolve_bank(fp_hrem_active, fp_out_rem, 1);
+    fp_target_removal_needed ? fp_convolve_bank(fp_hrem_target, fp_out_rem, 2);
     fp_fade_pos += FP_P;
     fp_fade_pos >= fp_fade_len ? fp_commit_targets();
   ) : (
-    fp_convolve_bank(fp_hinj_active, fp_out_inj, 0);
-    fp_convolve_bank(fp_hrem_active, fp_out_rem, 0);
+    fp_active_injection_needed ? fp_convolve_bank(fp_hinj_active, fp_out_inj, 0) : fp_zero_output(fp_out_inj);
+    fp_active_removal_needed ? fp_convolve_bank(fp_hrem_active, fp_out_rem, 0) : fp_zero_output(fp_out_rem);
   );
 
   fp_out_write += FP_P; fp_out_write >= FP_OUTN ? fp_out_write -= FP_OUTN;
@@ -395,6 +430,12 @@ fp_weights = 8;
 fp_bits = 16;
 fp_phase = 24;
 fp_move = 32;
+fp_last_cuts = 40;
+fp_last_bits = 48;
+fp_last_phase = 56;
+fp_gain_re = 88;
+fp_gain_im = 96;
+fp_gain_rem = 104;
 fp_base = 65536;
 fp_top = fp_layout(fp_base);
 memset(fp_base, 0, fp_top - fp_base);
@@ -409,7 +450,15 @@ fp_fdl_write = 0;
 fp_dry_write = 0;
 fp_kernel_valid = 0;
 fp_dirty = 1;
+fp_build_clock = FP_REBUILD_INTERVAL;
 fp_listen_band = -1;
+fp_active_injection_needed = 0;
+fp_target_injection_needed = 0;
+fp_active_removal_needed = 0;
+fp_target_removal_needed = 0;
+fp_last_cuts[0] = 200; fp_last_cuts[1] = 1500;
+fp_last_cuts[2] = 7000; fp_last_cuts[3] = 10000;
+memset(fp_last_bits, 0, 5); memset(fp_last_phase, 0, 5);
 fp_fading = 0;
 fp_fade_pos = 0;
 fp_fade_len = max(1, floor(srate * 0.05));
@@ -450,34 +499,45 @@ fp_publish_pdc();
 
 @block
 
+fp_build_clock = min(fp_build_clock + samplesblock, FP_REBUILD_INTERVAL);
 fp_gui_changed ? (
   fp_gui_changed = 0;
   fp_poll_gui_values();
 );
-fp_dirty && !fp_fading ? fp_build_kernels();
+fp_dirty && !fp_fading && (!fp_kernel_valid || fp_build_clock >= FP_REBUILD_INTERVAL) ? fp_build_kernels();
 
 @sample
 
 fp_left = spl0; fp_right = spl1;
+fp_finite(fp_left) ? 0 : fp_left = 0;
+fp_finite(fp_right) ? 0 : fp_right = 0;
 fp_mid = (fp_left + fp_right) * 0.5;
 fp_side = (fp_left - fp_right) * 0.5;
 
-fp_dry_mid[fp_dry_write] = fp_mid;
-fp_dry_side[fp_dry_write] = fp_side;
+fp_dry_left[fp_dry_write] = fp_left;
+fp_dry_right[fp_dry_write] = fp_right;
 fp_dry_read = fp_dry_write - FP_LATENCY;
 fp_dry_read < 0 ? fp_dry_read += FP_DRYN;
-fp_mid_delayed = fp_dry_mid[fp_dry_read];
-fp_side_delayed = fp_dry_side[fp_dry_read];
+fp_left_delayed = fp_dry_left[fp_dry_read];
+fp_right_delayed = fp_dry_right[fp_dry_read];
+fp_mid_delayed = (fp_left_delayed + fp_right_delayed) * 0.5;
+fp_side_delayed = (fp_left_delayed - fp_right_delayed) * 0.5;
 fp_dry_write += 1; fp_dry_write >= FP_DRYN ? fp_dry_write = 0;
 
 fp_process(fp_side);
+fp_finite(fp_injection) ? 0 : fp_injection = 0;
+fp_finite(fp_removal) ? 0 : fp_removal = 0;
 
 fp_mid_out = fp_mid_delayed + fp_injection;
 fp_side_out = fp_side_delayed - fp_removal;
 fp_normal_l = fp_mid_out + fp_side_out;
 fp_normal_r = fp_mid_out - fp_side_out;
+fp_neutral = !fp_fading && !fp_active_injection_needed && !fp_active_removal_needed && fp_route_current == 0 && !fp_route_fading;
 
-fp_route_fading ? (
+fp_neutral ? (
+  spl0 = fp_left_delayed;
+  spl1 = fp_right_delayed;
+) : fp_route_fading ? (
   fp_route_values(fp_route_current);
   fp_old_l = fp_route_l; fp_old_r = fp_route_r;
   fp_route_values(fp_route_target);
@@ -500,6 +560,8 @@ fp_route_fading ? (
   spl0 = fp_route_l;
   spl1 = fp_route_r;
 );
+fp_finite(spl0) ? 0 : spl0 = 0;
+fp_finite(spl1) ? 0 : spl1 = 0;
 
 @gfx 900 620
 
@@ -523,9 +585,22 @@ function fp_gui_cut(b) (
   b == 0 ? slider1 : b == 1 ? slider2 : b == 2 ? slider3 : slider4;
 );
 
+function fp_gui_cut_bounds(b) local(slope, step_bins, step_hz, top) (
+  slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
+  step_bins = max(2, ceil(slope / 12) * 2);
+  step_hz = max(1, step_bins * srate / FP_BD);
+  top = min(20000, srate * 0.49);
+  b == 0 ? ( fp_cut_low = max(20, step_hz); fp_cut_high = slider2-step_hz; ) :
+  b == 1 ? ( fp_cut_low = slider1+step_hz; fp_cut_high = slider3-step_hz; ) :
+  b == 2 ? ( fp_cut_low = slider2+step_hz; fp_cut_high = slider4-step_hz; ) :
+           ( fp_cut_low = slider3+step_hz; fp_cut_high = top; );
+  fp_cut_high = max(fp_cut_high, fp_cut_low);
+);
+
 function fp_gui_write_cut(b, value) (
   value = floor(value + 0.5);
-  value = min(max(value, 20), min(20000, srate * 0.49));
+  fp_gui_cut_bounds(b);
+  value = min(max(value, fp_cut_low), fp_cut_high);
   b == 0 ? ( slider1 = value; slider_automate(slider1); ) :
   b == 1 ? ( slider2 = value; slider_automate(slider2); ) :
   b == 2 ? ( slider3 = value; slider_automate(slider3); ) :

@@ -140,6 +140,21 @@ def test_crossfade_is_50_ms_at_common_sample_rates():
         assert dsp.crossfade_alpha(length, length) == 1.0
 
 
+def test_kernel_transition_queues_latest_request():
+    state = dsp.KernelTransition(current="A", length=100)
+    state.request("B")
+    assert state.fading and state.target == "B"
+    state.advance(40)
+    state.request("C")
+    state.request("D")
+    assert state.pending == "D"
+    state.advance(60)
+    assert state.current == "B"
+    assert state.fading and state.target == "D" and state.position == 0
+    state.advance(100)
+    assert state.current == "D" and not state.fading
+
+
 def test_listen_selection_and_monitoring_priority():
     assert dsp.selected_listen_band((False, True, True, False, False)) == 1
     assert dsp.selected_listen_band((False,) * 5) == -1
@@ -154,3 +169,7 @@ def test_freqphaser_transitions_are_dual_kernel_and_queued():
 
 def test_freqphaser_gui_has_exact_controls_and_writers():
     gates.assert_gui_structure(PLUGIN.read_text())
+
+
+def test_freqphaser_realtime_and_neutral_paths_are_guarded():
+    gates.assert_realtime_safety(PLUGIN.read_text())

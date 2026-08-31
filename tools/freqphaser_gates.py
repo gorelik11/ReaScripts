@@ -135,3 +135,33 @@ def assert_gui_structure(source: str) -> None:
 
     for slider in (14, 24, 34, 44, 54):
         assert f"slider{slider} = 0" in source
+
+
+def assert_realtime_safety(source: str) -> None:
+    for token in (
+        "fp_rem_spectrum",
+        "fp_build_clock",
+        "FP_REBUILD_INTERVAL",
+        "fp_active_injection_needed",
+        "fp_active_removal_needed",
+        "function fp_zero_output",
+        "fp_dry_left",
+        "fp_dry_right",
+        "fp_neutral",
+        "fp_last_cuts",
+        "fp_last_bits",
+        "fp_last_phase",
+        "fp_finite(fp_left)",
+        "fp_finite(fp_injection)",
+        "function fp_gui_cut_bounds",
+    ):
+        assert token in source, token
+
+    # Both design FFT buffers must be explicitly allocated and page-aligned.
+    layout = source.split("function fp_layout", 1)[1].split(
+        "function fp_i0", 1
+    )[0]
+    assert "p = fp_align(base, FP_BD * 2);" in layout
+    assert "p = fp_align(p, FP_BD * 2);" in layout
+    assert "fp_desbuf = p; p += FP_BD * 2;" in layout
+    assert "fp_rem_spectrum = p; p += FP_BD * 2;" in layout
