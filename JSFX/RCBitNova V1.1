@@ -1315,7 +1315,12 @@ b = 0;
 loop(N_BANDS,
   mbmode[b] = slider(dynb[b] + 7);                                       // 0 A, 1 B
   hc[b] = pow(2, -(slider(ceb[b] + 2) + slider(ceb[b] + 3) * 0.01));   // hard ceiling
-  (slider(dynb[b] + 1) == 1 && mbmode[b] == 1 && slider(stb[b]+2) <= 2) ? any_b = 1;
+  // V1.1: Enable is part of the gate. In V1.0 it was not, so a band switched OFF but left with
+  // Dyn on and Mode B still ran its split limiter on the bus, still forced the lookahead and PDC
+  // machinery active, and was audible - "disabled" did not mean disabled. Deliberate divergence
+  // from V1.0, and the null test asserts that it diverges exactly here and nowhere else.
+  (slider(stb[b] + 1) == 1 && slider(dynb[b] + 1) == 1 && mbmode[b] == 1
+   && slider(stb[b]+2) <= 2) ? any_b = 1;
   b += 1;
 );
 // (PDC is computed further down, AFTER the linear-engine geometry reconcile, so a Resolution
@@ -1698,8 +1703,9 @@ slider1 != 1 ? (
   any_b ? (
     L_in = spl0; R_in = spl1;          // intermediate (post static + Mode-A)
     corrL = 0; corrR = 0;
-    b = 0;
-    loop(N_BANDS,
+    nbi = 0;
+    loop(nb_n,
+      b = nb_list[nbi];                 // enabled bands only, same cache the static pass uses
       (slider(dynb[b] + 1) == 1 && mbmode[b] == 1 && slider(stb[b]+2) <= 2) ? (
         pl = slider(stb[b]+8);
         ty = slider(stb[b]+2);
@@ -1788,7 +1794,7 @@ slider1 != 1 ? (
 
         mbwpos[b] = (wp + 1) % MAX_LOOK;
       );
-      b += 1;
+      nbi += 1;
     );
 
     // delayed dry L/R bus + accumulated band corrections

@@ -98,8 +98,12 @@ SITES = {
                               r"\( nb_list\[nb_n\] = b;", "N_BANDS"),
     "sample-band-loop":      (r"nbi = 0;\s*\n\s*loop\((\w+),\s*\n\s*b = nb_list\[nbi\];",
                               "nb_n"),
-    "sample-modeb-pass":     (r"corrL = 0; corrR = 0;\s*\n\s*b = 0;\s*\n\s*loop\((\w+),",
-                              "N_BANDS"),
+    # Mode B walks the same enabled-band cache as the static pass. It did not in V1.0, where a
+    # band switched OFF but left in Mode B still ran its split limiter on the bus.
+    "sample-modeb-pass":     (r"corrL = 0; corrR = 0;\s*\n\s*nbi = 0;\s*\n\s*loop\((\w+),",
+                              "nb_n"),
+    "modeb-any-gate":        (r"\(slider\(stb\[b\] \+ 1\) == 1 && slider\(dynb\[b\] \+ 1\) "
+                              r"== 1 && (mbmode)\[b\] == 1", "mbmode"),
     "gfx-band-setup":        (r"^loop\((\w+), gc_band_setup\(gc_b\); gc_b \+= 1;\);", "N_BANDS"),
     "gfx-hit-test":          (r"^gc_hit_n = 0;\ngc_b = 0;\nloop\((\w+),", "N_BANDS"),
     "gfx-node-draw":         (r"loop\((\w+),\s*\n\s*gc_s = stb\[gc_b\];\s*\n\s*gc_en = "
