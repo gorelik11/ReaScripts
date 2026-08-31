@@ -4,6 +4,35 @@ Bit-accurate dynamics processing plugins for REAPER. All gain values use exact p
 
 ## Plugins
 
+### Freqphaser 1.0 — Five-band Side-to-Mid phase router
+
+Mastering utility for recovering stereo-only material in mono. It splits Side into five
+complementary frequency masks, rotates each selected mask by a constant phase angle, and either
+adds it to Mid or moves the same amount out of Side and into Mid.
+
+- Four editable crossovers default to 200 Hz, 1.5 kHz, 7 kHz, and 10 kHz
+- Global 12/24/48/96 dB/oct slope; the graph shows the real overlapping mask curves
+- Per-band Amount from 0.00 to 1.00 bit in 0.05-bit steps
+- Per-band Phase from -180 to +180 degrees in 1-degree steps
+- Independent Add/Move and exclusive Listen controls; Listen has priority over Mono Check
+- No Output Trim in 1.0
+
+Amount uses `2^bits - 1`: 0 bit is no transfer and 1 bit is a unity coefficient applied to that
+band's mask. This does not mean that a narrow mask itself reaches unity everywhere. In particular,
+the 7–10 kHz mask peaks below one with gentle slopes; select 48 or 96 dB/oct when that band needs a
+flatter interior.
+
+Move uses the unrotated amount for Side removal while the Mid injection uses the selected phase.
+With every band in Move at 1 bit, the five masks sum to a full Side removal. Add can raise peaks,
+especially near 0 or 180 degrees, and there is deliberately no automatic level compensation; leave
+headroom or trim after the plugin.
+
+The linear-phase engine reports 18,432 samples of PDC. That is approximately 418 ms at 44.1 kHz,
+384 ms at 48 kHz, 192 ms at 96 kHz, and 96 ms at 192 kHz. Parameter changes use 50 ms dual-kernel
+crossfades. At high sample rates and steep slopes, the kernel builder enforces extra crossover
+spacing (up to 16 FFT bins at 96 dB/oct) so automated or malformed crossover values cannot create
+negative masks.
+
 ### RCBitBrickwall V4.0 — Brickwall Limiter (recommended)
 
 True brickwall lookahead limiter with switchable Light/HQ modes.

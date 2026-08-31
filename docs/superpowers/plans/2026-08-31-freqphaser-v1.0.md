@@ -126,16 +126,18 @@ def test_response_symmetry_and_layout():
     assert all(a//65536 == (a+n-1)//65536 for a, n in layout.fft_spans)
 ```
 
-- [ ] **Step 2: Port the proven reference primitives**
+- [x] **Step 2: Port the proven reference primitives**
 
-Port `lp_fft`, `lp_ifft`, `partitioned_convolve`, Kaiser helpers, and `page_layout` from
+Port `lp_fft`, `lp_ifft`, `partitioned_convolve`, Kaiser helpers, and `engine_layout` from
 `/Users/macbook/projects/reascripts/.claude/worktrees/rcbitnova/tools/rcbitnova_dsp.py`. Preserve
 normalisation and hop ordering. Add `build_transfer_spectra` that fills positive bins from
 `transfer_at`, mirrors their conjugates, and keeps DC/Nyquist real.
 
-- [ ] **Step 3: Test a centred identity kernel**
+- [x] **Step 3: Test a centred identity kernel**
 
 Use a 32768-tap impulse at index 16384 and assert the partitioned engine's peak is sample 18432.
+Also realize the requested response through IFFT, BD/2 shift, Kaiser beta 14, and FFT so tests cover
+the FIR that the plugin actually builds rather than only the ideal spectrum.
 
 - [ ] **Step 4: Run all tests and commit**
 
@@ -195,6 +197,10 @@ FDL, output rings, dry rings, and PDC from `JSFX/RCBitNova V1.1`. Remove HP/LP a
 For each positive bin, compute four stable logistic crossover fractions, five telescoping masks,
 `amount=pow(2,bits)-1`, and `cos/sin` phase factors. Build conjugate-symmetric injection and real
 removal spectra, inverse-transform, shift by 16384, window, and partition.
+
+Sanitize NaN/Inf and enforce ordered crossover values at this kernel boundary. The minimum spacing
+is slope-dependent: 2/4/8/16 resolvable bins for 12/24/48/96 dB/oct respectively. GUI clamping is
+not a substitute because host automation and presets can bypass it.
 
 - [ ] **Step 4: Process M/S**
 
@@ -303,6 +309,8 @@ filename. Never replace the user's production file without confirmation.
 Verify compile/load, PDC 18432, delayed null, each band Add/Move at 0/0.5/1 bit, phase
 0/±90/±180, all slopes, crossover sweeps, Listen/Mono priority, automation, preset reload,
 44.1/48/96/192 kHz, offline tail, CPU, and the harmonica excerpt in stereo and mono.
+Use an instrumented copy, never the production artifact, to dump the realized JSFX kernels and
+compare them bin-for-bin with `tools/freqphaser_dsp.py`.
 
 - [ ] **Step 4: Commit documentation and regression-tested fixes**
 
