@@ -1,6 +1,11 @@
 import math
+from pathlib import Path
 
 from tools import freqphaser_dsp as dsp
+from tools import freqphaser_gates as gates
+
+
+PLUGIN = Path("JSFX/Freqphaser 1.0")
 
 
 def test_amount_curve_has_zero_and_unity_endpoints():
@@ -79,3 +84,13 @@ def test_partitioned_convolution_adds_one_hop_of_runtime_latency():
     peak = max(range(len(output)), key=lambda index: abs(output[index]))
     assert peak == 12
     assert output[peak] == 1.0
+
+
+def test_freqphaser_slider_manifest_is_exact():
+    gates.assert_slider_manifest(PLUGIN.read_text())
+
+
+def test_freqphaser_layout_and_eel2_source_are_safe():
+    source = PLUGIN.read_text()
+    gates.assert_page_safe_layout(source)
+    gates.assert_no_nested_ternary_compound_assignments(source)

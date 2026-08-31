@@ -1,0 +1,51 @@
+desc:Freqphaser 1.0 - Five-Band Side-to-Mid Phase Router
+options:want_all_kb
+
+// GPL v3 - Dima Gorelik, 2026
+// 0 bit means no transfer; 1 bit means unity transfer: amount = 2^bits - 1.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:200<20,20000,1>-Crossover 1 (Hz)
+slider2:1500<20,20000,1>-Crossover 2 (Hz)
+slider3:7000<20,20000,1>-Crossover 3 (Hz)
+slider4:10000<20,20000,1>-Crossover 4 (Hz)
+slider5:1<0,3,1{12,24,48,96}>-Slope (dB/oct)
+slider6:0<0,1,1{Off,On}>-Mono Check
+
+slider11:0<0,1,0.05>-B1 Amount (bit)
+slider12:0<-180,180,1>-B1 Phase (deg)
+slider13:0<0,1,1{Add,Move}>-B1 Mode
+slider14:0<0,1,1{Off,On}>-B1 Listen
+
+slider21:0<0,1,0.05>-B2 Amount (bit)
+slider22:0<-180,180,1>-B2 Phase (deg)
+slider23:0<0,1,1{Add,Move}>-B2 Mode
+slider24:0<0,1,1{Off,On}>-B2 Listen
+
+slider31:0<0,1,0.05>-B3 Amount (bit)
+slider32:0<-180,180,1>-B3 Phase (deg)
+slider33:0<0,1,1{Add,Move}>-B3 Mode
+slider34:0<0,1,1{Off,On}>-B3 Listen
+
+slider41:0<0,1,0.05>-B4 Amount (bit)
+slider42:0<-180,180,1>-B4 Phase (deg)
+slider43:0<0,1,1{Add,Move}>-B4 Mode
+slider44:0<0,1,1{Off,On}>-B4 Listen
+
+slider51:0<0,1,0.05>-B5 Amount (bit)
+slider52:0<-180,180,1>-B5 Phase (deg)
+slider53:0<0,1,1{Add,Move}>-B5 Mode
+slider54:0<0,1,1{Off,On}>-B5 Listen
+
+@init
+
+FP_BD = 32768;
+FP_P = 2048;
+FP_B = 4096;
+FP_KMAX = 16;
+FP_LATENCY = 18432;
+ext_noinit = 1;
