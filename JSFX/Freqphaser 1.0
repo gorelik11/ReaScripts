@@ -49,3 +49,316 @@ FP_B = 4096;
 FP_KMAX = 16;
 FP_LATENCY = 18432;
 ext_noinit = 1;
+
+FP_PB2 = FP_B * 2;
+FP_OUTN = 16384;
+FP_DRYN = 32768;
+FP_ONE_BIT_DB = 6.020599913279624;
+
+// JSFX FFT buffers may not cross a 65536-word page.  A 32768-point
+// complex FFT occupies a full page, so its buffer must begin on one.
+function fp_align(p, unit) local(u) (
+  u = min(unit, 65536);
+  ceil(p / u) * u;
+);
+
+function fp_layout(base) local(p, bank_words) (
+  p = fp_align(base, FP_BD * 2);
+  fp_desbuf = p; p += FP_BD * 2;
+  fp_ktime = p; p += FP_BD;
+  fp_window = p; p += FP_BD;
+
+  bank_words = FP_KMAX * FP_PB2;
+  p = fp_align(p, FP_PB2); fp_hinj_active = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hinj_target = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hrem_active = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hrem_target = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_fdl = p; p += bank_words;
+
+  p = fp_align(p, FP_PB2); fp_fftw = p; p += FP_PB2;
+  p = fp_align(p, FP_PB2); fp_accum = p; p += FP_PB2;
+  p = fp_align(p, FP_PB2); fp_tmpc = p; p += FP_PB2;
+
+  fp_in_side = p; p += FP_B;
+  fp_out_inj = p; p += FP_OUTN;
+  fp_out_rem = p; p += FP_OUTN;
+  fp_dry_mid = p; p += FP_DRYN;
+  fp_dry_side = p; p += FP_DRYN;
+  p;
+);
+
+function fp_i0(x) local(sum, term, k, halfx) (
+  sum = 1; term = 1; k = 1; halfx = x * 0.5;
+  while (k < 40) (
+    term *= (halfx / k) * (halfx / k);
+    sum += term;
+    k += 1;
+  );
+  sum;
+);
+
+function fp_build_window() local(i, a, norm) (
+  norm = 1 / fp_i0(14);
+  i = 0;
+  loop(FP_BD,
+    a = 2 * i / (FP_BD - 1) - 1;
+    fp_window[i] = fp_i0(14 * sqrt(max(1 - a * a, 0))) * norm;
+    i += 1;
+  );
+);
+
+function fp_high_fraction(freq, cutoff, slope) local(z) (
+  freq <= 0 ? (
+    0;
+  ) : (
+    z = slope / FP_ONE_BIT_DB * log(freq / cutoff) / log(2);
+    z >= 60 ? 1 : z <= -60 ? 0 : 1 / (1 + pow(2, -z));
+  );
+);
+
+// Writes the current combined response to fp_tr/fp_ti (Mid injection)
+// and fp_rr (unrotated Side removal).  pow(2, bits) - 1 is the agreed
+// zero-origin bit scale inherited from RCBitRangeGain.
+function fp_transfer(freq, negative_bin)
+  local(c1, c2, c3, c4, w, b, bits, amount, phase, move, listen_amount) (
+  c1 = fp_high_fraction(freq, fp_cuts[0], fp_slope);
+  c2 = fp_high_fraction(freq, fp_cuts[1], fp_slope);
+  c3 = fp_high_fraction(freq, fp_cuts[2], fp_slope);
+  c4 = fp_high_fraction(freq, fp_cuts[3], fp_slope);
+  fp_weights[0] = 1 - c1;
+  fp_weights[1] = c1 - c2;
+  fp_weights[2] = c2 - c3;
+  fp_weights[3] = c3 - c4;
+  fp_weights[4] = c4;
+
+  fp_tr = 0; fp_ti = 0; fp_rr = 0;
+  b = 0;
+  loop(5,
+    w = fp_weights[b];
+    bits = fp_bits[b];
+    amount = pow(2, bits) - 1;
+    listen_amount = fp_listen_band == b ? 1 : 0;
+    fp_listen_band >= 0 ? amount = listen_amount;
+    phase = fp_phase[b] * $pi / 180;
+    fp_tr += w * amount * cos(phase);
+    fp_ti += w * amount * sin(phase);
+    move = fp_move[b];
+    fp_listen_band < 0 && move > 0.5 ? fp_rr += w * amount;
+    b += 1;
+  );
+  negative_bin ? fp_ti = -fp_ti;
+);
+
+function fp_partition_kernel(destination)
+  local(k, i, base) (
+  k = 0;
+  loop(FP_KMAX,
+    base = k * FP_PB2;
+    i = 0;
+    loop(FP_P,
+      fp_fftw[i*2] = fp_ktime[k*FP_P + i];
+      fp_fftw[i*2+1] = 0;
+      i += 1;
+    );
+    i = FP_P;
+    loop(FP_B - FP_P,
+      fp_fftw[i*2] = 0;
+      fp_fftw[i*2+1] = 0;
+      i += 1;
+    );
+    fft(fp_fftw, FP_B); fft_permute(fp_fftw, FP_B);
+    memcpy(destination + base, fp_fftw, FP_PB2);
+    k += 1;
+  );
+);
+
+function fp_spectrum_to_kernel(destination, response_kind)
+  local(i, kk, freq, negative_bin, src, inv, half) (
+  half = FP_BD * 0.5;
+  i = 0;
+  loop(FP_BD,
+    kk = i <= half ? i : FP_BD - i;
+    freq = kk * srate / FP_BD;
+    negative_bin = i > half;
+    fp_transfer(freq, negative_bin);
+    response_kind == 0 ? (
+      fp_desbuf[i*2] = fp_tr;
+      fp_desbuf[i*2+1] = (i == 0 || i == half) ? 0 : fp_ti;
+    ) : (
+      fp_desbuf[i*2] = fp_rr;
+      fp_desbuf[i*2+1] = 0;
+    );
+    i += 1;
+  );
+
+  fft_ipermute(fp_desbuf, FP_BD); ifft(fp_desbuf, FP_BD);
+  inv = 1 / FP_BD;
+  i = 0;
+  loop(FP_BD,
+    src = i + half; src >= FP_BD ? src -= FP_BD;
+    fp_ktime[i] = fp_desbuf[src*2] * inv * fp_window[i];
+    i += 1;
+  );
+  fp_partition_kernel(destination);
+);
+
+function fp_build_kernels() local(words) (
+  fp_spectrum_to_kernel(fp_hinj_target, 0);
+  fp_spectrum_to_kernel(fp_hrem_target, 1);
+  words = FP_KMAX * FP_PB2;
+  memcpy(fp_hinj_active, fp_hinj_target, words);
+  memcpy(fp_hrem_active, fp_hrem_target, words);
+  fp_kernel_valid = 1;
+  fp_dirty = 0;
+);
+
+function fp_convolve_bank(hspec, outbuf)
+  local(k, idx, i, out_index, scale) (
+  memset(fp_accum, 0, FP_PB2);
+  k = 0;
+  loop(FP_KMAX,
+    idx = fp_fdl_write - k; idx < 0 ? idx += FP_KMAX;
+    memcpy(fp_tmpc, fp_fdl + idx * FP_PB2, FP_PB2);
+    convolve_c(fp_tmpc, hspec + k * FP_PB2, FP_B);
+    i = 0;
+    loop(FP_PB2,
+      fp_accum[i] += fp_tmpc[i];
+      i += 1;
+    );
+    k += 1;
+  );
+  fft_ipermute(fp_accum, FP_B); ifft(fp_accum, FP_B);
+  scale = 1 / FP_B;
+  i = 0;
+  loop(FP_P,
+    out_index = fp_out_write + i; out_index >= FP_OUTN ? out_index -= FP_OUTN;
+    outbuf[out_index] = fp_accum[(FP_P + i)*2] * scale;
+    i += 1;
+  );
+);
+
+// One Side FFT feeds both the injection and removal convolutions.
+function fp_run_hop() local(i, source_index) (
+  i = 0;
+  loop(FP_B,
+    source_index = fp_input_write + i; source_index >= FP_B ? source_index -= FP_B;
+    fp_fftw[i*2] = fp_in_side[source_index];
+    fp_fftw[i*2+1] = 0;
+    i += 1;
+  );
+  fft(fp_fftw, FP_B); fft_permute(fp_fftw, FP_B);
+  memcpy(fp_fdl + fp_fdl_write * FP_PB2, fp_fftw, FP_PB2);
+
+  fp_convolve_bank(fp_hinj_active, fp_out_inj);
+  fp_convolve_bank(fp_hrem_active, fp_out_rem);
+
+  fp_out_write += FP_P; fp_out_write >= FP_OUTN ? fp_out_write -= FP_OUTN;
+  fp_fdl_write += 1; fp_fdl_write >= FP_KMAX ? fp_fdl_write = 0;
+);
+
+function fp_process(side_input) (
+  fp_in_side[fp_input_write] = side_input;
+  fp_input_write += 1; fp_input_write >= FP_B ? fp_input_write = 0;
+  fp_hop_count += 1;
+
+  fp_injection = fp_out_inj[fp_out_read];
+  fp_removal = fp_out_rem[fp_out_read];
+  fp_out_read += 1; fp_out_read >= FP_OUTN ? fp_out_read = 0;
+
+  fp_hop_count >= FP_P ? (
+    fp_hop_count = 0;
+    fp_run_hop();
+  );
+);
+
+function fp_publish_pdc() (
+  pdc_delay = FP_LATENCY;
+  pdc_bot_ch = 0;
+  pdc_top_ch = 2;
+  ext_tail_size = FP_BD + 2 * FP_P + 64;
+);
+
+fp_cuts = 0;
+fp_weights = 8;
+fp_bits = 16;
+fp_phase = 24;
+fp_move = 32;
+fp_base = 65536;
+fp_top = fp_layout(fp_base);
+memset(fp_base, 0, fp_top - fp_base);
+freembuf(fp_top + 1);
+fp_build_window();
+
+fp_input_write = 0;
+fp_hop_count = 0;
+fp_out_read = 0;
+fp_out_write = FP_P;
+fp_fdl_write = 0;
+fp_dry_write = 0;
+fp_kernel_valid = 0;
+fp_dirty = 1;
+fp_listen_band = -1;
+fp_publish_pdc();
+
+@slider
+
+fp_min_step = max(srate / FP_BD, 1);
+fp_max_cut = min(20000, srate * 0.49);
+slider1 = min(max(slider1, 20), fp_max_cut - 3*fp_min_step);
+slider2 = min(max(slider2, slider1 + fp_min_step), fp_max_cut - 2*fp_min_step);
+slider3 = min(max(slider3, slider2 + fp_min_step), fp_max_cut - fp_min_step);
+slider4 = min(max(slider4, slider3 + fp_min_step), fp_max_cut);
+
+fp_cuts[0] = slider1; fp_cuts[1] = slider2;
+fp_cuts[2] = slider3; fp_cuts[3] = slider4;
+fp_slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
+
+fp_bits[0] = slider11; fp_phase[0] = slider12; fp_move[0] = slider13;
+fp_bits[1] = slider21; fp_phase[1] = slider22; fp_move[1] = slider23;
+fp_bits[2] = slider31; fp_phase[2] = slider32; fp_move[2] = slider33;
+fp_bits[3] = slider41; fp_phase[3] = slider42; fp_move[3] = slider43;
+fp_bits[4] = slider51; fp_phase[4] = slider52; fp_move[4] = slider53;
+
+fp_listen_band = -1;
+slider14 > 0.5 ? fp_listen_band = 0;
+fp_listen_band < 0 && slider24 > 0.5 ? fp_listen_band = 1;
+fp_listen_band < 0 && slider34 > 0.5 ? fp_listen_band = 2;
+fp_listen_band < 0 && slider44 > 0.5 ? fp_listen_band = 3;
+fp_listen_band < 0 && slider54 > 0.5 ? fp_listen_band = 4;
+fp_dirty = 1;
+fp_publish_pdc();
+
+@block
+
+fp_dirty ? fp_build_kernels();
+
+@sample
+
+fp_left = spl0; fp_right = spl1;
+fp_mid = (fp_left + fp_right) * 0.5;
+fp_side = (fp_left - fp_right) * 0.5;
+
+fp_dry_mid[fp_dry_write] = fp_mid;
+fp_dry_side[fp_dry_write] = fp_side;
+fp_dry_read = fp_dry_write - FP_LATENCY;
+fp_dry_read < 0 ? fp_dry_read += FP_DRYN;
+fp_mid_delayed = fp_dry_mid[fp_dry_read];
+fp_side_delayed = fp_dry_side[fp_dry_read];
+fp_dry_write += 1; fp_dry_write >= FP_DRYN ? fp_dry_write = 0;
+
+fp_process(fp_side);
+
+fp_listen_band >= 0 ? (
+  spl0 = fp_injection;
+  spl1 = fp_injection;
+) : (
+  fp_mid_out = fp_mid_delayed + fp_injection;
+  fp_side_out = fp_side_delayed - fp_removal;
+  slider6 > 0.5 ? (
+    spl0 = fp_mid_out;
+    spl1 = fp_mid_out;
+  ) : (
+    spl0 = fp_mid_out + fp_side_out;
+    spl1 = fp_mid_out - fp_side_out;
+  );
+);

@@ -94,3 +94,7 @@ def test_freqphaser_layout_and_eel2_source_are_safe():
     source = PLUGIN.read_text()
     gates.assert_page_safe_layout(source)
     gates.assert_no_nested_ternary_compound_assignments(source)
+
+
+def test_freqphaser_dsp_structure_uses_shared_side_fdl():
+    gates.assert_dsp_structure(PLUGIN.read_text())

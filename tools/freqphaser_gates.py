@@ -62,3 +62,28 @@ def assert_no_nested_ternary_compound_assignments(source: str) -> None:
         re.DOTALL,
     )
     assert dangerous.search(source) is None
+
+
+def assert_dsp_structure(source: str) -> None:
+    """Keep the first audio engine structurally aligned with the approved design."""
+    for token in (
+        "function fp_layout",
+        "function fp_build_kernels",
+        "function fp_run_hop",
+        "function fp_process",
+        "function fp_publish_pdc",
+        "fp_fdl",
+        "fp_hinj_active",
+        "fp_hinj_target",
+        "fp_hrem_active",
+        "fp_hrem_target",
+        "pow(2, bits) - 1",
+    ):
+        assert token in source, token
+
+    # Side is analysed once per runtime hop; kernel partition FFTs are offline builds.
+    run_hop = source.split("function fp_run_hop", 1)[1].split(
+        "function fp_process", 1
+    )[0]
+    assert run_hop.count("fft(fp_fftw, FP_B)") == 1
+    assert run_hop.count("memcpy(fp_fdl + fp_fdl_write") == 1
