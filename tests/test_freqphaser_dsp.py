@@ -140,6 +140,8 @@ def test_zero_kernel_changes_do_not_arm_empty_rebuilds():
         active_removal=False,
         target_injection=False,
         target_removal=False,
+        kernel_valid=True,
+        kernel_changed=False,
     )
     assert dsp.kernel_rebuild_needed(
         bits=(0.0, 0.0, 0.05, 0.0, 0.0),
@@ -148,6 +150,44 @@ def test_zero_kernel_changes_do_not_arm_empty_rebuilds():
         active_removal=False,
         target_injection=False,
         target_removal=False,
+        kernel_valid=True,
+        kernel_changed=True,
+    )
+
+
+def test_route_only_change_does_not_rebuild_existing_kernel():
+    assert not dsp.kernel_rebuild_needed(
+        bits=(0.5, 0.0, 0.0, 0.0, 0.0),
+        listen_band=-1,
+        active_injection=True,
+        active_removal=False,
+        target_injection=True,
+        target_removal=False,
+        kernel_valid=True,
+        kernel_changed=False,
+    )
+    assert dsp.kernel_rebuild_needed(
+        bits=(0.5, 0.0, 0.0, 0.0, 0.0),
+        listen_band=-1,
+        active_injection=True,
+        active_removal=False,
+        target_injection=True,
+        target_removal=False,
+        kernel_valid=True,
+        kernel_changed=True,
+    )
+
+
+def test_first_nonzero_kernel_builds_without_zero_bank_fade():
+    assert dsp.kernel_rebuild_needed(
+        bits=(0.0, 0.0, 0.0, 1.0, 0.0),
+        listen_band=-1,
+        active_injection=False,
+        active_removal=False,
+        target_injection=False,
+        target_removal=False,
+        kernel_valid=False,
+        kernel_changed=True,
     )
 
 

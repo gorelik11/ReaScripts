@@ -199,6 +199,31 @@ function fp_sanitize_discrete()
   fp_listen_band < 0 && fp_listen_values[4] > 0.5 ? fp_listen_band = 4;
 );
 
+function fp_kernel_signature_changed() local(b, changed) (
+  changed = fp_slope != fp_built_slope || fp_listen_band != fp_built_listen;
+  b = 0;
+  loop(4,
+    fp_cuts[b] != fp_built_cuts[b] ? changed = 1;
+    b += 1;
+  );
+  b = 0;
+  loop(5,
+    (fp_bits[b] != fp_built_bits[b] || fp_phase[b] != fp_built_phase[b] ||
+     fp_move[b] != fp_built_move[b]) ? changed = 1;
+    b += 1;
+  );
+  changed;
+);
+
+function fp_save_built_signature() (
+  fp_built_slope = fp_slope;
+  fp_built_listen = fp_listen_band;
+  memcpy(fp_built_cuts, fp_cuts, 4);
+  memcpy(fp_built_bits, fp_bits, 5);
+  memcpy(fp_built_phase, fp_phase, 5);
+  memcpy(fp_built_move, fp_move, 5);
+);
+
 function fp_arm_kernel_change() local(b, requested) (
   requested = fp_listen_band >= 0;
   b = 0;
@@ -206,8 +231,14 @@ function fp_arm_kernel_change() local(b, requested) (
     fp_bits[b] > 0 ? requested = 1;
     b += 1;
   );
-  requested || fp_active_injection_needed || fp_active_removal_needed ||
-  fp_target_injection_needed || fp_target_removal_needed ? fp_dirty = 1 : fp_dirty = 0;
+  !fp_kernel_valid ? (
+    fp_dirty = requested;
+  ) : requested ? (
+    fp_dirty = fp_kernel_signature_changed();
+  ) : (
+    fp_dirty = fp_active_injection_needed || fp_active_removal_needed ||
+               fp_target_injection_needed || fp_target_removal_needed;
+  );
 );
 
 // Writes the current combined response to fp_tr/fp_ti (Mid injection)
@@ -318,6 +349,7 @@ function fp_commit_targets() local(words) (
   fp_active_removal_needed = fp_target_removal_needed;
   fp_fading = 0;
   fp_fade_pos = 0;
+  fp_arm_kernel_change();
 );
 
 function fp_build_kernels() local(words) (
@@ -326,6 +358,7 @@ function fp_build_kernels() local(words) (
   fp_build_spectra();
   fp_spectrum_to_kernel(fp_desbuf, fp_hinj_target);
   fp_spectrum_to_kernel(fp_rem_spectrum, fp_hrem_target);
+  fp_save_built_signature();
   words = FP_KMAX * FP_PB2;
   fp_kernel_valid ? (
     fp_fading = 1;
@@ -490,6 +523,10 @@ fp_listen_values = 136;
 fp_gain_re = 88;
 fp_gain_im = 96;
 fp_gain_rem = 104;
+fp_built_cuts = 144;
+fp_built_bits = 152;
+fp_built_phase = 160;
+fp_built_move = 168;
 fp_base = 65536;
 fp_top = fp_layout(fp_base);
 memset(fp_base, 0, fp_top - fp_base);
@@ -502,7 +539,7 @@ fp_out_read = 0;
 fp_out_write = FP_P;
 fp_fdl_write = 0;
 fp_dry_write = 0;
-fp_kernel_valid = 1;
+fp_kernel_valid = 0;
 fp_dirty = 0;
 fp_build_clock = FP_REBUILD_INTERVAL;
 fp_listen_band = -1;
@@ -515,6 +552,9 @@ fp_last_cuts[2] = 7000; fp_last_cuts[3] = 10000;
 memset(fp_last_bits, 0, 5); memset(fp_last_phase, 0, 5);
 memset(fp_last_move, 0, 5); memset(fp_last_listen, 0, 5);
 fp_last_slope = 1; fp_last_mono = 0; fp_mono_check = 0;
+memset(fp_built_cuts, 0, 4); memset(fp_built_bits, 0, 5);
+memset(fp_built_phase, 0, 5); memset(fp_built_move, 0, 5);
+fp_built_slope = -1; fp_built_listen = -2;
 fp_fading = 0;
 fp_fade_pos = 0;
 fp_fade_len = max(1, floor(srate * 0.05));

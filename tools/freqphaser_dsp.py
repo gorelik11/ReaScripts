@@ -184,13 +184,17 @@ def kernel_rebuild_needed(
     active_removal: bool,
     target_injection: bool,
     target_removal: bool,
+    kernel_valid: bool,
+    kernel_changed: bool,
 ) -> bool:
     """Match the JSFX rule that suppresses zero-to-zero kernel rebuilds."""
 
     requested = listen_band >= 0 or any(value > 0.0 for value in bits)
-    return requested or any(
-        (active_injection, active_removal, target_injection, target_removal)
-    )
+    if not kernel_valid:
+        return requested
+    if requested:
+        return kernel_changed
+    return any((active_injection, active_removal, target_injection, target_removal))
 
 
 def transfer_at(
