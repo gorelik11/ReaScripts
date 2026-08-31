@@ -98,7 +98,7 @@ The input Mid and Side are delayed by the engine's exact measured latency before
 
 ### 3.2 Complementary five-band masks
 
-One FFT analysis of Side produces spectrum `X[k]`. Four monotonic high-side crossover functions
+The kernel builder evaluates the Side spectrum `X[k]`. Four monotonic high-side crossover functions
 `C1…C4` are evaluated for every positive-frequency bin. Each is 0 below its crossover, 0.5 at the
 crossover, and 1 above it. Its asymptotic amplitude slope is the selected 12/24/48/96 dB/oct.
 
@@ -176,37 +176,43 @@ Consequences:
 
 ### 4.1 Architecture
 
-The engine uses one Side analysis FFT, not five independent filter engines. Per frame it builds:
+The engine uses RCBitNova's live-proven partitioned overlap-save architecture rather than five
+independent band filters or a new WOLA implementation. A kernel rebuild evaluates the combined
+frequency responses and produces:
 
-1. the phase-rotated Mid-injection spectrum `I`;
-2. the unrotated Move-removal spectrum `R`;
-3. at most one Listen spectrum when auditioning.
+1. a phase-rotated Mid-injection kernel `H_I`;
+2. an unrotated Move-removal kernel `H_R`;
+3. a selected-band Listen kernel in place of `H_I` while auditioning.
 
-Only the spectra required by the current state receive inverse FFTs. A shared analysis avoids a
-fivefold FFT cost and makes mask complementarity explicit.
+At runtime one FFT/FDL analysis of Side is shared by the required convolution outputs. Five bands
+therefore change only the kernel-building math, not the number of input FFTs. Add-only operation
+does not run the removal convolution; Listen runs only the Listen convolution.
 
 ### 4.2 Geometry
 
-- FFT size `N = 32768`.
-- Hop `H = 2048`.
-- Weighted overlap-add with a matched square-root Hann analysis/synthesis window and explicit
-  overlap normalisation.
+- Kernel design size `BD = 32768`.
+- Partition size `P = 2048`, runtime FFT size `B = 4096`, and `KMAX = BD / P = 16`.
+- Desired conjugate-symmetric complex responses are inverse-transformed, circularly shifted by
+  `BD/2`, Kaiser-windowed with beta 14, partitioned, and transformed into convolution spectra.
+- Runtime uses partitioned overlap-save with one shared Side FDL and separate accumulation/output
+  rings for injection and removal.
 - Instance-local memory only; no `gmem`.
 - Every FFT/ifft buffer is allocated with RCBitNova's page-safe layout rule. A 32768-point complex
   buffer occupies one 65536-word page and must start on a page boundary. Misalignment is treated
   as a hard verification failure because RCBitNova proved that it causes silent corruption.
 
-Latency is deliberately not constrained: this is a mastering plugin. The implementation derives
-and reports `pdc_delay` from the actual engine, and an impulse test must prove that the reported
-value equals the measured output delay. `ext_tail_size` is derived from the analysis window,
-overlap, crossfade, and synthesis tail so an offline render cannot truncate processed audio.
+The expected runtime latency is RCBitNova's measured high-resolution geometry,
+`BD/2 + P = 18432` samples. The implementation derives and reports `pdc_delay` from the active
+geometry, and an impulse test must prove that the reported value equals the measured output delay.
+`ext_tail_size` is derived from the kernel support, hop, and crossfade so an offline render cannot
+truncate processed audio.
 
 ### 4.3 Neutral state
 
 When every Amount is zero and Listen is off, the audible path uses a latency-matched dry delay
-rather than an FFT round trip. The input ring continues to receive samples so processing can be
-enabled without an uninitialised history window. The neutral output must be sample-identical to
-the delayed input.
+rather than a convolution round trip. The Side input ring/FDL continues to receive samples so
+processing can be enabled without uninitialised history. The neutral output must be
+sample-identical to the delayed input.
 
 ## 5. Parameter transitions
 
@@ -300,7 +306,7 @@ Required tests:
 6. All bands Move at 1 bit removes Side within numerical tolerance.
 7. Neutral state is sample-identical to the delayed input.
 8. Reported latency equals the measured impulse position.
-9. WOLA reconstruction and tail length hold at 44.1, 48, 96, and 192 kHz.
+9. Partitioned-convolution reconstruction and tail length hold at 44.1, 48, 96, and 192 kHz.
 10. A transition ending at 50 ms lands exactly on the target, never snaps, and returns to the
     single steady-state path.
 11. Listen exclusivity/priority and Mono Check equations are deterministic.
