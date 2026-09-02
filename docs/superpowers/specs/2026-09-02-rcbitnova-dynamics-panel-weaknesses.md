@@ -1,195 +1,155 @@
-# RCBitNova Dynamics Panel: Spec Weaknesses
+# RCBitNova Dynamics Panel: Rev 2 Weaknesses
 
 **Reviewed:**
 
-- `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` (rev 1)
-- implementation baseline `JSFX/RCBitNova V1.1` at `c892d4c`
-- current source gate, compile check, migration, FakeReaper, and null harness
+- `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` (rev 2, `9343018`)
+- implementation baseline `JSFX/RCBitNova V1.1` at `9343018`
+- current source gate, compile check, migration, FakeReaper, and migration tests
 
 ## Summary
 
-The chosen product shape is coherent: eight comparable rows, both cascade stages visible, and one
-expanded detail area. The separation between Macro and Micro also preserves the established
-one-gesture/one-slider rule.
+Rev 2 substantively closes all nine findings from the rev 1 review. The control set, field
+quantisation, one-card representation, geometry, per-writer rebuild manifest, and live immediate-
+application matrix are now concrete enough to plan.
 
-The spec is not yet safe to implement. It treats all eleven new writers as local band rebuilds, but
-three parameter families depend on state maintained only by the global `@slider` pass. It also
-updates only one of several contracts affected by adding a declared parameter. The remaining gaps
-are mostly interaction-state and geometry decisions that need to be made before code, not while
-debugging the finished panel.
+Two release-blocking contracts are still incomplete. The compatibility gate protects only V1.0's
+95-record prefix, not the 175-record parameter map of V1.1 instances already used in projects. The
+new global dynamics helper also does not say where `topo_pdc()` is called; neither possible implicit
+interpretation preserves both immediate GUI application and the current `@slider` ordering.
 
 | Priority | Count | Meaning |
 |---|---:|---|
-| P0 | 2 | Can produce a GUI that displays new values while audio or migration remains wrong |
-| P1 | 5 | Material interaction, persistence, range, or geometry ambiguity |
-| P2 | 2 | Incorrect or incomplete supporting claims |
+| P0 | 2 | Can silently corrupt existing V1.1 project parameters or leave host latency stale |
+| P1 | 3 | Core interaction or responsive-state contract is internally ambiguous |
+| P2 | 2 | Residual contradictions and incorrect supporting counts |
 
 ## P0 Findings
 
-### P0.1: “Both rebuild calls” do not apply several dynamics parameters to the engine
+### P0.1: The proposed manifest still does not protect existing V1.1 projects
 
-The proposed writer contract requires every new writer to call `setup_band(b)` and
-`setup_band_dyn(b)`. In the current source, `setup_band_dyn()` updates detector coefficients,
-`dp[]`, `dm[]`, and `bp[]`. It does **not** update:
+The instruction to declare `slider143` last is correct, but the reason and the proposed gate are
+not. In the current declaration order, `slider142` is record 94 (zero-based), the final record of
+V1.0's 95-record block. Declaring `slider143` immediately after it would produce:
 
-- `mbmode[b]`, which owns Dyn Mode;
-- `hc[b]`, which owns Hard Ceiling Macro + Micro;
-- `any_b` and the resulting Mode-B lookahead/PDC state.
+- records 0..94: the same V1.0 prefix;
+- record 95: Panel state;
+- records 96..175: the shifted B5-B8 block.
 
-Those values are rebuilt only in the global `@slider` scan. The current source explicitly says GUI
-writers must not rely on `@slider` running after `slider_automate`, which is why existing writers
-recompute their derived state inline.
+Therefore the rev 2 `--live` check in section 5 still passes: it compares only V1.0's 95 records to
+the first 95 V1.1 records and checks the total count. The V1.0 migration also still copies its 95
+declared values correctly. What breaks is more dangerous and currently ungated: every saved V1.1
+instance has its B5-B8 values interpreted one parameter later when reopened. The spec explicitly
+says V1.1 is already used in `Magdalena.RPP`, so this is a live project-compatibility contract, not
+only a migration concern.
 
-Consequences:
+The related failure description in section 4.2 is also inaccurate. With the required append-last
+order but a stale migration constant, host Bypass/Wet/Delta land in Panel state/host Bypass/host Wet;
+they do not land in B5 Enable/B5 Type/B5 Freq. The latter corruption comes from inserting the panel
+record before B5-B8.
 
-- `gc_w_dynmode` can move the field and Param value while audio keeps the old mode;
-- `gc_w_hardceil` and `gc_w_hardmicro` can display a new threshold while `hc[]` stays old;
-- `gc_w_dyn` can enable/disable local dynamics while `any_b`, lookahead, and PDC remain stale.
+**Required change:** freeze the current 175 declared V1.1 records as a source or live manifest
+fixture and require them to be the exact first 175 records of the panel build. Require `slider143`
+at record 175 and the host tail at 176..178. Keep the separate V1.0 95-record comparison for the
+migration contract. Seed an insertion-after-`slider142` defect; it must fail even though the V1.0
+prefix still passes.
 
-The null test does not catch this because it renders static loaded state; the failure occurs after a
-GUI gesture.
+### P0.2: `apply_band_dyn_global()` has no ordering-safe PDC publication contract
 
-**Required change:** extract the relevant global scan/topology publication into an explicitly safe
-helper or give the affected writers exact inline updates. The writer gate must express per-writer
-side effects, not merely require the same two calls from all twenty writers. Add live or deterministic
-tests that change Dyn, Mode, and both Hard threshold components through the panel and immediately
-verify `dp[]`, `mbmode[]`, `hc[]`, `any_b`, and reported PDC before any unrelated parameter change.
+The current source does two separate things at two deliberately separated sites:
 
-### P0.2: Adding slider143 changes more contracts than the live-gate constant
+1. lines 1313..1325 rebuild `mbmode[]`, `hc[]`, and the `any_b` fold;
+2. line 1412 calls `topo_pdc()` only after linear-engine geometry reconciliation.
 
-The spec says the declared count moves 175 -> 176 and mentions updating the live gate. Current code
-also hard-codes the old shape in:
+Rev 2 says `apply_band_dyn_global(b)` factors the first scan and is called both from `@slider` and
+from affected GUI writers. It also promises that Mode-B lookahead/PDC is published from `any_b`, but
+the helper contract lists only `mbmode`, `hc`, and the `any_b` contribution.
 
-- `tools/migrate_v10_to_v11.py` (`N_DECLARED_V11 = 175`, host tail at 175..177);
-- `tests/_reaper_fx_fake.py` (`N_DECLARED_V11 = 175`);
-- migration tests that assert host Bypass at index 175 and Wet at 176;
-- `tools/rcbitnova_compile.py`, which requires 178 total parameters;
-- messages and shape checks that expect V1.1 to report 175 + 3.
+If the helper does not call `topo_pdc()`, a Dyn or Dyn Mode GUI gesture can update `any_b` while
+`pdc_delay` remains stale; requiring the helper in the writer gate still passes. If the helper does
+call `topo_pdc()`, calling it at the old scan site moves PDC publication before the geometry reconcile,
+contrary to the source's explicit ordering contract. A second call later may overwrite it, but that
+is no longer "behaviour unchanged" and publishes an intermediate value unnecessarily.
 
-If only `rcbitnova_gates.py` changes, the compile check fails and the supported V1.0 -> V1.1
-migration refuses the panel build or writes the host tail to the wrong positions.
-
-Declaration **order** is equally important. `slider143` is numerically between the global/filter
-block and B5 declarations, but V1.1 compatibility is based on declaration order, not numeric ID.
-Inserting it beside `slider142` shifts all eighty B5-B8 records and breaks the claimed 175-record
-prefix. It must be declared textually after all 175 existing declarations, despite its number.
-
-**Required change:** define one shared declared-count/host-tail contract and list every consumer.
-Require the exact existing 175 records to remain a prefix, append `slider143` as record 175, and
-place host Bypass/Wet/Delta at 176..178. Extend migration and FakeReaper tests before changing the
-plugin.
+**Required change:** split rebuild from publication explicitly. For example,
+`apply_band_dyn_global(b)` rebuilds `mbmode`, `hc`, and the full `any_b` fold only; affected GUI
+writers then call `topo_pdc()` after it. In `@slider`, keep `topo_pdc()` at its existing post-reconcile
+site. The per-writer source gate must require both calls for Dyn and Dyn Mode, and the live check must
+read reported PDC immediately after each gesture.
 
 ## P1 Findings
 
-### P1.1: The core numeric-entry and vertical-drag state machine is not designed
+### P1.1: A field press both creates and forbids the state needed to drag
 
-The product decision says every value uses a numeric field plus vertical drag, but §4 specifies only
-field drawing and an ID namespace. It does not define:
+The click-arbitration rule says a panel field press gives it typing focus and arms a drag. The drag
+rule then says a drag never begins while that same field has typing focus. On the initiating press,
+both conditions are true, so a literal implementation can never cross from armed to dragging.
 
-- drag capture, threshold, origin value, sensitivity, fine modifier, or release;
-- clamp and quantisation rules for each parameter;
-- keyboard dispatch from `100 + band*10 + slot` to the correct writer;
-- how a click is arbitrated between focus, toggle, expansion, and drag;
-- how the existing readout click handler avoids clearing a panel field focused earlier in the frame;
-- automation begin/end behaviour for a continuous drag.
+**Required change:** define the transition at release/threshold. A common contract is: mouse-down
+arms capture without entering edit mode; release below four logical pixels gives typing focus;
+crossing the threshold starts dragging and clears any old edit focus. If already-focused fields need
+different behaviour, state that separately. Test click-release-type-Enter and press-move-release as
+distinct flows.
 
-The current `gc_field()` only draws, hit-tests, and displays the shared edit buffer. All click focus,
-keyboard parsing, and commit dispatch are open-coded later in `@gfx`; generalising the drawing
-primitive alone does not generalise the interaction.
+### P1.2: A metadata `writer` is not yet an implementable JSFX dispatch contract
 
-**Required change:** specify one field controller with capture/edit states and a parameter metadata
-table (range, step, decimals, drag scale, writer ID). Give at least one complete flow for click-type-
-Enter and one for vertical drag, including cancellation and focus transfer.
+The metadata tuple contains `writer`, and Enter is said to dispatch through it. EEL2 does not provide
+the kind of first-class callable reference that this wording suggests. More importantly, this plugin
+has already proved that writing `slider(computed_index)` can move the GUI value without reaching the
+real parameter. A generic implementation based on `(table, offset)` would reintroduce that exact
+failure while appearing consistent with the tuple.
 
-### P1.2: “One card expanded” conflicts with an unconstrained eight-bit mask
+**Required change:** define `writer` as a numeric writer-family ID and specify one explicit dispatcher
+that calls `gc_w_dyn`, `gc_w_dynmode`, and the other named writers. The metadata may choose a writer;
+only the named writer may assign the slider. The source gate should reject computed slider assignment
+inside the field controller as well as checking all 88 named branches.
 
-The geometry reserves space for one expanded card, while `slider143` accepts every value 0..255.
-That representation permits any subset of the eight cards. It can acquire multiple bits through
-Param, automation, a preset, or a faulty click transition. The spec gives no load-time sanitation or
-single-card transition rule.
+### P1.3: The minimum-height fallback mixes geometry with persistent parameter state
 
-**Required change:** either use an enum (`0 = none`, `1..8 = expanded band`) or define the only valid
-mask states as zero and powers of two. On every load and write, normalise invalid values. Specify
-whether clicking the open band collapses all, and require persistence/automation tests for invalid
-and valid states. The slider write itself also needs a named assignment plus `slider_automate`.
+The spec says an expanded card "closes" when the graph falls below 180 px, but the open card is now
+an automated, persisted slider. It does not say whether resizing a window writes and automates
+`slider143 = 0`, or merely suppresses the card until enough height returns. Those behaviours differ
+after resize, undo, project save, and automation playback. Window geometry should not silently write
+a plugin parameter unless that is an explicit product decision.
 
-### P1.3: The Micro step is stated in the wrong unit
+The unit also needs pinning. Current `@gfx` uses physical `gfx_w/gfx_h` on Retina and scales logical
+coordinates through `gc_sc`; `gc_small` separately divides by `gc_ret`. The raw equations and the
+"180 px" threshold do not state whether 180 means logical or physical pixels.
 
-The spec calls Soft/Hard Micro a slider with step `0.001`. In V1.1 all ceiling Micro sliders are
-declared in **percent of a bit** with step `0.1`; multiplying by `0.01` makes that a resulting
-resolution of `0.001 bit`.
-
-This distinction controls the writer's quantisation and keyboard behaviour. Using a slider step of
-0.001 would create off-grid Param values and repeat the exact GUI/host reproducibility defect that
-the current writers were built to avoid.
-
-**Required change:** state `Micro: -100..100 %, step 0.1 % (0.001 bit after /100)`. Pin writer steps:
-Macro 0.05 bit, Micro 0.1 %, Attack 0.01 ms, Release 1 ms, enums/toggles 1. Define the displayed total
-as `Macro + Micro/100` bits and its decimal precision.
-
-### P1.4: Stereo cannot be rendered or edited by the proposed numeric primitive as written
-
-The card promises `Stereo` as `Linked / Dual L/R / Dual M/S`, but `gc_field_at(..., value, dec)`
-renders a number and the existing keyboard parser accepts numeric characters. No enum-label path,
-menu, cycle behaviour, or vertical-drag mapping is specified.
-
-**Required change:** define Stereo as a segmented/three-state control, an enum field with label
-mapping, or explicitly map integer entry/drag to the three labels. Its visual and keyboard contract
-must be testable; showing `0`, `1`, `2` does not meet the stated card design.
-
-### P1.5: Geometry claims do not match the current V1.1 layout or define legacy-window behaviour
-
-Relative to the plot bottom, current V1.1 places:
-
-- fields at +6..+26;
-- the effective-value text at y = +32 (plus its glyph height);
-- the band strip at +50..+68.
-
-The spec reports the summary at +26..+40, the strip at +44..+62, and 22 spare pixels. The real
-84-pixel reservation leaves about 16 pixels after the strip. The final reservations 228/318 can
-still be made to work, but their internal placement must be derived from the actual offsets.
-
-The release-note claim that an existing 900x500 window cuts off the panel also contradicts the
-proposed “graph shrinks” model. With reservation 228, that window yields a roughly 262-pixel graph;
-with 318, roughly 172 pixels. The panel fits unless a minimum graph height is imposed, but no such
-minimum or clipping/scrolling policy is defined. The expanded area is described as one row of five
-fields yet budgeted at approximately 90 vertical pixels, also without an exact card height.
-
-**Required change:** provide equations and y-ranges for graph, existing chrome, eight rows, expanded
-card, and bottom padding in collapsed/expanded/small states. Decide a minimum graph height and what
-happens below it. Verify 900x500 legacy, 900x640 default, Retina, narrow, short, and resize while a
-card is open.
+**Required change:** make insufficient height a derived visibility state, or explicitly require a
+persisted/automated close on resize. State that all reservations and the 180 threshold are logical
+units and show the `gc_sc`/`gc_ret` comparison. Add Retina plus shrink-and-regrow expectations to the
+resize test.
 
 ## P2 Findings
 
-### P2.1: The writer-manifest description hides its required table mapping
+### P2.1: Section 2.3 still gives Micro the rejected step
 
-The existing writer gate assumes every writer uses `stb` plus one offset. The eleven new writers
-span `dynb` and `ceb`, with different offsets and behaviours. “Checks every number against the base
-tables” is not enough to prevent an implementation from extending the current static-only
-`WRITERS` structure incorrectly.
+The table correctly says Micro is declared in percent with step 0.1%, yielding 0.001 bit after
+division by 100. Section 2.3 still says "Micro (percent of a bit, step 0.001)." That is the rev 1
+unit error the disposition says was removed.
 
-**Required change:** specify each writer as `(table, offset, step, derived-effects)` and generate all
-eight expected named sliders from that record. Include one seeded wrong-table defect, not only a
-wrong numeric branch.
+**Required change:** replace it with "Micro (percent of a bit, step 0.1%, yielding 0.001 bit)."
 
-### P2.2: Verification checks reachability but not immediate audible application
+### P2.2: The controller inventory still counts Stereo as an editable numeric field
 
-The live matrix asks whether each parameter is reachable. A writer can satisfy that by changing the
-slider and Param display while leaving `mbmode[]`, `hc[]`, or PDC stale, which is exactly P0.1.
+Section 4.3 says there are 21 editable fields: two per row times eight, plus five in the card. But
+Stereo was correctly changed to a segmented control, leaving four numeric fields in the card:
+Attack, Release, Soft Micro, and Hard Micro. The maximum is therefore 20 numeric fields, plus the
+Stereo segmented control. The metadata inventory should say whether it contains only numeric fields
+or all panel controls.
 
-**Required change:** for Dyn Mode, Dyn Enable, Hard Macro, and Hard Micro, require an immediate audio
-or internal-state observation after the panel gesture. Also test one gesture per writer on B1, B4,
-B5, and B8 so both legacy and appended slider-number branches are exercised.
+The nearby claim that `gc_button` "handles hover and click" is also slightly too strong: current
+`gc_button()` draws and returns `hot`; the caller combines that with the frame's `gc_click`. The new
+single-owner arbitration remains responsible for consuming the click.
 
 ## Recommended Revision Order
 
-1. Design the global dynamics-apply helper and per-writer derived-effects contract.
-2. Define declaration order and update every 175/178 consumer, migration first.
-3. Replace or constrain the expansion mask to enforce one open card.
-4. Specify the shared field interaction state machine and exact parameter metadata.
-5. Correct the Micro units and derive the complete geometry from current V1.1 coordinates.
+1. Add the frozen 175-record V1.1 prefix oracle and correct the compatibility explanation.
+2. Separate global dynamics rebuild from post-rebuild PDC publication and pin both call sites.
+3. Resolve field focus-versus-drag transitions and define writer-ID dispatch.
+4. Define resize as either derived visibility or a deliberate parameter write, in logical units.
+5. Correct the two residual Micro/count statements.
 
-The panel concept itself is strong. Once these contracts are explicit, implementation can remain a
-GUI-only change while still respecting V1.1's unusually strict audio and project-compatibility
-guarantees.
+After those changes, the implementation plan can be written against contracts that fail loudly for
+both known danger classes: audio state that lags the GUI and project state that shifts by one host
+parameter.

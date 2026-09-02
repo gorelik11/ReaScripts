@@ -1,6 +1,6 @@
 # RCBitNova — Dynamics Panel
 
-**Revision 2**, 2026-09-02 (after a weakness review: 2 P0, 5 P1, 2 P2 — all accepted).
+**Revision 3**, 2026-09-02 (two weakness reviews: rev 1 → 2 P0/5 P1/2 P2, rev 2 → 2 P0/3 P1/2 P2; all accepted).
 
 ## 1. Why
 
@@ -76,8 +76,8 @@ Six parameters in the row plus five in the card is all eleven.
 
 ### 2.3 The ceiling fields write Macro, and show Macro
 
-A ceiling is two sliders: `Macro` (step 0.05 since V1.1) and `Micro` (percent of a bit, step
-0.001). The row field **edits `Macro` and displays `Macro`**; `Micro` lives in the card with the
+A ceiling is two sliders: `Macro` (step 0.05 bit since V1.1) and `Micro` (percent of a bit, step
+**0.1 %**, which yields 0.001 bit after the division by 100). The row field **edits `Macro` and displays `Macro`**; `Micro` lives in the card with the
 total.
 
 The alternative — showing the sum `Macro + Micro/100` in the row — was rejected: the field would
@@ -115,12 +115,19 @@ R      = 84 + 144 = 228        ; collapsed
 R      = 84 + 144 + 94 = 318   ; expanded
 ```
 
-**Minimum graph height: 180 px.** Below that the graph stops being readable, so the panel is the
-thing that yields: under 180 the expanded card closes, and under 180 collapsed the whole panel
-hides — the same rule `gc_small` already applies, extended to a height the panel itself can trigger.
-This also answers what a legacy 900×500 window does: at R=228 the graph would be 262, which is
-fine; opening a card would take it to 172, so the card refuses to open until the window is taller.
-Nothing is clipped and nothing scrolls.
+**Minimum graph height: 180 logical pixels** — logical, like every number in this section: the
+reservations, the row height and this threshold are all multiplied by `gc_sc` when drawn, and
+`gc_small` compares `gfx_w / gc_ret` and `gfx_h / gc_ret` for the same reason.
+
+**Insufficient height is a derived visibility state and never writes a parameter.** `slider143` says
+which card the user opened; the window says whether there is room to draw it. Resizing must not
+automate a parameter write — that would survive into the project, replay under automation, and land
+in the undo history, all because someone dragged a window edge. So: below 180 the card is not drawn
+and the reservation stays at 228; grow the window back and the same card reopens, because the enum
+was never touched. Below 180 collapsed, the whole panel hides, exactly as `gc_small` already does.
+
+A legacy 900×500 window therefore shows the eight rows (graph 262) and simply does not draw a card
+until the window is taller. Nothing is clipped and nothing scrolls.
 
 **The default window grows from `@gfx 900 500` to `@gfx 900 640`.** Then:
 
@@ -147,8 +154,10 @@ room for the readout and nothing else.
 
 ## 4. What has to be built, and what already exists
 
-**Reusable as-is:** `gc_button(bx, by, bw, label, on)` already takes absolute coordinates and
-handles hover and click. Every toggle in the panel is one call.
+**Reusable as-is:** `gc_button(bx, by, bw, label, on)` already takes absolute coordinates, draws,
+and returns whether the pointer is over it. It does **not** consume the click — the caller combines
+`hot` with the frame's `gc_click`, and under the single-owner arbitration below that is the
+arbitration's job. Every toggle and every segmented cell is one call.
 
 **Needs generalising:** `gc_field(i, label, value, dec)` derives its position from a slot index and
 draws only on the readout row (`fx = gc_px + i * (gc_fw + 8*gc_sc)`, fixed `gc_fy`). The panel needs
@@ -164,6 +173,22 @@ open-coded, so the interaction gets a single controller and a metadata table.
 **Metadata, one record per parameter:** `(table, offset, lo, hi, step, decimals, drag_units, writer)`.
 `drag_units` is logical pixels per step, matching the node's 12-per-step feel. Everything below reads
 this table; nothing hard-codes a range twice.
+
+**`writer` is a numeric family ID, not a callable.** EEL2 has no first-class function references, and
+the temptation the tuple creates is worse than the inconvenience: a "generic" writer built from
+`(table, offset)` would assign through `slider(computed_index)` — which V1.0 proved live moves the
+GUI's own reading and never reaches the parameter. So the controller ends in one explicit
+dispatcher:
+
+```eel2
+w == W_DYN      ? ( gc_w_dyn(b, v); )      :
+w == W_DYNMODE  ? ( gc_w_dynmode(b, v); )  :
+...
+```
+
+The metadata may *choose* a writer; only a named writer may *assign* a slider. The source gate
+rejects any computed slider assignment inside the field controller, in addition to checking all 88
+named branches.
 
 **Click arbitration, in one pass and in this order.** A frame resolves exactly one owner:
 
@@ -183,16 +208,29 @@ having claimed the click.
 through the metadata record's writer. Escape cancels. Clicking elsewhere transfers focus, and does
 not commit — same as today.
 
-**Dragging:** press on a field arms it, and past a 4-pixel threshold (the node's threshold) it drags:
-`steps = -floor(dy / drag_units)`, applied to the value captured at press, clamped and quantised,
-written on change only. Release disarms. A drag never begins while that field has typing focus.
+**Press, drag, focus — one state machine, because rev 2 described a contradiction.** It said a press
+gives typing focus *and* arms a drag, and then that a drag never begins while the field has typing
+focus: on the initiating press both are true and nothing can ever start dragging. The transition
+belongs at the threshold, not at the press:
+
+| Event | Effect |
+|---|---|
+| mouse-down on a field | capture it and record the value; **no edit mode yet** |
+| movement past 4 logical px while captured | start dragging, and clear any existing edit focus |
+| release before the threshold | give this field typing focus |
+| release while dragging | disarm; focus is untouched |
+
+Dragging itself: `steps = -floor(dy / drag_units)` applied to the captured value, clamped to
+`lo..hi`, quantised to `step`, written only when the result changes. A field that already has typing
+focus behaves identically — a press on it re-captures, and a drag takes focus away.
 
 **Automation:** every write goes through `slider_automate`, once per changed value, exactly as the
 node writers do. There is no begin/end pair to manage because there is no continuous stream — the
 value changes in discrete steps.
 
-**Needs a scheme:** `gc_edit` currently holds a readout slot `0..5`. With up to 21 editable fields
-on screen (two per row × 8, plus five in the card), it becomes an id: `0..5` keeps its present
+**Needs a scheme:** `gc_edit` currently holds a readout slot `0..5`. With up to 20 **numeric** fields on
+screen — two per row × 8, plus four in the card, since Stereo is a segmented control and not a field
+— it becomes an id: `0..5` keeps its present
 meaning, and panel fields use `100 + band*10 + slot`. One integer, no new state.
 
 ### 4.1 What a writer must rebuild — and why "the same two calls" is wrong
@@ -215,10 +253,26 @@ rebuilds can leave the band in Mode A while the field, the Param list and the me
 The null test cannot catch this: it renders state loaded from parameters, and this failure only
 exists after a GUI gesture.
 
-**Contract:** factor the scan body into `apply_band_dyn_global(b)` — `mbmode[b]`, `hc[b]`, and the
-`any_b` contribution — and call it from `@slider` (so behaviour is unchanged) and from every writer
-whose parameter feeds it. `any_b` is a fold over all bands, so recomputing it means rescanning; that
-is a per-gesture cost, not a per-sample one, and it is what correctness costs here.
+**Contract, in two parts, because rebuilding and publishing must not be confused.**
+
+`apply_band_dyn_global(b)` **rebuilds only**: `mbmode[b]`, `hc[b]`, and the full `any_b` fold.
+`any_b` is a fold over all bands, so recomputing it means rescanning — a per-gesture cost, not a
+per-sample one, and it is what correctness costs here.
+
+**Publication is separate and stays where it is.** `topo_pdc()` is called at line 1412, at the end
+of `@slider`, *after* the linear-engine geometry reconcile, with an explicit comment pinning that
+order. Two wrong readings of "the helper publishes PDC" were both available:
+
+| If the helper… | Consequence |
+|---|---|
+| does not call `topo_pdc()` | a Dyn or Dyn Mode gesture updates `any_b` while `pdc_delay` stays stale — and a gate that only requires the helper still passes |
+| calls `topo_pdc()` itself | PDC gets published from the old scan site, *before* the geometry reconcile, breaking the ordering the source deliberately keeps |
+
+So: the helper never publishes. `@slider` keeps its single post-reconcile `topo_pdc()`. The GUI
+writers for `Dyn` and `Dyn Mode` call `apply_band_dyn_global(b)` **and then** `topo_pdc()`
+themselves — there is no geometry reconcile in a GUI gesture, so the ordering hazard does not exist
+on that path. The per-writer gate requires **both** calls for exactly those two writers, and the
+live check reads reported PDC immediately after each gesture.
 
 **The writer gate stops treating all writers alike.** Each becomes a record
 `(table, offset, step, rebuilds)` and the gate checks the required rebuild calls **per writer**,
@@ -240,12 +294,30 @@ open card, and Param, automation or a preset could hand the GUI a value it canno
 makes the invalid state unrepresentable instead of asking every reader to sanitise. Written through
 a named `slider143 = v; slider_automate(slider143);`, like every other write.
 
-**It must be declared LAST, after all 175 existing declarations, despite its number.** V1.1's
-compatibility contract is that V1.0's 95 declared records are a prefix — and REAPER numbers
-parameters *in declaration order*, not by slider ID. Declaring `slider143` next to `slider142`,
-where it belongs numerically, would insert a record in the middle and shift all eighty B5–B8
-records: the prefix breaks, and `migrate_v10_to_v11.py` writes the host tail into the wrong
-parameters.
+**It must be declared LAST, after all 175 existing declarations, despite its number** — and the
+reason is worse than the one rev 2 gave.
+
+`slider142` is record **94**; B5's first record is **95**. Declaring `slider143` next to it, where
+it belongs numerically, keeps V1.0's 95-record prefix intact — records 0..94 are untouched — and
+shifts the eighty B5–B8 records to 96..175. So:
+
+- the `--live` gate **passes**: it compares V1.0's 95 records against V1.1's first 95, and those
+  still match;
+- the V1.0 → V1.1 migration **passes**: it copies its 95 declared values correctly;
+- and **every already-saved V1.1 project reads its B5–B8 values one parameter late**. The plugin is
+  in use in `Magdalena.RPP` today. This is a live project-compatibility break that no current check
+  can see.
+
+The contract therefore is not "V1.0's 95 records are a prefix" — that one is satisfied by the
+broken layout. It is **"V1.1's 175 records are a prefix"**: freeze the current 175 declared records
+(index, name, min, max, step, default) as a committed fixture and require them to be the exact
+first 175 of the panel build, with `slider143` at record **175** and the host tail at **176..178**.
+The V1.0 95-record comparison stays as well — it is the migration's contract, and it is a different
+question.
+
+**Seed the defect:** a build with `slider143` declared immediately after `slider142` must be
+rejected, *even though the V1.0 prefix check still passes on it*. A gate that cannot fail on this
+is not protecting anything.
 
 ### 4.2 The declared-count contract has five consumers, not one
 
@@ -261,8 +333,11 @@ shape today:
 | the migration branch tests | assert host Bypass at 175, Wet at 176 |
 
 Change them **before** the plugin, migration first, so the tests fail for the right reason and then
-pass. Miss one and the compile check rejects the build, or the supported migration writes
-`Bypass`/`Wet`/`Delta` into `B5 Enable`/`B5 Type`/`B5 Freq`.
+pass. Miss one and the compile check rejects the build, or — with the correct append-last order but
+a stale `N_DECLARED_V11` — the migration writes `Bypass`/`Wet`/`Delta` into
+`Panel state`/`Bypass`/`Wet`, each one parameter early. (Rev 2 said they would land in
+`B5 Enable`/`B5 Type`/`B5 Freq`; that is the *other* failure, the one caused by inserting the panel
+record before B5–B8.)
 
 ## 5. Verification
 
@@ -315,3 +390,15 @@ existing numeric fields onto their declared steps. Any change to the DSP.
 | **P1.5** Geometry does not match the current layout | **Accepted — measured.** The real offsets are fields +6..+26, summary at +32, strip +50..+68, ~16 spare; rev 1 carried the numbers I had intended for the strip rather than the ones in the file. §3 now gives equations, a 180 px minimum graph height, and what a legacy 900×500 window does (rows fit at graph 262; a card refuses to open until the window is taller). |
 | **P2.1** The writer manifest hides its table mapping | **Accepted.** Each writer is a record and the eight expected numbers are generated from it, with a wrong-table defect seeded alongside the wrong-digit one. |
 | **P2.2** Verification checks reachability, not application | **Accepted.** For `Dyn`, `Dyn Mode`, `Hard Macro` and `Hard Micro` the live check observes the engine after the gesture, and every writer is exercised on B1, B4, B5 and B8 so both legacy and appended branches run. |
+
+## 8. Rev-3 Disposition (weakness review of rev 2)
+
+| Finding | Disposition |
+|---|---|
+| **P0.1** The manifest still does not protect existing V1.1 projects | **Accepted, and it is the sharpest finding either review produced.** Verified: `slider142` is record 94 and B5 starts at record 95, so inserting the panel record there leaves V1.0's 95-record prefix **intact** — the `--live` gate passes, the migration passes — while shifting all eighty B5–B8 records, so every already-saved V1.1 project reads them one parameter late. The plugin is in `Magdalena.RPP` today. The contract is now V1.1's **175** records as a frozen fixture, `slider143` at record 175, host tail 176..178, with an insert-after-142 build seeded as a defect that must fail *even though the V1.0 prefix check passes on it*. Rev 2's description of the migration failure was also wrong and is corrected. |
+| **P0.2** `apply_band_dyn_global()` has no PDC publication contract | **Accepted.** `topo_pdc()` is called at line 1412, after the linear-engine geometry reconcile, with the ordering pinned in a comment. Both readings rev 2 left open were wrong: not calling it leaves `pdc_delay` stale after a Dyn gesture while the gate still passes; calling it inside the helper publishes before the reconcile. The helper now **rebuilds only**, `@slider` keeps its single post-reconcile call, and the `Dyn` and `Dyn Mode` writers call `topo_pdc()` after the helper — safe there because a GUI gesture has no reconcile. The gate requires both calls for exactly those two writers. |
+| **P1.1** A press both creates and forbids the drag state | **Accepted — it was a literal contradiction.** The transition moved from the press to the threshold: mouse-down captures without entering edit mode; crossing four logical pixels starts the drag and clears edit focus; releasing below the threshold gives typing focus. |
+| **P1.2** `writer` is not an implementable dispatch contract | **Accepted.** EEL2 has no first-class callables, and a generic `(table, offset)` writer would assign through `slider(computed_index)` — the exact thing V1.0 proved never reaches the parameter. `writer` is a numeric family ID resolved by one explicit dispatcher; only named writers assign, and the gate rejects computed assignment inside the controller. |
+| **P1.3** Minimum height mixes geometry with persistent state | **Accepted.** Insufficient height is a **derived visibility state**: `slider143` records what the user opened, the window decides whether it can be drawn, and dragging a window edge never automates a parameter into the project, the undo history, or automation playback. All reservations and the 180 threshold are stated as logical units, matching how `gc_sc` and `gc_ret` are already used. |
+| **P2.1** §2.3 still carried the rejected Micro step | **Accepted.** Now "percent of a bit, step 0.1 %, which yields 0.001 bit after the division by 100". |
+| **P2.2** The field inventory still counted Stereo | **Accepted.** Twenty numeric fields, not twenty-one — Stereo is a segmented control. Also softened the `gc_button` claim: it draws and returns `hot`; consuming the click belongs to the arbitration. |
