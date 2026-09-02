@@ -1,6 +1,6 @@
 # RCBitNova — Dynamics Panel
 
-**Revision 3**, 2026-09-02 (two weakness reviews: rev 1 → 2 P0/5 P1/2 P2, rev 2 → 2 P0/3 P1/2 P2; all accepted).
+**Revision 4**, 2026-09-02 (three reviews: rev 1 → 2 P0/5 P1/2 P2, rev 2 → 2 P0/3 P1/2 P2, rev 3 → 2 P0/4 P1/3 P2; all accepted).
 
 ## 1. Why
 
@@ -66,6 +66,14 @@ Micro, the resulting total for that stage in bits, `Macro + Micro/100`, to two d
 Off-grid writes are what left −62 dB of null residue in V1.0. Every drag quantises to the step, and
 typed values are clamped and quantised too.
 
+**This deliberately follows the minority precedent, and the split is worth naming.** Five of the six
+existing numeric fields take typed values *unquantised* — the source says so outright: "typed values
+are NOT quantised… the keyboard is the precision path". Only `gc_w_qchar` clamps and quantises, and
+its comment explains why. The panel follows `gc_w_qchar`, for every field: its parameters map to
+ceilings and times that the host also writes on its own grid, and a GUI-only value the host cannot
+reproduce is the defect the V1.1 ceiling work already had to fix once. Bringing the older five into
+line is a separate change to shipped behaviour and stays out of scope.
+
 **Stereo is not a numeric field.** `gc_field_at` renders a number and the keyboard parser accepts
 digits; showing `0`, `1`, `2` is not the card that was agreed. It is a **segmented control**: three
 labelled cells, `Linked | Dual L/R | Dual M/S`, the active one lit, a click selects that cell. It
@@ -114,6 +122,13 @@ card h = 90                    ; label row 14 + field row 20 + total row 14 + pa
 R      = 84 + 144 = 228        ; collapsed
 R      = 84 + 144 + 94 = 318   ; expanded
 ```
+
+**Every hit test is in logical units too, not only the layout.** The plugin this panel copies its
+shape from has *zero* Retina awareness — `Fable Eq Dynamic.jsfx` never references
+`gfx_ext_retina`, and hit-tests against raw constants (`CLIP_TOP = 42`, a knob radius of
+`sqr(...) <= 100`). Those thresholds are simply wrong by the device pixel ratio on the machine this
+runs on. RCBitNova already carries the discipline (`gc_ret`, `gc_sc`); the panel keeps it for the
+4-pixel drag threshold, every row and cell rectangle, and every field bound.
 
 **Minimum graph height: 180 logical pixels** — logical, like every number in this section: the
 reservations, the row height and this threshold are all multiplied by `gc_sc` when drawn, and
@@ -224,6 +239,15 @@ Dragging itself: `steps = -floor(dy / drag_units)` applied to the captured value
 `lo..hi`, quantised to `step`, written only when the result changes. A field that already has typing
 focus behaves identically — a press on it re-captures, and a drag takes focus away.
 
+**The alternative both references chose, and why not here.** Arthur separates the two gestures
+physically: right-click on a control opens keyboard entry, left-drag adjusts
+(`Fable Eq Dynamic.jsfx:761`, "prawy klik = wpis z klawiatury"). That removes the press/threshold
+ambiguity entirely — the one rev 2 caught as a literal contradiction. It is rejected here for a
+specific reason, not by oversight: **right-click is already the band context menu** in RCBitNova,
+and the owner chose that deliberately over the family convention. Overloading it a second time
+inside the panel would make the same button mean three things. The left-button state machine above
+is the price of that earlier decision.
+
 **Automation:** every write goes through `slider_automate`, once per changed value, exactly as the
 node writers do. There is no begin/end pair to manage because there is no continuous stream — the
 value changes in discrete steps.
@@ -268,15 +292,53 @@ order. Two wrong readings of "the helper publishes PDC" were both available:
 | does not call `topo_pdc()` | a Dyn or Dyn Mode gesture updates `any_b` while `pdc_delay` stays stale — and a gate that only requires the helper still passes |
 | calls `topo_pdc()` itself | PDC gets published from the old scan site, *before* the geometry reconcile, breaking the ordering the source deliberately keeps |
 
-So: the helper never publishes. `@slider` keeps its single post-reconcile `topo_pdc()`. The GUI
-writers for `Dyn` and `Dyn Mode` call `apply_band_dyn_global(b)` **and then** `topo_pdc()`
-themselves — there is no geometry reconcile in a GUI gesture, so the ordering hazard does not exist
-on that path. The per-writer gate requires **both** calls for exactly those two writers, and the
-live check reads reported PDC immediately after each gesture.
+So the helper never publishes — and **neither does `@gfx`**. `topo_pdc()` writes `pdc_delay`,
+`pdc_bot_ch`, `pdc_top_ch` and `ext_tail_size`: variables REAPER itself reads. Calling it from a GUI
+writer would write them from the graphics thread, and rev 3 left that as a question for the live
+check. It does not need to be a question.
 
-**The writer gate stops treating all writers alike.** Each becomes a record
-`(table, offset, step, rebuilds)` and the gate checks the required rebuild calls **per writer**,
-not one blanket rule for twenty.
+`@block` already calls `topo_pdc()` at the topology commit (line 1431). So:
+
+- `apply_band_dyn_global(b)` rebuilds `mbmode[b]`, `hc[b]` and the `any_b` fold, and sets
+  `pdc_dirty = 1;`
+- `@block` begins with `pdc_dirty ? ( topo_pdc(); pdc_dirty = 0; );`
+- `@slider` keeps its single post-reconcile call, unchanged.
+
+Publication lands within one audio block — inaudible — and no REAPER-read variable is ever written
+from `@gfx`. The per-writer gate requires the helper for `Dyn` and `Dyn Mode` and requires that
+**no writer calls `topo_pdc()` directly**; the live check still reads reported PDC after each
+gesture, now as confirmation rather than as the only defence.
+
+**The writer gate stops treating all writers alike, and its record has an explicit schema** —
+because today `check_writers()` asserts the literal substrings `"setup_band(b)"` and
+`"setup_band_dyn(b)"` for *every* writer, and "make it per-writer" is not a specification.
+
+```python
+# name -> (table, offset, step, rebuilds, publishes)
+#   table     "stb" | "dynb" | "ceb"      - which base table the eight numbers come from
+#   offset    int                          - added to the table entry
+#   step      float                        - the declared slider step, for the drag/entry contract
+#   rebuilds  tuple of exact call strings the body MUST contain
+#   publishes bool                         - must set pdc_dirty (via the helper); never topo_pdc()
+WRITERS = {
+    "gc_w_dyn":     ("dynb", 1, 1,    ("setup_band_dyn(b)", "apply_band_dyn_global(b)"), True),
+    "gc_w_dynmode": ("dynb", 7, 1,    ("apply_band_dyn_global(b)",),                     True),
+    "gc_w_hardceil":("ceb",  2, 0.05, ("apply_band_dyn_global(b)",),                     False),
+    "gc_w_atk":     ("dynb", 5, 0.01, ("setup_band_dyn(b)",),                            False),
+    ...
+}
+```
+
+`rebuilds` and `publishes` are **separate fields on purpose**. One field doing double duty is how a
+writer that rebuilds but never republishes PDC slips through — the exact defect this section exists
+to prevent. The gate also asserts that no writer contains `topo_pdc(`.
+
+**Order inside a writer: write the slider, automate it, then rebuild.** Every existing writer does
+this (`gc_w_enable`: the named assignment and `slider_automate` first, `setup_band(b);
+setup_band_dyn(b);` on the next line). It matters more for the new ones: `apply_band_dyn_global(b)`
+folds `any_b` across all bands by reading sliders, so calling it before the write would fold the
+*previous* value and leave the state one gesture behind. The gate checks the order, not just the
+presence of the calls.
 
 **New writers:** eleven, one per dynamics parameter, each with eight explicit named `sliderNN`
 branches — `gc_w_dyn`, `gc_w_dynmode`, `gc_w_soft`, `gc_w_hard`, `gc_w_softceil`, `gc_w_hardceil`,
@@ -309,9 +371,21 @@ shifts the eighty B5–B8 records to 96..175. So:
   can see.
 
 The contract therefore is not "V1.0's 95 records are a prefix" — that one is satisfied by the
-broken layout. It is **"V1.1's 175 records are a prefix"**: freeze the current 175 declared records
-(index, name, min, max, step, default) as a committed fixture and require them to be the exact
-first 175 of the panel build, with `slider143` at record **175** and the host tail at **176..178**.
+broken layout. It is **"V1.1's 175 records are a prefix"**.
+
+**The fixture is a file, and it is written before any panel work starts:**
+
+| | |
+|---|---|
+| Artifact | `tests/fixtures/v11_declared_175.json` |
+| Contents | 175 records, `(index, name, lo, hi, step, default)` |
+| Generated by | `python3 tools/rcbitnova_gates.py --freeze` against the **current** `JSFX/RCBitNova V1.1`, before the panel exists |
+| Checked by | `--live`: the panel build's first 175 records must equal it exactly, `slider143` must be record **175**, host tail **176..178** |
+
+"Freeze it as a fixture" without naming the file is how two people invent two fixtures and the
+strongest safeguard in this spec ends up not existing. Committed first, in its own commit, so the
+diff shows what was frozen and when.
+
 The V1.0 95-record comparison stays as well — it is the migration's contract, and it is a different
 question.
 
@@ -371,13 +445,42 @@ record before B5–B8.)
   hidden in `gc_small`; a card refusing to open below the minimum graph height; and resize while a
   card is open.
 
-## 6. Out of scope
+## 6. What the references have and this does not — and why that is the right answer
+
+The owner names EQall the benchmark for dynamics and Arthur's plugin a useful, buggy neighbour.
+Three things they have that RCBitNova does not, examined rather than waved away:
+
+**Knee is a different mechanism here, not a missing control.** EQall's `bufdynknee`
+(`mrelwood_EQall_BETA:1542`) is not a knee width at all — it is a binary switch between two whole
+transfer functions, `compsoft()` (`:1380`) and `comphard()` (`:1425`). Arthur's *is* a continuous
+knee in dB (`slider106:6<0,12,0.1>-B1 Dyn Knee (dB)`, consumed at `:691`). RCBitNova reaches the
+same end by a different architecture: two independent cascaded stages with their own thresholds,
+`gA = gsA * ghA`, which already gives a two-regime curve per band. A literal knee slider would be
+new DSP and is out of scope; more usefully, **the layout should not reserve room for it**. The row
+and card are at 11 of 11 declared parameters, a future knee needs a new slider anyway, and holding
+empty space against an unbuilt DSP change is premature.
+
+**"Dynamics solo" in both references means ordinary band solo** — mute every other band so you can
+hear one in isolation (`mrelwood_EQall_BETA:1553`, `Fable Eq Dynamic.jsfx:515`). It is cheap to add
+later (mute logic, no new dynamics maths) and it is new DSP, so not now. Naming it precisely matters
+because it is easy to confuse with a GR meter or an audition of the reduction itself, which is a
+different feature and was rejected in this spec for a different reason: the node already tints.
+
+**Multi-edit is right to leave out, and the reason is about this engine.** EQall's `multiedit`
+(112 references) exists because points on one continuous curve are naturally homogeneous, so
+dragging four thresholds together is a normal gesture. RCBitNova's eight bands are heterogeneous by
+construction — different placement, mode, ratio and M/S role per band — so the gesture is worth
+less here, while the failure mode is worse: an off-by-one in a multi-selection silently edits the
+wrong band, and "a wrong number edits another band's parameter and nothing crashes" is already this
+panel's single biggest risk.
+
+## 7. Out of scope
 
 Per-band GR meters and history (the node tint already answers "is it working"). A ceiling handle
 dragged on the graph — recorded in the V1.1 spec §8.3 and still V1.2 work. Bringing V1.0's five
 existing numeric fields onto their declared steps. Any change to the DSP.
 
-## 7. Rev-2 Disposition (weakness review of rev 1)
+## 8. Rev-2 Disposition (weakness review of rev 1)
 
 | Finding | Disposition |
 |---|---|
@@ -391,7 +494,7 @@ existing numeric fields onto their declared steps. Any change to the DSP.
 | **P2.1** The writer manifest hides its table mapping | **Accepted.** Each writer is a record and the eight expected numbers are generated from it, with a wrong-table defect seeded alongside the wrong-digit one. |
 | **P2.2** Verification checks reachability, not application | **Accepted.** For `Dyn`, `Dyn Mode`, `Hard Macro` and `Hard Micro` the live check observes the engine after the gesture, and every writer is exercised on B1, B4, B5 and B8 so both legacy and appended branches run. |
 
-## 8. Rev-3 Disposition (weakness review of rev 2)
+## 9. Rev-3 Disposition (weakness review of rev 2)
 
 | Finding | Disposition |
 |---|---|
@@ -402,3 +505,18 @@ existing numeric fields onto their declared steps. Any change to the DSP.
 | **P1.3** Minimum height mixes geometry with persistent state | **Accepted.** Insufficient height is a **derived visibility state**: `slider143` records what the user opened, the window decides whether it can be drawn, and dragging a window edge never automates a parameter into the project, the undo history, or automation playback. All reservations and the 180 threshold are stated as logical units, matching how `gc_sc` and `gc_ret` are already used. |
 | **P2.1** §2.3 still carried the rejected Micro step | **Accepted.** Now "percent of a bit, step 0.1 %, which yields 0.001 bit after the division by 100". |
 | **P2.2** The field inventory still counted Stereo | **Accepted.** Twenty numeric fields, not twenty-one — Stereo is a segmented control. Also softened the `gc_button` claim: it draws and returns `hot`; consuming the click belongs to the arbitration. |
+
+## 10. Rev-4 Disposition (review against EQall and Arthur's plugin)
+
+| Finding | Disposition |
+|---|---|
+| **P0** `check_writers()` is the blanket gate the spec claims to replace, and the replacement has no schema | **Accepted.** "Per-writer" is not a specification. §4.1 now gives the record literally, and splits `rebuilds` from `publishes` — one field doing both is exactly how a writer that rebuilds but never republishes PDC passes the gate. The gate also asserts no writer calls `topo_pdc(` at all. |
+| **P0** The 175-record fixture is described but never located | **Accepted.** It is `tests/fixtures/v11_declared_175.json`, generated by `--freeze` against the current build **before** panel work, committed on its own. Unnamed, it is how two people invent two fixtures and this spec's strongest safeguard turns out not to exist. |
+| **P1** Write-then-rebuild order is unstated | **Accepted.** `apply_band_dyn_global(b)` folds `any_b` by reading sliders, so calling it before the write folds the previous value and leaves the state one gesture behind. The order is stated and gated. |
+| **P1** §2.2 silently contradicts five of six keyboard-entry precedents | **Accepted.** The source says outright that typed values are NOT quantised for the five older fields; only `gc_w_qchar` clamps and quantises. The panel follows the minority, and now says so and why, instead of letting an implementer find two templates and guess. |
+| **P1** Arthur's plugin has no Retina awareness and this could be copied | **Accepted.** He hit-tests raw constants (`CLIP_TOP = 42`, radius `<= 100`) and never touches `gfx_ext_retina`. The spec already stated the layout in logical units; it now says the same for every hit test, including the 4-pixel drag threshold. |
+| **P1** The right-click alternative is an unrecorded trade-off | **Accepted.** Both references use right-click for keyboard entry, which removes the press/threshold ambiguity outright. Rejected here because right-click is already the band context menu — a deliberate earlier choice of the owner's — and a third meaning for one button is worse than the state machine. Now recorded as considered. |
+| **P2** Knee is a difference in kind, not a gap | **Accepted, with the layout consequence.** EQall's "knee" is a binary switch between two transfer functions; Arthur's is a real dB knee; RCBitNova's cascaded soft+hard stages already give two regimes. Do **not** reserve screen space now. |
+| **P2** "Solo" means band solo, not GR audition | **Accepted.** Named precisely in §6 so a future reader does not build the wrong feature. |
+| **P2** Multi-edit deserves a stated reason | **Accepted.** Rejected because these eight bands are heterogeneous by construction, unlike points on one curve, while the off-by-one failure mode is this panel's worst. |
+| *(reviewer's open question)* Does `@gfx` writing `pdc_delay` race the audio thread? | **Removed by construction rather than tested.** `topo_pdc()` writes variables REAPER reads; no GUI writer calls it now. The helper sets `pdc_dirty`, and `@block` — which already publishes PDC at topology commit — consumes it. Publication lands within one audio block, and the live PDC check becomes confirmation instead of the only defence. |
