@@ -2041,11 +2041,30 @@ gc_filt_wins = gc_fnode >= 0 && !gc_band_wins;
 // gfx_showmenu takes ONE string; a ternary sitting beside string literals is not concatenation in
 // EEL2, it is a syntax error. Assemble it.
 gc_rclick && gc_band_wins ? (
+  // "!" marks an item as checked. Without it the menu shows what you CAN pick and never what is
+  // already picked - a band set to Side looked exactly like a band set to Both.
+  gc_ty = slider(stb[gc_hover] + 2);
+  gc_pl = slider(stb[gc_hover] + 8);
+  gc_qc = slider(stb[gc_hover] + 9);
   slider(stb[gc_hover] + 1) == 1 ? ( strcpy(#gc_menu, "Disable band||"); )
                                  : ( strcpy(#gc_menu, "Enable band||"); );
-  strcat(#gc_menu, "Bell|Low Shelf|High Shelf||");
-  strcat(#gc_menu, ">Placement|Both|Mid|Side|Left|Right|<|");
-  strcat(#gc_menu, ">Q Character|0.00 constant|0.25|0.50|0.75|1.00 proportional|<");
+  strcat(#gc_menu, gc_ty == 0 ? "!Bell|"       : "Bell|");
+  strcat(#gc_menu, gc_ty == 1 ? "!Low Shelf|"  : "Low Shelf|");
+  strcat(#gc_menu, gc_ty == 2 ? "!High Shelf||" : "High Shelf||");
+  strcat(#gc_menu, ">Placement|");
+  strcat(#gc_menu, gc_pl == 0 ? "!Both|"  : "Both|");
+  strcat(#gc_menu, gc_pl == 1 ? "!Mid|"   : "Mid|");
+  strcat(#gc_menu, gc_pl == 2 ? "!Side|"  : "Side|");
+  strcat(#gc_menu, gc_pl == 3 ? "!Left|"  : "Left|");
+  strcat(#gc_menu, gc_pl == 4 ? "!Right|" : "Right|");
+  strcat(#gc_menu, "<|>Q Character|");
+  // A typed value like 0.333 matches no preset, and then NOTHING is ticked - which is the honest
+  // answer. Half a step is the tolerance, because the slider grid is 0.001.
+  strcat(#gc_menu, abs(gc_qc - 0.00) < 0.0005 ? "!0.00 constant|" : "0.00 constant|");
+  strcat(#gc_menu, abs(gc_qc - 0.25) < 0.0005 ? "!0.25|" : "0.25|");
+  strcat(#gc_menu, abs(gc_qc - 0.50) < 0.0005 ? "!0.50|" : "0.50|");
+  strcat(#gc_menu, abs(gc_qc - 0.75) < 0.0005 ? "!0.75|" : "0.75|");
+  strcat(#gc_menu, abs(gc_qc - 1.00) < 0.0005 ? "!1.00 proportional|<" : "1.00 proportional|<");
   gfx_x = mouse_x; gfx_y = mouse_y;
   // Index arithmetic below follows V1.0's proven scheme: "||" separators and a ">Header" submenu
   // opener consume no number, so items run 1 / 2-4 / 5-9 / 10-14. It is not obvious from the
