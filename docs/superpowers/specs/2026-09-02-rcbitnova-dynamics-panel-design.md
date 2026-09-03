@@ -1,6 +1,6 @@
 # RCBitNova — Dynamics Panel
 
-**Revision 4**, 2026-09-02 (three reviews: rev 1 → 2 P0/5 P1/2 P2, rev 2 → 2 P0/3 P1/2 P2, rev 3 → 2 P0/4 P1/3 P2; all accepted).
+**Revision 5**, 2026-09-03. Three reviews (rev 1 → 2 P0/5 P1/2 P2, rev 2 → 2 P0/3 P1/2 P2, rev 3 → 2 P0/4 P1/3 P2), all accepted, plus the owner's correction: **this ships as V1.2, and V1.1 is not touched.**
 
 ## 1. Why
 
@@ -12,6 +12,33 @@ have a panel, the plugin cannot be used in real work — and it is already in re
 
 This is the editor deferred in `2026-08-22-rcbitnova-v1.1-eight-dynamic-bands-design.md` §8.1. It
 adds no DSP. If it changes a single sample, it is wrong, and the null test says so.
+
+## 1.1 This is V1.2. V1.1 is frozen.
+
+`JSFX/RCBitNova V1.1` is tagged `rcbitnova-v1.1` and **in use in the owner's projects today**. Rev 4
+of this spec had the panel modifying it in place, which would have left him without a working
+equaliser for as long as the panel took to write. That is also against the project's standing rule,
+in force since V0.1: **every iteration is a new file, the previous one is frozen.**
+
+So: `JSFX/RCBitNova V1.2`, an exact copy of V1.1 to begin with, and V1.1 is never edited again.
+
+Four consequences run through the rest of this document:
+
+**Existing projects are safe by construction.** They load V1.1, which does not change. The
+175-record fixture is therefore not defending *them* — it defends the future V1.1 → V1.2 migration,
+which is the only way a project moves forward. Same artifact, same check, different reason.
+
+**The null test changes its baseline to V1.1.** The panel's contract is "no DSP change from V1.1",
+so that is what gets compared: V1.2 against V1.1, same state on both, sample for sample. Comparing
+against V1.0 would still be true but would answer a question nobody is asking here.
+
+**The tools become version-aware.** `rcbitnova_gates.py`, `rcbitnova_compile.py` and
+`rcbitnova_nulltest.py` all hard-code `JSFX/RCBitNova V1.1` and the numbers 175/178. They gain a
+frozen side (V1.1: 175 declared, 178 total) and a working side (V1.2: 176 declared, 179 total).
+
+**`migrate_v10_to_v11.py` is untouched.** It migrates V1.0 → V1.1 and that path still exists. A
+V1.1 → V1.2 migration is separate work, needed only when the owner decides to move a project onto
+the panel build.
 
 ## 2. Shape, as decided with the owner
 

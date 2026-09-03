@@ -7,7 +7,10 @@
 **Goal:** Make the eight bands' dynamics editable from the plugin's own window instead of REAPER's
 Param list, so the plugin can be used in real work.
 
-**Architecture:** Eight collapsible rows below the graph, one card expanded at a time. The row
+**Architecture:** This ships as **`JSFX/RCBitNova V1.2`, an exact copy of V1.1 to begin with.
+V1.1 is tagged, in use in the owner's projects, and is never edited** — the project's standing rule
+since V0.1, and the reason the panel cannot be built in place. Eight collapsible rows below the
+graph, one card expanded at a time. The row
 carries Dyn, Mode A/B and both cascade ceilings with their own toggles; the card carries Stereo,
 Attack, Release and the two Micros. Numeric fields with vertical drag, built on one generalised
 field primitive and one interaction controller. **No DSP changes at all** — if a sample moves, the
@@ -16,14 +19,15 @@ work is wrong, and the null test says so.
 **Tech Stack:** JSFX (EEL2); Python 3.11 stdlib-only tooling (`tools/rcbitnova_gates.py`,
 `rcbitnova_nulltest.py`, `rcbitnova_compile.py`); `pytest`; `reapy` against live REAPER.
 
-**Spec:** `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` (**rev 4**).
+**Spec:** `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` (**rev 5**).
 Section numbers below are that document's.
 
 ## Global Constraints
 
-- **No DSP change.** The null test's five identical cases must stay bit-identical and
-  `modeB_disabled_band` must keep diverging. Any other movement means the panel reached into the
-  audio path.
+- **`JSFX/RCBitNova V1.1` is read-only for the whole of this plan.** Every plugin edit lands in
+  `JSFX/RCBitNova V1.2`. If a task's diff touches V1.1, the task is wrong.
+- **No DSP change.** The null test compares **V1.2 against V1.1** — same state on both instances,
+  sample for sample, zero tolerance. That is the panel's whole contract: it must not move a sample.
 - **`n_params == 178` does not prove a build compiles.** A syntax error in `@gfx` leaves the slider
   count untouched. Run `python3 tools/rcbitnova_compile.py` after every step that edits the JSFX —
   it floats the FX window and reads the error text REAPER puts there.
@@ -45,16 +49,19 @@ Section numbers below are that document's.
 
 | File | Responsibility | Change |
 |---|---|---|
-| `tests/fixtures/v11_declared_175.json` | The frozen 175-record parameter map of V1.1 before the panel. The compatibility contract. | Create (Task 1) |
-| `tools/rcbitnova_gates.py` | `--freeze` writes the fixture; `--live` checks the prefix against it; `check_writers` gains a per-writer record. | Modify (1, 2, 5) |
-| `tools/migrate_v10_to_v11.py` | Declared count 175 → 176; host tail 176..178. | Modify (Task 2) |
-| `tools/rcbitnova_compile.py` | Expected parameter count 178 → 179. | Modify (Task 2) |
-| `tests/_reaper_fx_fake.py` | `N_DECLARED_V11` 175 → 176. | Modify (Task 2) |
-| `tests/test_rcbitnova_dsp.py` | Fixture test, migration index updates, writer-record tests. | Modify (1, 2, 5) |
-| `JSFX/RCBitNova V1.1` | The plugin: one new slider, the global helper, eleven writers, the field controller, the panel. | Modify (3, 4, 5, 6, 7, 8) |
+| `tests/fixtures/v11_declared_175.json` | V1.1's 175-record parameter map, frozen. What a future V1.1 → V1.2 migration is checked against. | Create (Task 1) |
+| `JSFX/RCBitNova V1.2` | The plugin. Starts as a byte copy of V1.1 and receives every change. | Create (Task 2), modify (3–8) |
+| `JSFX/RCBitNova V1.1` | **Read-only.** Tagged, shipped, in use. | never |
+| `tools/rcbitnova_gates.py` | `--freeze`; a frozen side (V1.1) and a working side (V1.2); `--live` checks V1.2's prefix against the fixture; `check_writers` gains a per-writer record. | Modify (1, 2, 3, 5) |
+| `tools/rcbitnova_compile.py` | Targets V1.2; expected count 178 → 179 in Task 3. | Modify (2, 3) |
+| `tools/rcbitnova_nulltest.py` | Baseline moves from V1.0 to **V1.1**; the plugin under test is V1.2. | Modify (Task 2) |
+| `tests/_reaper_fx_fake.py` | Gains a V1.2 shape alongside V1.1's. | Modify (Task 3) |
+| `tests/test_rcbitnova_dsp.py` | Fixture test, V1.2 shape tests, writer-record tests. | Modify (1, 2, 3, 5) |
+| `tools/migrate_v10_to_v11.py` | **Untouched.** It migrates V1.0 → V1.1 and that path is unchanged. | never |
 
-Tasks 1–2 are tooling and run before the plugin changes. Tasks 3–8 are the plugin, each
-compile-checked. Task 9 is the gates and the live matrix.
+Task 1 is tooling against V1.1 and changes no plugin. Task 2 creates V1.2 and proves it identical.
+Task 3 is the one commit that changes V1.2's parameter map. Tasks 4–8 are the plugin, each
+compile-checked and null-checked. Task 9 is the gates and the live matrix.
 
 ---
 
@@ -171,83 +178,103 @@ git commit -m "test(rcbitnova): freeze V1.1's 175 declared records before the pa
 
 ---
 
-### Task 2: Move the declared-count contract to 176, everywhere, before the plugin
+### Task 2: Create V1.2 as a copy, and prove it is one
 
-Five files hold the old shape. Change them first, so their tests fail for the right reason, then
-Task 3 makes them pass. Migration first: it is the one that corrupts a user's project if it is
-wrong.
+The checkpoint that matters here is negative: after this task the new file must be
+indistinguishable from V1.1, so that everything which breaks later was broken by the panel and
+not by the copy.
 
 **Files:**
-- Modify: `tools/migrate_v10_to_v11.py`, `tools/rcbitnova_gates.py`, `tools/rcbitnova_compile.py`,
-  `tests/_reaper_fx_fake.py`
-- Test: `tests/test_rcbitnova_dsp.py`
+- Create: `JSFX/RCBitNova V1.2`
+- Modify: `tools/rcbitnova_gates.py`, `tools/rcbitnova_compile.py`, `tools/rcbitnova_nulltest.py`
 
 **Interfaces:**
-- Produces: `N_DECLARED_V11 = 176` in all three modules; host tail at 176..178.
+- Produces: `gates.V11` (frozen, 175 declared) and `gates.V12` (working, 176 after Task 3);
+  the null test's `BASE` and `UNDER_TEST` names.
 
-- [ ] **Step 1: Update the migration tests to the new indices**
+- [ ] **Step 1: Copy, and change only the description**
 
-The success test asserts the host values land at 175/176. With one more declared parameter they
-land at 176/177:
-
-```python
-    assert dst.params[176].normalized == 0.75, "host Bypass must reach V1.1's host Bypass"
-    assert dst.params[177].normalized == 0.5
-    assert dst.params[95].normalized == 0.0, "B5 Enable must stay at its default"
+```bash
+cd /Users/macbook/projects/reascripts/.claude/worktrees/rcbitnova
+cp "JSFX/RCBitNova V1.1" "JSFX/RCBitNova V1.2"
 ```
 
-Add one test that pins the whole reason this task exists:
+In the copy, `desc:` reads `V1.2` and gains ` + dynamics panel`. Nothing else changes in this task.
+
+- [ ] **Step 2: Give the tools two versions instead of one**
+
+In `tools/rcbitnova_gates.py`:
 
 ```python
-def test_v11_panel_slider_must_not_shift_the_b5_block():
-    """Declaring the panel slider next to slider142 - where it belongs numerically - keeps V1.0's
-    95-record prefix intact, so the V1.0 checks all still pass, while shifting the eighty B5-B8
-    records by one. Every already-saved V1.1 project would then read them one parameter late."""
-    recs = gates.load_declared(gates.DECLARED_FIXTURE)
-    assert recs[95][1] == "B5 Enable"
-    shifted = recs[:95] + [(95, "Panel state", 0, 8, 1, 0)] + \
-        [(i + 1, n, lo, hi, st, d) for i, n, lo, hi, st, d in recs[95:]]
-    assert shifted[:95] == recs[:95], "the V1.0 prefix survives - which is exactly the trap"
-    assert shifted[96][1] == "B5 Enable", "and B5 has moved, which is the damage"
+V10 = "JSFX/RCBitNova V1.0"
+V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged, shipped, in the owner's projects
+V12 = "JSFX/RCBitNova V1.2"          # the working file - every check below targets this
+N_DECLARED_V11 = 175                 # frozen forever
+N_DECLARED_V12 = 175                 # becomes 176 in Task 3, when the panel slider is declared
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+Every `check_source` / `check_live` call site moves from `V11` to `V12`. `check_addresses` keeps
+comparing against `V10`, which is what the memory model is anchored to.
 
-Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q -k "migration_success or b5_block"`
-Expected: the success test FAILS (`dst.params[176]` is a host parameter, not yet); the shift test
-passes — it is pure arithmetic on the fixture and documents the trap.
+In `tools/rcbitnova_compile.py`, the effect under test becomes `"JS: RCBitNova V1.2"` and the
+expected count stays 178 until Task 3.
 
-- [ ] **Step 3: Change the four modules**
+In `tools/rcbitnova_nulltest.py`:
 
 ```python
-# tools/migrate_v10_to_v11.py, tools/rcbitnova_gates.py, tests/_reaper_fx_fake.py
-N_DECLARED_V11 = 176
+BASE       = "JS: RCBitNova V1.1"    # the panel must not move a sample away from this
+UNDER_TEST = "JS: RCBitNova V1.2"
 ```
+
+The five `CASES` and the `DIVERGENT` case stay exactly as they are — but `modeB_disabled_band` is
+no longer divergent, because both sides now have the Enable gate. Move it into `CASES`:
 
 ```python
-# tools/rcbitnova_compile.py
-    if n != 179:
-        problems.append(f"reports {n} parameters, expected 179")
+CASES = {
+    ...
+    # Was a deliberate divergence when the baseline was V1.0, which lacked the Enable gate on
+    # Mode B. Against V1.1 it is an ordinary identical case, and a valuable one: it exercises a
+    # disabled band with dynamics still configured.
+    "modeB_disabled_band": {"B1 Enable": 0, "B1 Freq": 200, "B1 Dyn": 1, "B1 Dyn Mode": 1,
+                            "B1 Soft Ceiling Macro (bits below 0)": 3, "B1 Soft": 1,
+                            "B2 Enable": 1, "B2 Macro (bits)": 1, "B2 Freq": 1000},
+}
+DIVERGENT = {}
 ```
 
-- [ ] **Step 4: Run the whole suite**
+- [ ] **Step 3: Deploy V1.2 and check it compiles**
 
-Run: `python3 -m pytest tests/test_rcbitnova_dsp.py -q`
-Expected: all green — the fake now models 176 declared parameters, so the migration branch tests
-agree with the constants again.
+```bash
+cp "JSFX/RCBitNova V1.2" ~/Library/Application\ Support/REAPER/Effects/
+python3 tools/rcbitnova_compile.py
+```
+
+Expected: `OK compile: 178 parameters and no error text in the plugin window`.
+
+- [ ] **Step 4: Prove the copy is a copy**
+
+```bash
+diff "JSFX/RCBitNova V1.1" "JSFX/RCBitNova V1.2"      # only the desc: line
+python3 tools/rcbitnova_gates.py --source-only        # V1.2 passes what V1.1 passes
+python3 -u tools/rcbitnova_nulltest.py                # V1.2 vs V1.1
+```
+
+Expected: one differing line; the gate green; **all six null cases identical**. Six, not five: the
+former divergence is gone because both sides share the Enable gate now. If any case differs here,
+the copy is not a copy and nothing else in this plan is trustworthy.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools/ tests/
-git commit -m "test(rcbitnova): declared-count contract moves to 176, migration first"
+git add "JSFX/RCBitNova V1.2" tools/
+git commit -m "feat(rcbitnova): V1.2 as an exact copy of V1.1, tools made version-aware"
 ```
 
 ---
 
 ### Task 3: Declare the panel-state slider, last
 
-**Files:** modify `JSFX/RCBitNova V1.1`, `tools/rcbitnova_gates.py`
+**Files:** modify `JSFX/RCBitNova V1.2`, `tools/rcbitnova_gates.py`
 
 - [ ] **Step 1: Declare it after every existing slider**
 
@@ -287,7 +314,29 @@ In `check_live`, after the existing comparisons:
     assert [r[1] for r in host11] == HOST_TAIL, "host tail must follow at 176..178"
 ```
 
-- [ ] **Step 4: Compile, gate, and check live**
+- [ ] **Step 4: Move the counters — this is the task that changes them**
+
+One new declared parameter takes V1.2 from 175/178 to 176/179. Three places hold it:
+
+```python
+# tools/rcbitnova_gates.py
+N_DECLARED_V12 = 176
+# tools/rcbitnova_compile.py
+    if n != 179:
+        problems.append(f"reports {n} parameters, expected 179")
+```
+
+and `tests/_reaper_fx_fake.py` gains the V1.2 shape beside V1.1's, so the fake can model either:
+
+```python
+N_DECLARED_V11 = 175
+N_DECLARED_V12 = 176
+```
+
+`N_DECLARED_V11` and `tools/migrate_v10_to_v11.py` **do not move**: V1.1 is frozen and its
+migration path is unchanged.
+
+- [ ] **Step 5: Compile, gate, and check live**
 
 ```bash
 python3 tools/rcbitnova_compile.py     # expects 179 now
@@ -296,13 +345,13 @@ python3 tools/rcbitnova_gates.py --live
 ```
 
 Expected: all three OK. `--live` is the one that matters: it proves the eighty B5–B8 records did
-not move.
+not move, which is what makes a future V1.1 → V1.2 migration possible at all.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1" tools/rcbitnova_gates.py
-git commit -m "feat(rcbitnova): panel-state slider, declared last so B5-B8 do not shift"
+git add "JSFX/RCBitNova V1.2" tools/ tests/
+git commit -m "feat(rcbitnova): panel-state slider in V1.2, declared last so B5-B8 do not shift"
 ```
 
 ---
@@ -315,7 +364,7 @@ the two existing rebuilds moves the field, the Param value and the menu tick whi
 in the old mode. The null test cannot see it — it renders loaded state, and this only exists after
 a gesture.
 
-**Files:** modify `JSFX/RCBitNova V1.1`
+**Files:** modify `JSFX/RCBitNova V1.2`
 
 - [ ] **Step 1: Extract the scan body into a function, above its first caller**
 
@@ -390,7 +439,7 @@ path's setup*, so run the whole suite, not one case.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1"
+git add "JSFX/RCBitNova V1.2"
 git commit -m "refactor(rcbitnova): apply_band_dyn_global, and PDC published from @block"
 ```
 
@@ -401,7 +450,7 @@ git commit -m "refactor(rcbitnova): apply_band_dyn_global, and PDC published fro
 88 named assignments. A wrong number edits another band's parameter and nothing crashes — the gate
 is the only thing that catches it statically.
 
-**Files:** modify `JSFX/RCBitNova V1.1`, `tools/rcbitnova_gates.py`, `tests/test_rcbitnova_dsp.py`
+**Files:** modify `JSFX/RCBitNova V1.2`, `tools/rcbitnova_gates.py`, `tests/test_rcbitnova_dsp.py`
 
 **Interfaces:**
 - Produces: `gc_w_dyn`, `gc_w_dynmode`, `gc_w_soft`, `gc_w_hard`, `gc_w_softceil`,
@@ -539,7 +588,7 @@ Expected: every mutant rejected for its named reason.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1" tools/rcbitnova_gates.py tests/test_rcbitnova_dsp.py
+git add "JSFX/RCBitNova V1.2" tools/rcbitnova_gates.py tests/test_rcbitnova_dsp.py
 git commit -m "feat(rcbitnova): eleven dynamics writers, and a per-writer gate record"
 ```
 
@@ -551,7 +600,7 @@ Generalising the drawing does not generalise the interaction: `gc_field` only dr
 while every click, keystroke and commit is open-coded further down `@gfx` for exactly five fields.
 Twenty numeric fields cannot be open-coded.
 
-**Files:** modify `JSFX/RCBitNova V1.1`
+**Files:** modify `JSFX/RCBitNova V1.2`
 
 **Interfaces:**
 - Produces: `gc_field_at(id, bx, by, bw, label, value, dec)` returning `hot`;
@@ -698,7 +747,7 @@ Expected: OK compile; `defaults identical`.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1"
+git add "JSFX/RCBitNova V1.2"
 git commit -m "feat(rcbitnova): one field primitive, metadata table and field controller"
 ```
 
@@ -706,7 +755,7 @@ git commit -m "feat(rcbitnova): one field primitive, metadata table and field co
 
 ### Task 7: The eight rows
 
-**Files:** modify `JSFX/RCBitNova V1.1`
+**Files:** modify `JSFX/RCBitNova V1.2`
 
 - [ ] **Step 1: Extend the layout block, before any hit test**
 
@@ -789,7 +838,7 @@ python3 -u tools/rcbitnova_nulltest.py defaults
 - [ ] **Step 5: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1"
+git add "JSFX/RCBitNova V1.2"
 git commit -m "feat(rcbitnova): eight dynamics rows, both cascade stages visible"
 ```
 
@@ -797,7 +846,7 @@ git commit -m "feat(rcbitnova): eight dynamics rows, both cascade stages visible
 
 ### Task 8: The expanded card
 
-**Files:** modify `JSFX/RCBitNova V1.1`
+**Files:** modify `JSFX/RCBitNova V1.2`
 
 - [ ] **Step 1: A segmented control, because a numeric field cannot render three labels**
 
@@ -878,7 +927,7 @@ python3 -u tools/rcbitnova_nulltest.py defaults
 - [ ] **Step 5: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.1"
+git add "JSFX/RCBitNova V1.2"
 git commit -m "feat(rcbitnova): the expanded dynamics card"
 ```
 
