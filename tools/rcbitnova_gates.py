@@ -14,7 +14,9 @@ Run:
 """
 
 import ast
+import json
 import math
+import os
 import re
 import sys
 
@@ -22,6 +24,8 @@ try:
     from tools import rcbitnova_layout as layout
 except ImportError:                      # also runnable from inside tools/
     import rcbitnova_layout as layout
+
+DECLARED_FIXTURE = os.path.join("tests", "fixtures", "v11_declared_175.json")
 
 V10 = "JSFX/RCBitNova V1.0"
 V11 = "JSFX/RCBitNova V1.1"
@@ -126,6 +130,60 @@ WRITERS = {"gc_w_enable": 1, "gc_w_type": 2, "gc_w_freq": 3, "gc_w_q": 4, "gc_w_
 
 AUDIO = [n for n, _, _ in layout.AUDIO_CHAIN]
 GUI = ["gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc", "gc_ebuf", "gc_hits"]
+
+
+# --------------------------------------------------------------------------------------------
+# The frozen parameter map.
+#
+# REAPER stores a parameter by its POSITION in declaration order. A version that inserts one in
+# the middle makes every later parameter read a neighbour's value - no error, no crash, just a
+# project that sounds different. This records what V1.1's 175 records were, so a later build can
+# be required to keep them as an exact prefix.
+# --------------------------------------------------------------------------------------------
+
+def _declared_records(RPR, track, fx, n_declared):
+    """(index, name, lo, hi, step, default) read from an UNTOUCHED instance - a default cannot be
+    recovered from one that has already been written to."""
+    out = []
+    for i in range(n_declared):
+        r = RPR.TrackFX_GetParam(track.id, fx.index, i, 0, 0)
+        st = RPR.TrackFX_GetParameterStepSizes(track.id, fx.index, i, 0, 0, 0, 0)
+        name = RPR.TrackFX_GetParamName(track.id, fx.index, i, "", 128)[4]
+        out.append([i, name, r[4], r[5], st[4], r[0]])
+    return out
+
+
+def freeze_declared(path=DECLARED_FIXTURE, track_index=0, n_declared=175,
+                    effect="JS: RCBitNova V1.1"):
+    """Write the fixture from the live plugin. Run ONCE, from the FROZEN V1.1, before V1.2 exists."""
+    import reapy
+    with reapy.inside_reaper():
+        from reapy import reascript_api as RPR
+        pr = reapy.Project()
+        made_track = 0
+        if len(pr.tracks) == 0:
+            RPR.InsertTrackAtIndex(0, False)
+            RPR.TrackList_AdjustWindows(False)
+            made_track = 1
+            pr = reapy.Project()
+        tr = pr.tracks[track_index]
+        assert not [f for f in tr.fxs if "RCBitNova" in f.name], \
+            f"track {track_index} already holds an RCBitNova; use an empty scratch track"
+        fx = tr.add_fx(effect)
+        assert fx.n_params == n_declared + 3, \
+            f"{effect} reports {fx.n_params} parameters, expected {n_declared} declared + 3 host"
+        recs = _declared_records(RPR, tr, fx, n_declared)
+        fx.delete()
+        if made_track:
+            RPR.DeleteTrack(reapy.Project().tracks[0].id)   # leave the project as it was found
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(recs, f, indent=1)
+    return recs
+
+
+def load_declared(path=DECLARED_FIXTURE):
+    return [tuple(r) for r in json.load(open(path))]
 
 
 def check_sites(text, path):
@@ -344,7 +402,11 @@ def check_live(track_index=0):
 
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "--source-only"
-    assert mode in ("--preflip", "--source-only", "--live"), f"unknown mode {mode}"
+    assert mode in ("--preflip", "--source-only", "--live", "--freeze"), f"unknown mode {mode}"
+    if mode == "--freeze":
+        recs = freeze_declared()
+        print(f"OK freeze: {len(recs)} declared records from V1.1 -> {DECLARED_FIXTURE}")
+        return 0
     if mode == "--live":
         try:
             n10, n11, added = check_live()

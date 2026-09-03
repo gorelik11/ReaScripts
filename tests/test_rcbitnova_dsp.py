@@ -3027,3 +3027,31 @@ def test_v11_migration_dry_run_names_what_it_cannot_detect():
     assert "would copy 95 declared + 3 host parameters into chain position 1" in out
     assert "aliases are not migrated" in out, "an undetected item must never read as refused"
     assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.0", "B"]
+
+
+# --- V1.2 dynamics panel: the frozen parameter map -------------------------------------------
+
+def test_v11_declared_fixture_has_the_shape_the_contract_needs():
+    """REAPER stores a parameter by its POSITION in declaration order, not by name. So a version
+    that inserts a parameter in the middle makes every later one read the wrong value, silently.
+    This fixture records what V1.1's 175 look like, and the boundary that must never move."""
+    recs = gates.load_declared(gates.DECLARED_FIXTURE)
+    assert len(recs) == 175
+    assert [r[0] for r in recs] == list(range(175)), "indices must be 0..174 in order"
+    assert recs[0][1] == "Bypass", recs[0]
+    assert recs[94][1] == "LP Resolution (Linear only)", \
+        "record 94 is slider142, the last of V1.0's block - the boundary the panel must not move"
+    assert recs[95][1] == "B5 Enable", \
+        "record 95 is where B5 starts; a parameter inserted before it shifts eighty records"
+    assert recs[174][1] == "B8 Hard Ceiling Micro (% bit)", recs[174]
+
+
+def test_v11_fixture_records_carry_ranges_and_defaults_not_just_names():
+    """Names alone cannot catch a changed range, step or default - two incompatible declarations
+    can share a name."""
+    recs = gates.load_declared(gates.DECLARED_FIXTURE)
+    by_name = {r[1]: r for r in recs}
+    assert by_name["B5 Soft Ceiling Macro (bits below 0)"][2:5] == (0.0, 16.0, 0.05), \
+        "the 0.05 step is what makes 0.25 bits typeable; a regression here is silent"
+    assert by_name["B8 Hard Ceiling Micro (% bit)"][2:5] == (-100.0, 100.0, 0.1), \
+        "Micro is PERCENT of a bit, step 0.1 - not 0.001, which is the resulting bit resolution"
