@@ -1,0 +1,2398 @@
+options:want_all_kb
+desc: RCBitNova V1.2 - Bit-Accurate M/S Dynamic EQ (static + Mode A + Mode B Soft/Hard cascade + shelf dynamics A+B + proportional-Q bells + min-phase HP/LP + linear-phase HP/LP + FIR Brick + per-filter hi-res + click-safe kernel crossfade + lane skip + honest topology mute + EQ curve GUI) + 8 bands + dynamics panel
+
+// License: GPL - http://www.gnu.org/licenses/gpl.html
+// Author: Dima Gorelik (design with Claude)
+// Bit logic: 1 bit = 6.0206 dB; gain_lin = 2^((macro + micro/100) * bitratio).
+// Filters: TPT state-variable (Andy Simper / Cytomic). All state instance-local
+// (NOT gmem) - fixes the cross-instance bug of the gmem-based bit EQ.
+// Phase 1: static engine, zero-latency, 4 slider bands, no dynamics/GUI.
+// Shelf dynamics: Shelf ceiling = peak of the shelf-region detector
+// (HP tap for High Shelf, LP tap for Low Shelf, fixed Q 0.7071);
+// -3 dB at cutoff, passband -> unity. The Low Shelf detector is unity
+// at DC by design (rumble/boom tamer) - it reacts to DC offset.
+// Shelf Mode B (split limiter): extracts the shelf region (HP branch for High
+// Shelf, LP branch for Low Shelf) via the fixed-Q 0.7071 SVF, brick-limits that
+// branch to the ceiling, and passes the remainder untouched (perfect
+// reconstruction). The guarantee bounds the extracted region contribution, not
+// the summed output. The band Q shapes only the Mode A cut, never the Mode B split.
+// HP/LP section (V0.5): staggered-Butterworth SVF cascade (12/24/36/48/96 dB/oct),
+// section Q set per Butterworth pole angle (maximally-flat slope, no ripple), plus a
+// separate always-ticking resonance bell (fixed Q=2, decoupled from slope) at the same
+// effective cutoff; Resonance 0 = identity (bit-exact bypass of the bell). Per-filter
+// Placement Both/Mid/Side/Left/Right. Zero latency; runs before the EQ bands.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:0<0,1,1{Off,On}>-Bypass
+slider2:0<-16,16,1>-Output Macro (bits)
+slider3:0<-100,100,0.1>-Output Micro (% bit)
+slider4:2<0.1,10,0.1>-Lookahead (ms, Mode B)
+
+slider11:1<0,1,1{Off,On}>-B1 Enable
+slider12:0<0,2,1{Bell,Low Shelf,High Shelf}>-B1 Type
+slider13:100<20,20000,1>-B1 Freq
+slider14:0.707<0.1,10,0.001>-B1 Q
+slider15:0<-16,16,1>-B1 Macro (bits)
+slider16:0<-100,100,0.1>-B1 Micro (% bit)
+slider17:1<0,3,0.05>-B1 Bit Ratio
+slider18:0<0,4,1{Both,Mid,Side,Left,Right}>-B1 Placement
+slider19:0<0,1,0.001>-B1 Q Character (0 Constant .. 1 Proportional)
+
+slider21:0<0,1,1{Off,On}>-B2 Enable
+slider22:0<0,2,1{Bell,Low Shelf,High Shelf}>-B2 Type
+slider23:1000<20,20000,1>-B2 Freq
+slider24:0.707<0.1,10,0.001>-B2 Q
+slider25:0<-16,16,1>-B2 Macro (bits)
+slider26:0<-100,100,0.1>-B2 Micro (% bit)
+slider27:1<0,3,0.05>-B2 Bit Ratio
+slider28:0<0,4,1{Both,Mid,Side,Left,Right}>-B2 Placement
+slider29:0<0,1,0.001>-B2 Q Character (0 Constant .. 1 Proportional)
+
+slider31:0<0,1,1{Off,On}>-B3 Enable
+slider32:0<0,2,1{Bell,Low Shelf,High Shelf}>-B3 Type
+slider33:3000<20,20000,1>-B3 Freq
+slider34:0.707<0.1,10,0.001>-B3 Q
+slider35:0<-16,16,1>-B3 Macro (bits)
+slider36:0<-100,100,0.1>-B3 Micro (% bit)
+slider37:1<0,3,0.05>-B3 Bit Ratio
+slider38:0<0,4,1{Both,Mid,Side,Left,Right}>-B3 Placement
+slider39:0<0,1,0.001>-B3 Q Character (0 Constant .. 1 Proportional)
+
+slider41:0<0,1,1{Off,On}>-B4 Enable
+slider42:0<0,2,1{Bell,Low Shelf,High Shelf}>-B4 Type
+slider43:10000<20,20000,1>-B4 Freq
+slider44:0.707<0.1,10,0.001>-B4 Q
+slider45:0<-16,16,1>-B4 Macro (bits)
+slider46:0<-100,100,0.1>-B4 Micro (% bit)
+slider47:1<0,3,0.05>-B4 Bit Ratio
+slider48:0<0,4,1{Both,Mid,Side,Left,Right}>-B4 Placement
+slider49:0<0,1,0.001>-B4 Q Character (0 Constant .. 1 Proportional)
+
+slider51:0<0,1,1{Off,On}>-B1 Dyn
+slider52:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B1 Dyn Stereo (Both only)
+slider53:1<0,16,0.05>-B1 Soft Ceiling Macro (bits below 0)
+slider54:0<-100,100,0.1>-B1 Soft Ceiling Micro (% bit)
+slider55:1<0.05,50,0.01>-B1 Attack (ms)
+slider56:80<1,500,1>-B1 Release (ms)
+slider57:0<0,1,1{A Dynamic EQ,B Band-Split}>-B1 Dyn Mode
+slider58:1<0,1,1{Off,On}>-B1 Soft
+
+slider61:0<0,1,1{Off,On}>-B2 Dyn
+slider62:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B2 Dyn Stereo (Both only)
+slider63:1<0,16,0.05>-B2 Soft Ceiling Macro (bits below 0)
+slider64:0<-100,100,0.1>-B2 Soft Ceiling Micro (% bit)
+slider65:1<0.05,50,0.01>-B2 Attack (ms)
+slider66:80<1,500,1>-B2 Release (ms)
+slider67:0<0,1,1{A Dynamic EQ,B Band-Split}>-B2 Dyn Mode
+slider68:1<0,1,1{Off,On}>-B2 Soft
+
+slider71:0<0,1,1{Off,On}>-B3 Dyn
+slider72:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B3 Dyn Stereo (Both only)
+slider73:1<0,16,0.05>-B3 Soft Ceiling Macro (bits below 0)
+slider74:0<-100,100,0.1>-B3 Soft Ceiling Micro (% bit)
+slider75:1<0.05,50,0.01>-B3 Attack (ms)
+slider76:80<1,500,1>-B3 Release (ms)
+slider77:0<0,1,1{A Dynamic EQ,B Band-Split}>-B3 Dyn Mode
+slider78:1<0,1,1{Off,On}>-B3 Soft
+
+slider81:0<0,1,1{Off,On}>-B4 Dyn
+slider82:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B4 Dyn Stereo (Both only)
+slider83:1<0,16,0.05>-B4 Soft Ceiling Macro (bits below 0)
+slider84:0<-100,100,0.1>-B4 Soft Ceiling Micro (% bit)
+slider85:1<0.05,50,0.01>-B4 Attack (ms)
+slider86:80<1,500,1>-B4 Release (ms)
+slider87:0<0,1,1{A Dynamic EQ,B Band-Split}>-B4 Dyn Mode
+slider88:1<0,1,1{Off,On}>-B4 Soft
+
+slider91:0<0,1,1{Off,On}>-B1 Hard
+slider92:0<0,16,0.05>-B1 Hard Ceiling Macro (bits below 0)
+slider93:0<-100,100,0.1>-B1 Hard Ceiling Micro (% bit)
+slider101:0<0,1,1{Off,On}>-B2 Hard
+slider102:0<0,16,0.05>-B2 Hard Ceiling Macro (bits below 0)
+slider103:0<-100,100,0.1>-B2 Hard Ceiling Micro (% bit)
+slider111:0<0,1,1{Off,On}>-B3 Hard
+slider112:0<0,16,0.05>-B3 Hard Ceiling Macro (bits below 0)
+slider113:0<-100,100,0.1>-B3 Hard Ceiling Micro (% bit)
+slider121:0<0,1,1{Off,On}>-B4 Hard
+slider122:0<0,16,0.05>-B4 Hard Ceiling Macro (bits below 0)
+slider123:0<-100,100,0.1>-B4 Hard Ceiling Micro (% bit)
+
+slider131:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>-HP Slope (dB/oct)
+slider132:20<20,20000,1>-HP Freq (Hz)
+slider133:0<0,1,0.001>-HP Resonance
+slider134:0<0,4,1{Both,Mid,Side,Left,Right}>-HP Placement
+slider135:0<0,6,1{Off,12,24,36,48,96,FIR Brick}>-LP Slope (dB/oct)
+slider136:20000<20,20000,1>-LP Freq (Hz)
+slider137:0<0,1,0.001>-LP Resonance
+slider138:0<0,4,1{Both,Mid,Side,Left,Right}>-LP Placement
+slider140:0<0,1,1{Min,Linear}>-Phase
+slider141:0<0,1,1{Normal,High}>-HP Resolution (Linear only)
+slider142:0<0,1,1{Normal,High}>-LP Resolution (Linear only)
+
+// ---- V1.1: bands 5-8. Declared AFTER every existing slider: the host numbers
+// parameters densely in declaration order (verified live 2026-08-19), so appending is what
+// keeps V1.0's 95 declared parameters an exact prefix of V1.1's 175. Bands 1-4 keep every
+// number they have - REAPER stores parameters by number.
+
+slider151:0<0,1,1{Off,On}>-B5 Enable
+slider152:0<0,2,1{Bell,Low Shelf,High Shelf}>-B5 Type
+slider153:150<20,20000,1>-B5 Freq
+slider154:0.707<0.1,10,0.001>-B5 Q
+slider155:0<-16,16,1>-B5 Macro (bits)
+slider156:0<-100,100,0.1>-B5 Micro (% bit)
+slider157:1<0,3,0.05>-B5 Bit Ratio
+slider158:0<0,4,1{Both,Mid,Side,Left,Right}>-B5 Placement
+slider159:0<0,1,0.001>-B5 Q Character (0 Constant .. 1 Proportional)
+slider191:0<0,1,1{Off,On}>-B5 Dyn
+slider192:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B5 Dyn Stereo (Both only)
+slider193:1<0,16,0.05>-B5 Soft Ceiling Macro (bits below 0)
+slider194:0<-100,100,0.1>-B5 Soft Ceiling Micro (% bit)
+slider195:1<0.05,50,0.01>-B5 Attack (ms)
+slider196:80<1,500,1>-B5 Release (ms)
+slider197:0<0,1,1{A Dynamic EQ,B Band-Split}>-B5 Dyn Mode
+slider198:1<0,1,1{Off,On}>-B5 Soft
+slider231:0<0,1,1{Off,On}>-B5 Hard
+slider232:0<0,16,0.05>-B5 Hard Ceiling Macro (bits below 0)
+slider233:0<-100,100,0.1>-B5 Hard Ceiling Micro (% bit)
+
+slider161:0<0,1,1{Off,On}>-B6 Enable
+slider162:0<0,2,1{Bell,Low Shelf,High Shelf}>-B6 Type
+slider163:700<20,20000,1>-B6 Freq
+slider164:0.707<0.1,10,0.001>-B6 Q
+slider165:0<-16,16,1>-B6 Macro (bits)
+slider166:0<-100,100,0.1>-B6 Micro (% bit)
+slider167:1<0,3,0.05>-B6 Bit Ratio
+slider168:0<0,4,1{Both,Mid,Side,Left,Right}>-B6 Placement
+slider169:0<0,1,0.001>-B6 Q Character (0 Constant .. 1 Proportional)
+slider201:0<0,1,1{Off,On}>-B6 Dyn
+slider202:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B6 Dyn Stereo (Both only)
+slider203:1<0,16,0.05>-B6 Soft Ceiling Macro (bits below 0)
+slider204:0<-100,100,0.1>-B6 Soft Ceiling Micro (% bit)
+slider205:1<0.05,50,0.01>-B6 Attack (ms)
+slider206:80<1,500,1>-B6 Release (ms)
+slider207:0<0,1,1{A Dynamic EQ,B Band-Split}>-B6 Dyn Mode
+slider208:1<0,1,1{Off,On}>-B6 Soft
+slider235:0<0,1,1{Off,On}>-B6 Hard
+slider236:0<0,16,0.05>-B6 Hard Ceiling Macro (bits below 0)
+slider237:0<-100,100,0.1>-B6 Hard Ceiling Micro (% bit)
+
+slider171:0<0,1,1{Off,On}>-B7 Enable
+slider172:0<0,2,1{Bell,Low Shelf,High Shelf}>-B7 Type
+slider173:5000<20,20000,1>-B7 Freq
+slider174:0.707<0.1,10,0.001>-B7 Q
+slider175:0<-16,16,1>-B7 Macro (bits)
+slider176:0<-100,100,0.1>-B7 Micro (% bit)
+slider177:1<0,3,0.05>-B7 Bit Ratio
+slider178:0<0,4,1{Both,Mid,Side,Left,Right}>-B7 Placement
+slider179:0<0,1,0.001>-B7 Q Character (0 Constant .. 1 Proportional)
+slider211:0<0,1,1{Off,On}>-B7 Dyn
+slider212:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B7 Dyn Stereo (Both only)
+slider213:1<0,16,0.05>-B7 Soft Ceiling Macro (bits below 0)
+slider214:0<-100,100,0.1>-B7 Soft Ceiling Micro (% bit)
+slider215:1<0.05,50,0.01>-B7 Attack (ms)
+slider216:80<1,500,1>-B7 Release (ms)
+slider217:0<0,1,1{A Dynamic EQ,B Band-Split}>-B7 Dyn Mode
+slider218:1<0,1,1{Off,On}>-B7 Soft
+slider239:0<0,1,1{Off,On}>-B7 Hard
+slider240:0<0,16,0.05>-B7 Hard Ceiling Macro (bits below 0)
+slider241:0<-100,100,0.1>-B7 Hard Ceiling Micro (% bit)
+
+slider181:0<0,1,1{Off,On}>-B8 Enable
+slider182:0<0,2,1{Bell,Low Shelf,High Shelf}>-B8 Type
+slider183:15000<20,20000,1>-B8 Freq
+slider184:0.707<0.1,10,0.001>-B8 Q
+slider185:0<-16,16,1>-B8 Macro (bits)
+slider186:0<-100,100,0.1>-B8 Micro (% bit)
+slider187:1<0,3,0.05>-B8 Bit Ratio
+slider188:0<0,4,1{Both,Mid,Side,Left,Right}>-B8 Placement
+slider189:0<0,1,0.001>-B8 Q Character (0 Constant .. 1 Proportional)
+slider221:0<0,1,1{Off,On}>-B8 Dyn
+slider222:0<0,2,1{Linked,Dual L/R,Dual M/S}>-B8 Dyn Stereo (Both only)
+slider223:1<0,16,0.05>-B8 Soft Ceiling Macro (bits below 0)
+slider224:0<-100,100,0.1>-B8 Soft Ceiling Micro (% bit)
+slider225:1<0.05,50,0.01>-B8 Attack (ms)
+slider226:80<1,500,1>-B8 Release (ms)
+slider227:0<0,1,1{A Dynamic EQ,B Band-Split}>-B8 Dyn Mode
+slider228:1<0,1,1{Off,On}>-B8 Soft
+slider243:0<0,1,1{Off,On}>-B8 Hard
+slider244:0<0,16,0.05>-B8 Hard Ceiling Macro (bits below 0)
+slider245:0<-100,100,0.1>-B8 Hard Ceiling Micro (% bit)
+
+
+@init
+
+N_BANDS = 8;
+cf = 0;     // coeffs: 8 slots per band (instance-local memory, NOT gmem)
+st = 64;    // state: 4 slots per band (M ic1,ic2; S ic1,ic2)
+memset(st, 0, N_BANDS * 4);
+
+// Dynamics (Phase 2b) instance-local memory
+det = 96;   // detector bandpass coeffs: 4/band (a1,a2,a3,k)
+dst = 128;  // detector state: 4/band (chA ic1,ic2 ; chB ic1,ic2)
+cst = 160;  // cut SVF state:  4/band (chA ic1,ic2 ; chB ic1,ic2)
+dp  = 192;  // dyn params: 4/band (ceil_lin, atk, rel, dynOn)
+dm  = 224;  // dyn stereo mode: 1/band (0 Linked,1 Dual L/R,2 Dual M/S)
+bp  = 232;  // band params: 3/band (fc, q, cg)
+eg  = 256;  // env_gain: 2/band (chA, chB)
+
+// ---- V1.1: slider-base tables. 8 words each, in the slack between the low map (which ends at
+// 272 with eight bands) and mb_band's literal 1024. Every band-slider READ goes through these:
+// a memory read, no branch and no function call, in a path that runs per band per sample.
+// Written out entry by entry rather than filled by a loop, because these 24 numbers decide which
+// parameter every read touches and an explicit list is something the source gate can compare
+// value by value. WRITES do not use them - V1.0 proved live that assigning through
+// slider(computed_index) updates what the GUI reads back but never reaches the parameter.
+stb  = 272;   // TABLE-DECL: static base per band
+dynb = 280;   // TABLE-DECL: dynamics base per band
+ceb  = 288;   // TABLE-DECL: ceiling base per band
+// V1.1: indices of the ENABLED bands, rebuilt in @slider. The @sample loop walks this instead of
+// all N_BANDS, so the per-sample cost follows how many bands are ON rather than how many exist.
+// Measured on the Performance Meter before this existed: V1.1 with two bands on cost 0.19% where
+// V1.0 cost 0.16% - eight iterations each calling slider() to ask "am I enabled?", 96000 times a
+// second, for six bands that then did nothing.
+nb_list = 296;   // 8 words
+nb_n    = 0;
+// TABLE-FILL
+stb[0]  = 10;
+stb[1]  = 20;
+stb[2]  = 30;
+stb[3]  = 40;
+stb[4]  = 150;
+stb[5]  = 160;
+stb[6]  = 170;
+stb[7]  = 180;
+dynb[0] = 50;
+dynb[1] = 60;
+dynb[2] = 70;
+dynb[3] = 80;
+dynb[4] = 190;
+dynb[5] = 200;
+dynb[6] = 210;
+dynb[7] = 220;
+ceb[0]  = 90;
+ceb[1]  = 100;
+ceb[2]  = 110;
+ceb[3]  = 120;
+ceb[4]  = 230;
+ceb[5]  = 234;
+ceb[6]  = 238;
+ceb[7]  = 242;   // stride 4, not 10: the block is three sliders wide and at 10 B8 would need 261
+memset(dst, 0, N_BANDS * 4);
+memset(cst, 0, N_BANDS * 4);
+i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
+anti = pow(2, -100);  // anti-denormal toggle (~8e-31; EEL2 rejects 1e-30 literal)
+
+// Mode B (Phase 3a) instance-local memory
+MAX_LOOK = 2048;   // covers the 10 ms slider max up to 192 kHz (1920 samples)
+mb_band = 1024;    // band ring: per (band,channel) MAX_LOOK each (cs = b*2+c)
+mb_peak = mb_band + N_BANDS * 2 * MAX_LOOK;
+mb_end  = mb_peak + N_BANDS * 2 * MAX_LOOK;
+memset(mb_band, 0, mb_end - mb_band);
+mbenv  = mb_end;               // Mode-B env per (band,channel): 2/band
+mbmode = mbenv + N_BANDS * 2;  // Dyn Mode per band (0 A, 1 B)
+mbwpos = mbmode + N_BANDS;     // Mode-B write pos per band
+bus_dry = mbwpos + N_BANDS;    // shared stereo dry delay (L at [0..], R at [MAX_LOOK..])
+bus_wp = 0;
+memset(bus_dry, 0, MAX_LOOK * 2);
+i = 0; loop(N_BANDS * 2, mbenv[i] = 1; i += 1;);
+memset(mbwpos, 0, N_BANDS);
+GSMOOTH = 400; inv_gsmooth = 1 / (GSMOOTH + 1);   // PurestGain (Mode-B Soft)
+mbgc = bus_dry + MAX_LOOK * 2;                     // PurestGain gain state: 2/band
+i = 0; loop(N_BANDS * 2, mbgc[i] = 1; i += 1;);
+mbeh = mbgc + N_BANDS * 2;   // Mode-B hard env per (band,channel): 2/band
+hc   = mbeh + N_BANDS * 2;   // hard ceiling (linear) per band: 1/band
+i = 0; loop(N_BANDS * 2, mbeh[i] = 1; i += 1;);
+egh = hc + N_BANDS;          // Mode-A hard env per (band,channel): 2/band
+i = 0; loop(N_BANDS * 2, egh[i] = 1; i += 1;);
+
+// ===== V0.5 HP/LP section memory + coeffs =====
+// hplp_state: 2 filters * (8 Butterworth sections + 1 resonance bell) * 2 channels
+//   * 2 integrators = 72 slots. Per filter base = fi*36; stage s (0..7 sections,
+//   8 = bell), chA = base+s*4 (+0 ic1,+1 ic2), chB = base+s*4+2 (bell state at 32..35).
+// hplp_cf: 2 filters * (8 section sets + 1 bell set) * 7 = 126 slots. Per filter base
+//   = fi*63; section k set = base+k*7 (k 0..7); bell set = base+56.
+hplp_state = egh + N_BANDS * 2;   // V0.5: 2 filters * (8 sec + 1 bell) * 2 ch * 2 = 72
+memset(hplp_state, 0, 72);
+hplp_cf = hplp_state + 72;         // V0.5: 2 filters * (8 sec + 1 bell) * 7 = 126
+prev_hp_slope = -1; prev_hp_pl = -1;
+prev_lp_slope = -1; prev_lp_pl = -1;
+hp_nsec = 0; lp_nsec = 0;
+
+// TPT-SVF (Simper) coefficients for one band. A = sqrt(glin).
+// Writes a1,a2,a3,k,m0,m1,m2 into cf[base+0..6].
+// V1.0: writes to an EXPLICIT destination so the GUI can build coefficients into its own
+// scratch instead of the live audio array. One formula, two consumers - the drawn curve cannot
+// drift from the sound.
+function svf_set(dst, ftype, fc, q, glin)
+  local(A, g, k, m0, m1, m2, a1, a2, a3)
+(
+  A = sqrt(glin);
+  ftype == 0 ? (                 // Bell
+    g = tan($pi * fc / srate); k = 1 / (q * A);
+    m0 = 1; m1 = k * (A * A - 1); m2 = 0;
+  ) : ftype == 1 ? (             // Low Shelf
+    g = tan($pi * fc / srate) / sqrt(A); k = 1 / q;
+    m0 = 1; m1 = k * (A - 1); m2 = A * A - 1;
+  ) : (                          // High Shelf
+    g = tan($pi * fc / srate) * sqrt(A); k = 1 / q;
+    m0 = A * A; m1 = k * (1 - A) * A; m2 = 1 - A * A;
+  );
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = k;
+  dst[4] = m0; dst[5] = m1; dst[6] = m2;
+);
+
+// write one HP/LP cascade-section's coeffs (no gain). ftype 3=HP, 4=LP. dst[0..6].
+// V0.5: called per staggered-Butterworth section with q = butter_q(k, N).
+function hplp_coef(dst, ftype, fc, q) local(g, k, a1, a2, a3) (
+  g = tan($pi * fc / srate); k = 1 / q;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = k;
+  ftype == 3 ? ( dst[4] = 1; dst[5] = -k; dst[6] = -1; )
+             : ( dst[4] = 0; dst[5] = 0;  dst[6] = 1;  );
+);
+
+// V0.5: staggered-Butterworth section Q for a 2N-th order cascade.
+function butter_q(kk, nn) ( 1 / (2 * cos($pi * (2*kk + 1) / (4*nn))) );
+
+// V0.5: resonance bell coeffs (fixed Q=2), glin = 1 + Resonance*5. glin=1 -> identity.
+function hplp_bell(dst, fc, glin) local(A, g, bk, a1, a2, a3) (
+  A = sqrt(glin); g = tan($pi * fc / srate); bk = 1 / (2 * A);
+  a1 = 1 / (1 + g * (g + bk)); a2 = g * a1; a3 = g * a2;
+  dst[0] = a1; dst[1] = a2; dst[2] = a3; dst[3] = bk;
+  dst[4] = 1; dst[5] = bk * (A * A - 1); dst[6] = 0;
+);
+
+// V0.5: run one HP/LP filter (fi 0=HP,1=LP): N Butterworth sections + always-tick bell.
+function hplp_run(fi, nsec, pl)
+  local(cfb, stb, chA, chB, mid, sid, do_b, s, kk, cs, ic1, ic2, v1, v2, v3, a1, a2, a3, m0, m1, m2) (
+  cfb = hplp_cf + fi*63; stb = hplp_state + fi*36;
+  pl == 0 ? ( chA = spl0; chB = spl1; do_b = 1; ) :
+  pl == 3 ? ( chA = spl0; do_b = 0; ) :
+  pl == 4 ? ( chA = spl1; do_b = 0; ) : (
+    mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+    pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+    do_b = 0;
+  );
+  s = chA; kk = 0;
+  loop(nsec,
+    cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[kk*4]; ic2 = stb[kk*4+1];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[kk*4] = 2*v1 - ic1; stb[kk*4+1] = 2*v2 - ic2;
+    s = m0*s + m1*v1 + m2*v2; kk += 1;
+  );
+  cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];  // bell, fixed slot 8
+  ic1 = stb[32]; ic2 = stb[33];
+  v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+  stb[32] = 2*v1 - ic1; stb[33] = 2*v2 - ic2;
+  chA = m0*s + m1*v1 + m2*v2;
+  do_b ? (
+    s = chB; kk = 0;
+    loop(nsec,
+      cs = cfb + kk*7; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+      ic1 = stb[kk*4+2]; ic2 = stb[kk*4+3];
+      v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      stb[kk*4+2] = 2*v1 - ic1; stb[kk*4+3] = 2*v2 - ic2;
+      s = m0*s + m1*v1 + m2*v2; kk += 1;
+    );
+    cs = cfb + 56; a1 = cs[0]; a2 = cs[1]; a3 = cs[2]; m0 = cs[4]; m1 = cs[5]; m2 = cs[6];
+    ic1 = stb[34]; ic2 = stb[35];
+    v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+    stb[34] = 2*v1 - ic1; stb[35] = 2*v2 - ic2;
+    chB = m0*s + m1*v1 + m2*v2;
+  );
+  pl == 0 ? ( spl0 = chA; spl1 = chB; ) :
+  pl == 3 ? ( spl0 = chA; ) :
+  pl == 4 ? ( spl1 = chA; ) :
+  pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :
+            ( spl0 = mid + chA; spl1 = mid - chA; );
+);
+
+// ============ V0.6 linear-phase HP/LP: partitioned-convolution engines ============
+// Two independent engines (0=HP, 1=LP), Arthur-style partitioned overlap-save
+// (P=2048, B=4096, BD=8192, KMAX=4). Kernel magnitude = FFT of the ACTUAL min-phase
+// cascade's impulse response (reuses hplp_coef/hplp_bell) -> Linear magnitude == Min
+// magnitude by construction. Zero-phase kernel -> integer group delay BD/2; +P from the
+// runtime hop -> 6144 samples/engine. Page-safe layout (every FFT/convolve span within
+// one 65536 page); offsets from tools page_layout. Task 8 = Both placement only.
+// P/B/PB2 are global (the runtime hop is identical at every resolution); BD and KMAX are
+// PER ENGINE from V0.7 on and live in lp_geo (a global lpBD would now be misleading).
+lpP = 2048; lpB = 4096; lpPB2 = lpB * 2;
+
+// modified Bessel I0 (matches Arthur's kaiser_i0 / Python _kaiser_i0, 40 terms)
+function lp_i0(x) local(s, t, kk, xh) (
+  s = 1; t = 1; kk = 1; xh = x * 0.5;
+  while (kk < 40) ( t *= (xh / kk) * (xh / kk); s += t; kk += 1; );
+  s;
+);
+
+// ---- V0.7: per-engine geometry + page-safe layout tables ----
+// lp_geo + eng*4:  0 BD, 1 KMAX, 2 lat (BD/2+P), 3 dryN
+// lp_off + eng*16: absolute addresses, inventory order:
+//   0 desbuf, 1 ktime, 2 win_k, 3 Hspec, 4 fdlA, 5 fdlB, 6 fftw, 7 yacc, 8 tmpc,
+//   9 inA, 10 inB, 11 outA, 12 outB, 13 dryA, 14 dryB
+// Mirrors tools/rcbitnova_dsp.py page_layout(): every FFT-touched buffer is aligned to
+// min(its span, 65536) so no fft/ifft/convolve_c span ever crosses a 65536-word page.
+// This is what makes BD=32768 legal at all: a 32768-pt complex FFT spans exactly one full
+// page, so it must START on a page boundary - misaligned, JSFX corrupts it SILENTLY
+// (live-verified 2026-07-25: aligned |X[k]|=1.0 everywhere, misaligned min=0.0).
+function lp_align(p, u) local(uu) ( uu = min(u, 65536); ceil(p / uu) * uu; );
+
+function lp_layout(eng, base, BD) local(ob, gb, KM, dry, p) (
+  ob = lp_off + eng*16; gb = lp_geo + eng*4;
+  KM = BD / lpP; dry = BD >= 32768 ? 32768 : 16384;
+  p = base;
+  p = lp_align(p, BD*2);   ob[0]  = p; p += BD*2;        // desbuf (FFT, span BD*2)
+                           ob[1]  = p; p += BD;          // ktime
+                           ob[2]  = p; p += BD;          // win_k
+  p = lp_align(p, lpPB2);  ob[3]  = p; p += KM*lpPB2;    // Hspec (per-partition PB2)
+  p = lp_align(p, lpPB2);  ob[15] = p; p += KM*lpPB2;    // Hspec2: V0.8 crossfade target.
+                                                          // ALSO a live convolve_c operand
+                                                          // while fading -> same PB2 / no-
+                                                          // page-crossing rule as Hspec.
+  p = lp_align(p, lpPB2);  ob[4]  = p; p += KM*lpPB2;    // fdlA
+  p = lp_align(p, lpPB2);  ob[5]  = p; p += KM*lpPB2;    // fdlB
+  p = lp_align(p, lpPB2);  ob[6]  = p; p += lpPB2;       // fftw
+  p = lp_align(p, lpPB2);  ob[7]  = p; p += lpPB2;       // yacc
+  p = lp_align(p, lpPB2);  ob[8]  = p; p += lpPB2;       // tmpc
+                           ob[9]  = p; p += lpB;         // inA
+                           ob[10] = p; p += lpB;         // inB
+                           ob[11] = p; p += 16384;       // outA (FIFO, only needs > P)
+                           ob[12] = p; p += 16384;       // outB
+                           ob[13] = p; p += dry;         // dryA (must exceed lat)
+                           ob[14] = p; p += dry;         // dryB
+  gb[0] = BD; gb[1] = KM; gb[2] = BD/2 + lpP; gb[3] = dry;
+  p;
+);
+
+// Lay out BOTH engines with engine 1 packed right after engine 0, then clear exactly the
+// used span (never touch hi-res address space while Normal is active) and hint the top.
+// Packing is what keeps a Normal+Normal pair at the V0.6 footprint (458752 words).
+function lp_relayout(bd0, bd1) local(t0, t1) (
+  t0 = lp_layout(0, lp_base, bd0);
+  t1 = lp_layout(1, t0, bd1);
+  memset(lp_base, 0, t1 - lp_base);
+  lp_top = t1;
+  freembuf(lp_top + 1);
+);
+
+// Per-engine Kaiser window (beta 14) at that engine's own BD, into its win_k slot.
+function lp_win_build(eng) local(ob, BD, wk, iv, nf, i, a) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4]; wk = ob[2];
+  iv = 1.0 / lp_i0(14); nf = BD - 1;
+  i = 0;
+  loop(BD,
+    a = 2.0 * i / nf - 1.0; a = max(1.0 - a * a, 0);
+    wk[i] = lp_i0(14 * sqrt(a)) * iv;
+    i += 1;
+  );
+);
+
+// V0.8 fade state: lp_fs + eng*4 = 0 fading, 1 fade_pos, 2 fade_len, 3 valid.
+// fade_len is defined in TIME (50 ms) so it is sample-rate independent, and is shorter
+// than the 100 ms rebuild limiter; rebuilds are additionally QUEUED while fading, so an
+// instantaneous kernel switch is structurally impossible.
+function lp_fs_reset(eng) local(fs) (
+  fs = lp_fs + eng*4;
+  fs[0] = 0; fs[1] = 0; fs[2] = floor(srate * 0.05); fs[3] = 0;
+);
+
+function lp_rt_reset(eng) local(rt) (
+  rt = lp_rt + eng*8;
+  rt[0] = 0; rt[1] = 0; rt[2] = 0; rt[3] = lpP; rt[4] = 0; rt[5] = 0;
+  rt[6] = 0; rt[7] = 0;        // V0.8 lane zero-run counters
+  lp_fs_reset(eng);            // a fade must never point into moved or cleared memory
+);
+
+// Commit the freshly built target as the active kernel (exact copy, no residual drift).
+// V0.9: clear ONE engine completely - buffers as well as counters. Resetting the indices is
+// NOT enough: the FDL still holds old-domain spectra that convolve_c would fold back in, and a
+// linear-phase kernel has support BD (not BD/2), so a kept-state topology switch leaks old
+// output for ~BD+P samples. Oracle-measured against a continuously running engine: keeping the
+// state and fading in at the reported latency leaves -43 dBFS of error (audible); clearing and
+// holding BD0+BD1+2P leaves -282 dBFS (float64 noise).
+function lp_engine_clear(eng) local(ob, PB2K, dryN) (
+  ob = lp_off + eng*16; PB2K = lp_geo[eng*4+1] * lpPB2; dryN = lp_geo[eng*4+3];
+  memset(ob[4],  0, PB2K);          // fdlA
+  memset(ob[5],  0, PB2K);          // fdlB
+  memset(ob[9],  0, lpB);           // inA
+  memset(ob[10], 0, lpB);           // inB
+  memset(ob[11], 0, 16384);         // outA
+  memset(ob[12], 0, 16384);         // outB
+  memset(ob[13], 0, dryN);          // dryA
+  memset(ob[14], 0, dryN);          // dryB
+  lp_rt_reset(eng);                 // indices + V0.8 fade state
+);
+
+// ---- V1.0: exact |H(e^jw)| of the TPT-SVF, ported from the oracle's svf_response.
+// EEL2 has no complex type, so the 2x2 solve is written out. Do NOT substitute a brute-force
+// RMS measurement (the oracle's svf_magnitude): far too slow per frame, and its own noise floor
+// would make the transcription gate meaningless.
+function gc_svf_mag(cdst, f)
+  local(a1, a2, a3, m0, m1, m2, A11, A12, A21, A22, B1, B2, C1, C2, D,
+        w, zr, zi, M11r, M11i, M12r, M21r, M22r, M22i, dr, di, den,
+        n1r, n1i, n2r, n2i, xr, xi, yr, yi, hr, hi)
+(
+  a1 = cdst[0]; a2 = cdst[1]; a3 = cdst[2];
+  m0 = cdst[4]; m1 = cdst[5]; m2 = cdst[6];
+  A11 = 2*a1 - 1; A12 = -2*a2;
+  A21 = 2*a2;     A22 = 1 - 2*a3;
+  B1 = 2*a2; B2 = 2*a3;
+  C1 = m1*a1 + m2*a2;
+  C2 = -m1*a2 + m2*(1 - a3);
+  D  = m0 + m1*a2 + m2*a3;
+  w = 2 * $pi * f / srate;
+  zr = cos(w); zi = sin(w);
+  M11r = zr - A11; M11i = zi;
+  M12r = -A12;
+  M21r = -A21;
+  M22r = zr - A22; M22i = zi;
+  dr = M11r*M22r - M11i*M22i - M12r*M21r;
+  di = M11r*M22i + M11i*M22r;
+  den = dr*dr + di*di;
+  n1r = B1*M22r - M12r*B2; n1i = B1*M22i;
+  n2r = M11r*B2 - B1*M21r; n2i = M11i*B2;
+  xr = (n1r*dr + n1i*di) / den; xi = (n1i*dr - n1r*di) / den;
+  yr = (n2r*dr + n2i*di) / den; yi = (n2i*dr - n2r*di) / den;
+  hr = C1*xr + C2*yr + D;
+  hi = C1*xi + C2*yi;
+  sqrt(hr*hr + hi*hi);
+);
+
+// Band magnitude in BITS at frequency f. Everything the graph composes is in bits and SUMS;
+// mixing linear magnitudes with bit grids and multiplying them is a silent arithmetic error.
+//
+// It READS the coefficients the audio path is already using: setup_band calls
+// svf_set(b*8, ...) in @slider for every band, writing a1,a2,a3,k,m0,m1,m2 to cf[b*8+0..6].
+// So the drawing cannot drift from the sound - same numbers, including band_qeff's effective Q.
+// It must NOT call svf_set itself: that writes into the GLOBAL cf array, i.e. the live audio
+// coefficients, from another thread.
+// ---- V1.0: sample the REALIZED windowed kernel with ONE native FFT ----
+// Not a per-point DTFT: 100 points over BD=32768 is ~3.3M interpreted operations per engine,
+// and the danger is PEAK BLOCK TIME - one @block missing its deadline - not average CPU.
+//
+// desbuf (ob[0], span BD*2) is free once lpk_build has finished: it is last written by the ifft
+// and only read by the ktime loop, and lpk_run never touches it. Same page-aligned span V0.7
+// already proved safe at 32768.
+//
+// Three details that would each yield a smooth, believable, WRONG curve:
+//   1. fft_permute is MANDATORY - EEL2's fft() returns bit-reversed order.
+//   2. the imaginary lane must be zeroed EXPLICITLY - the prior ifft left rounding residue.
+//   3. only bins 0..BD/2 carry information - ktime is real, so X[BD-k] = conj(X[k]).
+// The kernel's fftshift needs no correction: a half-period circular shift multiplies the
+// spectrum by (-1)^k, which |X[k]| removes.
+function gc_build_grid(eng)
+  local(ob, BD, desbuf, ktime, half, i, k, b, frac, dst, f, t, m0, m1, m, idx) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4];
+  desbuf = ob[0]; ktime = ob[1];
+  i = 0; loop(BD, desbuf[i*2] = ktime[i]; desbuf[i*2+1] = 0; i += 1;);
+  fft(desbuf, BD); fft_permute(desbuf, BD);
+  half = BD * 0.5;
+  idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
+  dst = gc_lin + (1 - idx) * (2*GC_LIN_N) + eng * GC_LIN_N;   // this engine's INACTIVE buffer
+  i = 0;
+  loop(GC_LIN_N,
+    t = i / (GC_LIN_N - 1);
+    f = min(20 * pow(1000, t), srate * 0.5);
+    b = f * BD / srate;
+    k = floor(b); frac = b - k;
+    k >= half ? ( k = half - 1; frac = 1; );
+    m0 = sqrt(desbuf[k*2]*desbuf[k*2] + desbuf[k*2+1]*desbuf[k*2+1]);
+    m1 = sqrt(desbuf[(k+1)*2]*desbuf[(k+1)*2] + desbuf[(k+1)*2+1]*desbuf[(k+1)*2+1]);
+    m = m0 * (1 - frac) + m1 * frac;
+    // store BITS: the graph composes by SUMMING bits, and the axis is in bits, so nothing
+    // converts between computing and plotting
+    dst[i] = log(max(m, 0.0000001)) / log(2);
+    i += 1;
+  );
+);
+
+// Publish ONE engine: flip its index, then bump its generation - only after the final word is
+// written. Per-engine on purpose: a shared index would mean an HP-only rebuild flips the pair
+// and the LP trace reads a half nobody wrote, and a later LP-only rebuild resurrects the OLD HP.
+function gc_publish(eng) local(ix, gn) (
+  ix = eng == 0 ? GCM_IDX_HP : GCM_IDX_LP;
+  gn = eng == 0 ? GCM_GEN_HP : GCM_GEN_LP;
+  gc_meta[ix] = 1 - gc_meta[ix];
+  gc_meta[gn] = gc_meta[gn] + 1;
+);
+
+function lpk_commit(eng) local(ob, KM) (
+  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
+  memcpy(ob[3], ob[15], KM * lpPB2);
+  lp_fs[eng*4] = 0;
+);
+
+// Advance engine eng by one sample (two lanes A=iA, B=iB). Sets lp_outA/lp_outB (delayed).
+function lpk_run(eng, iA, iB)
+  local(ob, KM, hspec, hspec2, fdlA, fdlB, fftw, yacc, tmpc, inA, inB, outA, outB, rt,
+        ir, cnt, out_rd, out_wr, fdl_wr, i, si, k, idx, ow, sc,
+        fading, fpos, flen, a, skip_after) (
+  ob = lp_off + eng*16; KM = lp_geo[eng*4+1];
+  hspec = ob[3]; hspec2 = ob[15]; fdlA = ob[4]; fdlB = ob[5];
+  fftw = ob[6]; yacc = ob[7]; tmpc = ob[8];
+  inA = ob[9]; inB = ob[10]; outA = ob[11]; outB = ob[12];
+  rt = lp_rt + eng * 8;
+  ir = rt[0]; cnt = rt[1]; out_rd = rt[2]; out_wr = rt[3]; fdl_wr = rt[4];
+  skip_after = lp_geo[eng*4] + lpB;      // BD + B: past this many EXACT zeros the whole
+                                          // FDL of that lane is zero, so its output is too
+  inA[ir] = iA; inB[ir] = iB;
+  // Saturating zero-run counters, one per lane. NOTE: written with min() rather than a
+  // nested ternary - EEL2 mis-binds an assignment inside a nested ternary (documented
+  // project gotcha), which silently prevented the counter from ever reaching the
+  // threshold, so the skip never engaged.
+  iA == 0 ? ( rt[6] = min(rt[6] + 1, skip_after); ) : ( rt[6] = 0; );
+  iB == 0 ? ( rt[7] = min(rt[7] + 1, skip_after); ) : ( rt[7] = 0; );
+  ir += 1; ir >= lpB ? ir = 0; cnt += 1;
+  lp_outA = outA[out_rd]; lp_outB = outB[out_rd];
+  out_rd += 1; out_rd >= 16384 ? out_rd = 0;
+  cnt >= lpP ? (
+    cnt = 0; sc = 1.0 / lpB;
+    fading = lp_fs[eng*4]; fpos = lp_fs[eng*4+1]; flen = lp_fs[eng*4+2];
+    // ---- lane A ----
+    rt[6] >= skip_after ? (
+      i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outA[ow] = 0; i += 1;);
+    ) : (
+      i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inA[si]; fftw[i*2+1] = 0; i += 1;);
+      fft(fftw, lpB); fft_permute(fftw, lpB);
+      memcpy(fdlA + fdl_wr * lpPB2, fftw, lpB * 2);
+      memset(yacc, 0, lpB * 2);
+      k = 0; loop(KM,
+        idx = fdl_wr - k; idx < 0 ? idx += KM;
+        memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+        convolve_c(tmpc, hspec + k * lpPB2, lpB);
+        i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+        k += 1;
+      );
+      fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+      fading ? (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outA[ow] = yacc[(lpP + i)*2] * sc * (1 - a); i += 1;);
+        memset(yacc, 0, lpB * 2);
+        k = 0; loop(KM,
+          idx = fdl_wr - k; idx < 0 ? idx += KM;
+          memcpy(tmpc, fdlA + idx * lpPB2, lpB * 2);
+          convolve_c(tmpc, hspec2 + k * lpPB2, lpB);
+          i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+          k += 1;
+        );
+        fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outA[ow] += yacc[(lpP + i)*2] * sc * a; i += 1;);
+      ) : (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          outA[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+      );
+    );
+    // ---- lane B ----
+    rt[7] >= skip_after ? (
+      i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384; outB[ow] = 0; i += 1;);
+    ) : (
+      i = 0; loop(lpB, si = ir + i; si >= lpB ? si -= lpB; fftw[i*2] = inB[si]; fftw[i*2+1] = 0; i += 1;);
+      fft(fftw, lpB); fft_permute(fftw, lpB);
+      memcpy(fdlB + fdl_wr * lpPB2, fftw, lpB * 2);
+      memset(yacc, 0, lpB * 2);
+      k = 0; loop(KM,
+        idx = fdl_wr - k; idx < 0 ? idx += KM;
+        memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+        convolve_c(tmpc, hspec + k * lpPB2, lpB);
+        i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+        k += 1;
+      );
+      fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+      fading ? (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outB[ow] = yacc[(lpP + i)*2] * sc * (1 - a); i += 1;);
+        memset(yacc, 0, lpB * 2);
+        k = 0; loop(KM,
+          idx = fdl_wr - k; idx < 0 ? idx += KM;
+          memcpy(tmpc, fdlB + idx * lpPB2, lpB * 2);
+          convolve_c(tmpc, hspec2 + k * lpPB2, lpB);
+          i = 0; loop(lpB * 2, yacc[i] += tmpc[i]; i += 1;);
+          k += 1;
+        );
+        fft_ipermute(yacc, lpB); ifft(yacc, lpB);
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          a = (fpos + i) / flen; a > 1 ? a = 1;
+          outB[ow] += yacc[(lpP + i)*2] * sc * a; i += 1;);
+      ) : (
+        i = 0; loop(lpP, ow = out_wr + i; ow >= 16384 ? ow -= 16384;
+          outB[ow] = yacc[(lpP + i)*2] * sc; i += 1;);
+      );
+    );
+    // fade advances ONCE per hop, AFTER both lanes, so both used the same alpha
+    fading ? (
+      fpos += lpP; lp_fs[eng*4+1] = fpos;
+      fpos >= flen ? lpk_commit(eng);   // exact Hspec2 -> Hspec, clears fading
+    );
+    out_wr += lpP; out_wr >= 16384 ? out_wr -= 16384;
+    fdl_wr += 1; fdl_wr >= KM ? fdl_wr = 0;
+  );
+  rt[0] = ir; rt[1] = cnt; rt[2] = out_rd; rt[3] = out_wr; rt[4] = fdl_wr;
+);
+
+// Route L/R through engine eng honoring placement pl (0 Both,1 Mid,2 Side,3 Left,4 Right).
+// Both: filter both lanes. Else: filter the active component (lane A), delay the untouched
+// complementary component by that engine's own latency (lp_geo[eng*4+2]), then recombine.
+// The dry ring is per-engine too (lp_geo[eng*4+3]): a High engine's latency is 18432, which
+// does NOT fit the 16384 ring Normal uses. Writes spl0/spl1.
+function lpk_process(eng, pl)
+  local(l, r, mid, sid, act, comp, dryA, rt, dwp, drd, cd, lat, dryN) (
+  l = spl0; r = spl1;
+  pl == 0 ? (
+    lpk_run(eng, l, r); spl0 = lp_outA; spl1 = lp_outB;
+  ) : (
+    dryA = lp_off[eng*16 + 13]; rt = lp_rt + eng * 8;
+    lat = lp_geo[eng*4+2]; dryN = lp_geo[eng*4+3];
+    pl == 3 ? ( act = l; comp = r; ) :
+    pl == 4 ? ( act = r; comp = l; ) : (
+      mid = (l + r) * 0.5; sid = (l - r) * 0.5;
+      pl == 1 ? ( act = mid; comp = sid; ) : ( act = sid; comp = mid; );
+    );
+    dwp = rt[5]; dryA[dwp] = comp;
+    drd = dwp - lat; drd < 0 ? drd += dryN;
+    cd = dryA[drd];
+    dwp += 1; dwp >= dryN ? dwp = 0; rt[5] = dwp;
+    lpk_run(eng, act, 0);
+    pl == 3 ? ( spl0 = lp_outA; spl1 = cd; ) :
+    pl == 4 ? ( spl0 = cd; spl1 = lp_outA; ) :
+    pl == 1 ? ( spl0 = lp_outA + cd; spl1 = lp_outA - cd; ) :
+              ( spl0 = cd + lp_outA; spl1 = cd - lp_outA; );
+  );
+);
+
+// --- V0.7 linear-engine memory: scratch below lp_base, two PACKED engine layouts above ---
+// Packing engine 1 right after engine 0 keeps a Normal+Normal pair at exactly the V0.6
+// footprint (458752 words), so selecting High costs nothing until it is actually active.
+lp_rt  = hplp_cf + 126;   // 16 words runtime state (2 engines * 8): ir,cnt,out_rd,out_wr,fdl_wr,dry_wp
+lp_kc  = lp_rt + 16;      // 63 words kernel coeff scratch (<=9 sections * 7)
+lp_ks  = lp_kc + 63;      // 18 words kernel state scratch
+lp_geo = lp_ks + 18;      // 8 words  (2 engines * 4: BD, KMAX, lat, dryN)
+lp_off = lp_geo + 8;      // 32 words (2 engines * 16 buffer addresses; 15 = Hspec2)
+lp_fs  = lp_off + 32;     // 8 words  (2 engines * 4: fading, fade_pos, fade_len, valid)
+// ---- V1.0 GUI curve memory. MUST sit before lp_base: lp_relayout() memsets [lp_base, lp_top]
+// and calls freembuf(lp_top + 1), so anything above lp_base can be freed or overwritten while
+// @gfx reads it on another thread. @gfx never allocates and never relocates audio memory.
+//
+// V1.1: lp_base DOES move, and that is the most dangerous single consequence of eight bands.
+// The numbers here used to be V1.0's four-band ones and concluded the opposite; at N_BANDS = 8
+// the static chain ends at 71087, this block is 13678 words, the region ends at 84765, and
+// lp_base = ceil(84765 / 65536) * 65536 = 131072 - one page up, with 46307 words of padding.
+// The formula below recomputes it, so the engine block stays page-aligned by construction; a
+// 32768-point FFT off a 65536-word page corrupts SILENTLY (V0.7). Do not re-derive these by hand:
+// tools/rcbitnova_layout.py is the source of truth and the source gate compares against it.
+GC_N     = 512;                       // display points per trace
+GC_LIN_N = 2048;                      // realized-kernel points PER ENGINE. Not 256: resampling
+                                      // BD/2 dense bins to a coarse grid would re-create the
+                                      // sparse-grid problem the FFT was chosen to avoid.
+gc_trace = lp_fs + 8;                 // [2 buffers][5 domains][GC_N]      = 5120
+gc_lin   = gc_trace + 2*5*GC_N;       // [2 buffers][2 engines][GC_LIN_N]  = 8192
+gc_snap  = gc_lin + 2*2*GC_LIN_N;     // 128 words RESERVED for a per-field invalidation
+                                      // snapshot. NOT used in V1.0: the curve is recomputed every
+                                      // frame, which measured free (0.51% vs 0.52% against V0.9
+                                      // with the window closed). Kept so adding it later cannot
+                                      // move lp_base.
+gc_meta  = gc_snap + 128;             // 16 words, NAMED below - never index it numerically
+gc_kc    = gc_meta + 16;              // N_BANDS * 8 words: the GUI's OWN band coefficients
+gc_fc    = gc_kc + N_BANDS * 8;       // 126 words: the GUI's OWN HP/LP coefficients (2 x 63)
+gc_ebuf  = gc_fc + 126;               // 24 words: numeric-entry character buffer
+gc_hits  = gc_ebuf + 24;              // 8 words: bands under the cursor this frame (hit set)
+
+// Named metadata slots. Numeric indices already caused one real defect during planning:
+// topo_commit bumped gc_meta[2] while its comment said "gen_active", which actually advanced
+// gen_target and left the active generation frozen.
+GCM_IDX_HP = 0;    // active buffer index, HP engine - INDEPENDENT per engine, because a shared
+GCM_IDX_LP = 1;    // active buffer index, LP engine   index would make an HP-only rebuild flip
+GCM_GEN_HP = 2;    // published generation, HP         the pair and leave LP reading a half
+GCM_GEN_LP = 3;    // published generation, LP         nobody wrote
+GCM_GTGT   = 4;    // gen_target: a REQUESTED value changed (@slider)
+GCM_GACT   = 5;    // gen_active: an AUDIBLE value committed (topo_commit)
+GCM_TIDX   = 6;    // active buffer index for gc_trace  (owned by @gfx)
+GCM_TGEN   = 7;    // generation for gc_trace           (owned by @gfx)
+
+lp_base = ceil((gc_hits + 8) / 65536) * 65536;    // page-align the engine block start
+lp_relayout(8192, 8192);                          // Task 5: both engines Normal (= V0.6)
+lp_win_build(0); lp_win_build(1);
+lp_rt_reset(0);  lp_rt_reset(1);
+hp_sig_prev = -1; lp_sig_prev = -1; lp_outA = 0; lp_outB = 0;
+// ---- V0.9 active topology + mute machine ----
+// @slider only ARMS a change; @block adopts it once the output envelope is at zero. Cold init is
+// treated as ALREADY COMMITTED to whatever the project loaded: without this, reopening a project
+// saved as Linear/High/Mid would arm a mute AND play through the WRONG topology until the hold
+// expired - on every load, and again on every sample-rate change, which re-runs @init.
+// DERIVED, never a literal: 13646 at four bands, 13678 at eight. V1.0 carried 13638 and an
+// earlier draft of this file typed 13670 - a constant here cannot be right in both phases.
+memset(gc_trace, 0, gc_hits + 8 - gc_trace);
+gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1; gc_hit_n = 0;
+gc_cyc_n = 0; gc_cyc_x = -1000000; gc_cyc_y = -1000000; gc_cyc_t = -1000000;
+gc_edit = -1; gc_elen = 0; gc_fdrag = -1; gc_fnode = -1;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
+act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
+mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
+mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;
+// The geometry itself is adopted by the FIRST @slider pass rather than here, because JSFX does
+// not guarantee that slider values are already loaded when @init runs.
+topo_boot = 1;
+// Hi-res geometry. 32768 is fully supported by JSFX fft() but a 32768-pt complex FFT spans
+// exactly one 65536 page, so its buffer MUST start on a page boundary - lp_layout guarantees
+// that. (Live gate 2026-07-25: aligned |X[k]|=1.0 everywhere + exact ifft round trip;
+// misaligned min=0.0, i.e. SILENT corruption - the reason 32768 is widely thought unusable.)
+BD_HIGH = 32768;
+// Rebuild coalescing: a BD=32768 kernel rebuild is ~4x a BD=8192 one and runs in @block, so
+// rate-limit to <=1 per 100 ms per engine. The dirty flag persists, so the final knob
+// position always gets built.
+hp_dirty = 1; lp_dirty = 1; hp_tbuild = 0; lp_tbuild = 0;   // validity now lives in lp_fs[3]/[7]
+// (ext_tail_size is derived from the active geometry in @slider - see the PDC block.)
+
+// Proportional-Q (V0.3): Bell Q_eff = clamp(Qknob*(1 + qchar*|gain_bits_eff|), Qknob, 16).
+// Single shared expression for all three Bell Q sites. qchar=0 or non-Bell -> raw Q
+// (bit-identical to V0.2). Non-Bell and shelf split fixed Q are untouched.
+function band_qeff(b)
+  local(s, ty, qk, qc, gbits, qe)
+(
+  s = stb[b];
+  ty = slider(s + 2); qk = slider(s + 4); qc = slider(s + 9);
+  (qc == 0 || ty != 0) ? ( qe = qk; ) : (
+    gbits = (slider(s+5) + slider(s+6) * 0.01) * slider(s+7);
+    qe = qk * (1 + qc * abs(gbits));
+    qe > 16 ? ( qe = 16; ) : ( qe = qe; );
+  );
+  qe;
+);
+
+// Build this band's coefficients into the GUI's OWN scratch. Called once per band per frame,
+// never per drawn point: svf_set computes a tan() and must not run 512 times per band.
+//
+// It must not write into cf: that is the live audio coefficient array, and @gfx runs on another
+// thread. Reading cf instead was the first attempt and it was WRONG for a different reason -
+// cf is only refreshed in @slider, so a value written from @gfx did not reach it and the curve
+// stayed flat while the readout moved.
+function gc_band_setup(b) local(s, ty, glin) (
+  s = stb[b];
+  ty = slider(s + 2); (ty > 2 || ty < 0) ? ty = 0;
+  glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
+  svf_set(gc_kc + b * 8, ty, slider(s + 3), band_qeff(b), glin);
+);
+
+// Same fix as the bands, which I left half-done: reading hplp_cf meant reading coefficients
+// that only @slider refreshes, so a cutoff written from @gfx never reached the drawn curve and
+// the filter skirt stayed put while the handle moved.
+function gc_hplp_setup(eng) local(nsec, fe, base, k, sl) (
+  // slope enum -> sections, inline: gc_hplp_nsec is defined further down and EEL2 resolves
+  // functions in file order
+  sl = eng == 0 ? slider131 : slider135;
+  nsec = sl == 6 ? 0 : sl == 5 ? 8 : sl;
+  base = gc_fc + eng * 63;
+  nsec > 0 ? (
+    fe = min(eng == 0 ? slider132 : slider136, srate * 0.49);
+    k = 0;
+    loop(nsec, hplp_coef(base + k*7, eng == 0 ? 3 : 4, fe, butter_q(k, nsec)); k += 1;);
+    hplp_bell(base + 56, fe, 1 + (eng == 0 ? slider133 : slider137) * 5);
+  );
+);
+
+function gc_band_bits(b, f) (
+  slider(stb[b] + 1) == 0 ? ( 0; ) : ( log(max(gc_svf_mag(gc_kc + b * 8, f), 0.0000001)) / log(2); );
+);
+
+// V0.9: PDC policy (c) from V0.6, derived from the ACTIVE topology and published at COMMIT
+// (or on any non-topology change such as Lk / bypass) rather than from the @slider pass that
+// merely observed a switch. Live-verified 2026-08-09: REAPER adopts a mid-playback pdc_delay
+// change without host-side artefacts, which is what makes the deferred publish safe.
+function topo_pdc() (
+  lin_lat = act_phase == 1 ? (lp_geo[2] + lp_geo[6]) : 0;      // engine0 lat + engine1 lat
+  pdc_delay = slider1 != 1 ? (lin_lat + (any_b ? Lk : 0)) : 0; // 0 when bypassed
+  pdc_bot_ch = 0; pdc_top_ch = 2;
+  // FIR ring-out: last possibly-nonzero output after the final input is
+  // 2*P + BD_hp + BD_lp - 2 + Lk; add margin. Small when Linear is off (IIR has no FIR tail).
+  ext_tail_size = act_phase == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
+);
+
+
+// Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
+// brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
+function lpk_build(eng, ftype, freq, res, nsec, brick)
+  local(ob, BD, KM, wink, desbuf, ktime, hspec, fftw, fe, i, kk, n, s, st, c,
+        a1, a2, a3, m0, m1, m2, ic1, ic2, v1, v2, v3, f, m, re, im, src, half, inv, k, base) (
+  ob = lp_off + eng*16; BD = lp_geo[eng*4]; KM = lp_geo[eng*4+1];
+  desbuf = ob[0]; ktime = ob[1]; wink = ob[2]; hspec = ob[15]; fftw = ob[6];   // build into Hspec2
+  fe = min(freq, srate * 0.49);
+  brick ? (
+    i = 0; loop(BD,
+      kk = i <= BD * 0.5 ? i : BD - i; f = max(kk * srate / BD, 0.001);
+      m = ftype == 3 ? (f >= fe ? 1 : 0) : (f <= fe ? 1 : 0);
+      desbuf[i*2] = m; desbuf[i*2+1] = 0; i += 1;
+    );
+  ) : nsec <= 0 ? (
+    i = 0; loop(BD, desbuf[i*2] = 1; desbuf[i*2+1] = 0; i += 1;);
+  ) : (
+    // min-phase impulse response -> FFT -> magnitude (exact digital, reuses V0.5 coeffs)
+    kk = 0; loop(nsec, hplp_coef(lp_kc + kk*7, ftype, fe, butter_q(kk, nsec)); kk += 1;);
+    hplp_bell(lp_kc + nsec*7, fe, 1 + res * 5);
+    memset(lp_ks, 0, (nsec + 1) * 2);
+    n = 0; loop(BD,
+      s = n == 0 ? 1 : 0;
+      st = 0; loop(nsec + 1,
+        c = lp_kc + st*7; a1 = c[0]; a2 = c[1]; a3 = c[2]; m0 = c[4]; m1 = c[5]; m2 = c[6];
+        ic1 = lp_ks[st*2]; ic2 = lp_ks[st*2+1];
+        v3 = s - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        lp_ks[st*2] = 2*v1 - ic1; lp_ks[st*2+1] = 2*v2 - ic2;
+        s = m0*s + m1*v1 + m2*v2; st += 1;
+      );
+      desbuf[n*2] = s; desbuf[n*2+1] = 0; n += 1;
+    );
+    fft(desbuf, BD); fft_permute(desbuf, BD);
+    i = 0; loop(BD, re = desbuf[i*2]; im = desbuf[i*2+1];
+      desbuf[i*2] = sqrt(re*re + im*im); desbuf[i*2+1] = 0; i += 1;);
+  );
+  // zero-phase magnitude -> time -> fftshift(BD/2) -> Kaiser window -> partition into Hspec
+  fft_ipermute(desbuf, BD); ifft(desbuf, BD);
+  inv = 1.0 / BD; half = BD * 0.5;
+  i = 0; loop(BD, src = i + half; src >= BD ? src -= BD;
+    ktime[i] = desbuf[src*2] * inv * wink[i]; i += 1;);
+  k = 0; loop(KM,
+    base = k * lpPB2;
+    i = 0; loop(lpP, fftw[i*2] = ktime[k*lpP + i]; fftw[i*2+1] = 0; i += 1;);
+    i = lpP; loop(lpB - lpP, fftw[i*2] = 0; fftw[i*2+1] = 0; i += 1;);
+    fft(fftw, lpB); fft_permute(fftw, lpB);
+    memcpy(hspec + base, fftw, lpB * 2);
+    k += 1;
+  );
+);
+
+function setup_band(b)
+  local(s, glin, bty)
+(
+  s = stb[b];                                  // slider base: 10,20,30,40
+  glin = pow(2, (slider(s+5) + slider(s+6) * 0.01) * slider(s+7));
+  bty = slider(s+2); (bty > 2 || bty < 0) ? bty = 0;
+  svf_set(cf + b * 8, bty, slider(s+3), band_qeff(b), glin);
+);
+
+function setup_band_dyn(b)
+  local(s, ds, ty, fc, qd, g, k, a1, a2, a3)
+(
+  s = stb[b]; ds = dynb[b];
+  ty = slider(s + 2);
+  fc = slider(s + 3);
+  // Bell: bandpass detector at Q_eff (proportional-Q). Shelf: HP/LP-tap detector
+  // at fixed Butterworth Q (monotonic, unity passband, 0.7071 at fc).
+  qd = (ty == 1 || ty == 2) ? 0.7071 : band_qeff(b);
+  g = tan($pi * fc / srate); k = 1 / qd;
+  a1 = 1 / (1 + g * (g + k)); a2 = g * a1; a3 = g * a2;
+  det[b*4] = a1; det[b*4+1] = a2; det[b*4+2] = a3; det[b*4+3] = k;
+  dp[b*4]   = pow(2, -(slider(ds+3) + slider(ds+4) * 0.01));   // ceil_lin
+  dp[b*4+1] = exp(-1 / (slider(ds+5) * 0.001 * srate));        // atk
+  dp[b*4+2] = exp(-1 / (slider(ds+6) * 0.001 * srate));        // rel
+  dp[b*4+3] = slider(ds+1);                                    // dynOn
+  dm[b]     = slider(ds+2);                                    // 0 Linked,1 DualLR,2 DualMS
+  bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
+);
+
+// ---- V1.0 GUI writers. Two lessons from ReEQ, Fable Eq and EQall, learned the hard way:
+//
+// 1. Write sliderN BY NAME. Assigning through slider(index) with a computed index updated the
+//    value the GUI read back - so the readout moved and everything looked right - but it did
+//    not reach the actual parameter, so neither the audio nor the Param list ever changed.
+// 2. Do NOT rely on @slider running after slider_automate. Recompute whatever depends on the
+//    parameter right here. ReEQ keeps its truth in internal arrays and syncs sliders backwards;
+//    Fable Eq updates its derived variables inline. None of the three trusts an automatic
+//    @slider.
+
+// Every writer QUANTISES to its slider's declared step. Without this the GUI wrote continuous
+// values - a drag produced 3247.83 Hz on a slider declared with step 1 - so a setting made in
+// the GUI could not be reproduced from the slider, and the same "identical" settings in two
+// versions differed by ~0.08% (-62 dB on a null test). Found live 2026-08-18.
+function gc_q_step(v, st) ( floor(v / st + 0.5) * st; );
+
+function gc_w_freq(b, v, qz) (
+  qz ? ( v = gc_q_step(v, 1); );                      // slider step: 1 Hz
+  b == 0 ? ( slider13 = v; slider_automate(slider13); ) :
+  b == 1 ? ( slider23 = v; slider_automate(slider23); ) :
+  b == 2 ? ( slider33 = v; slider_automate(slider33); ) :
+  b == 3 ? ( slider43 = v; slider_automate(slider43); ) :
+  b == 4 ? ( slider153 = v; slider_automate(slider153); ) :
+  b == 5 ? ( slider163 = v; slider_automate(slider163); ) :
+  b == 6 ? ( slider173 = v; slider_automate(slider173); ) :
+           ( slider183 = v; slider_automate(slider183); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_macro(b, v, qz) (
+  qz ? ( v = gc_q_step(v, 1); );                      // whole bits
+  b == 0 ? ( slider15 = v; slider_automate(slider15); ) :
+  b == 1 ? ( slider25 = v; slider_automate(slider25); ) :
+  b == 2 ? ( slider35 = v; slider_automate(slider35); ) :
+  b == 3 ? ( slider45 = v; slider_automate(slider45); ) :
+  b == 4 ? ( slider155 = v; slider_automate(slider155); ) :
+  b == 5 ? ( slider165 = v; slider_automate(slider165); ) :
+  b == 6 ? ( slider175 = v; slider_automate(slider175); ) :
+           ( slider185 = v; slider_automate(slider185); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_micro(b, v, qz) (
+  qz ? ( v = gc_q_step(v, 0.1); );                    // slider step: 0.1 % of a bit
+  b == 0 ? ( slider16 = v; slider_automate(slider16); ) :
+  b == 1 ? ( slider26 = v; slider_automate(slider26); ) :
+  b == 2 ? ( slider36 = v; slider_automate(slider36); ) :
+  b == 3 ? ( slider46 = v; slider_automate(slider46); ) :
+  b == 4 ? ( slider156 = v; slider_automate(slider156); ) :
+  b == 5 ? ( slider166 = v; slider_automate(slider166); ) :
+  b == 6 ? ( slider176 = v; slider_automate(slider176); ) :
+           ( slider186 = v; slider_automate(slider186); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_ratio(b, v, qz) (
+  qz ? ( v = gc_q_step(v, 0.05); );                   // slider step: 0.05
+  b == 0 ? ( slider17 = v; slider_automate(slider17); ) :
+  b == 1 ? ( slider27 = v; slider_automate(slider27); ) :
+  b == 2 ? ( slider37 = v; slider_automate(slider37); ) :
+  b == 3 ? ( slider47 = v; slider_automate(slider47); ) :
+  b == 4 ? ( slider157 = v; slider_automate(slider157); ) :
+  b == 5 ? ( slider167 = v; slider_automate(slider167); ) :
+  b == 6 ? ( slider177 = v; slider_automate(slider177); ) :
+           ( slider187 = v; slider_automate(slider187); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_q(b, v, qz) (
+  qz ? ( v = gc_q_step(v, 0.001); );                  // slider step: 0.001
+  b == 0 ? ( slider14 = v; slider_automate(slider14); ) :
+  b == 1 ? ( slider24 = v; slider_automate(slider24); ) :
+  b == 2 ? ( slider34 = v; slider_automate(slider34); ) :
+  b == 3 ? ( slider44 = v; slider_automate(slider44); ) :
+  b == 4 ? ( slider154 = v; slider_automate(slider154); ) :
+  b == 5 ? ( slider164 = v; slider_automate(slider164); ) :
+  b == 6 ? ( slider174 = v; slider_automate(slider174); ) :
+           ( slider184 = v; slider_automate(slider184); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+function gc_w_enable(b, v) (
+  b == 0 ? ( slider11 = v; slider_automate(slider11); ) :
+  b == 1 ? ( slider21 = v; slider_automate(slider21); ) :
+  b == 2 ? ( slider31 = v; slider_automate(slider31); ) :
+  b == 3 ? ( slider41 = v; slider_automate(slider41); ) :
+  b == 4 ? ( slider151 = v; slider_automate(slider151); ) :
+  b == 5 ? ( slider161 = v; slider_automate(slider161); ) :
+  b == 6 ? ( slider171 = v; slider_automate(slider171); ) :
+           ( slider181 = v; slider_automate(slider181); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+// V1.1: Type has no drag gesture - it is written from the node's right-click menu
+// (and, for Q Character, from a numeric field). Named branches, like every writer:
+// V1.0 proved live that slider(computed_index) never reaches the parameter.
+function gc_w_type(b, v) (
+  b == 0 ? ( slider12 = v; slider_automate(slider12); ) :
+  b == 1 ? ( slider22 = v; slider_automate(slider22); ) :
+  b == 2 ? ( slider32 = v; slider_automate(slider32); ) :
+  b == 3 ? ( slider42 = v; slider_automate(slider42); ) :
+  b == 4 ? ( slider152 = v; slider_automate(slider152); ) :
+  b == 5 ? ( slider162 = v; slider_automate(slider162); ) :
+  b == 6 ? ( slider172 = v; slider_automate(slider172); ) :
+           ( slider182 = v; slider_automate(slider182); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+// V1.1: Placement has no drag gesture - it is written from the node's right-click menu
+// (and, for Q Character, from a numeric field). Named branches, like every writer:
+// V1.0 proved live that slider(computed_index) never reaches the parameter.
+function gc_w_place(b, v) (
+  b == 0 ? ( slider18 = v; slider_automate(slider18); ) :
+  b == 1 ? ( slider28 = v; slider_automate(slider28); ) :
+  b == 2 ? ( slider38 = v; slider_automate(slider38); ) :
+  b == 3 ? ( slider48 = v; slider_automate(slider48); ) :
+  b == 4 ? ( slider158 = v; slider_automate(slider158); ) :
+  b == 5 ? ( slider168 = v; slider_automate(slider168); ) :
+  b == 6 ? ( slider178 = v; slider_automate(slider178); ) :
+           ( slider188 = v; slider_automate(slider188); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+// V1.1: Q Character has no drag gesture - it is written from the node's right-click menu
+// (and, for Q Character, from a numeric field). Named branches, like every writer:
+// V1.0 proved live that slider(computed_index) never reaches the parameter.
+function gc_w_qchar(b, v) (
+  b == 0 ? ( slider19 = v; slider_automate(slider19); ) :
+  b == 1 ? ( slider29 = v; slider_automate(slider29); ) :
+  b == 2 ? ( slider39 = v; slider_automate(slider39); ) :
+  b == 3 ? ( slider49 = v; slider_automate(slider49); ) :
+  b == 4 ? ( slider159 = v; slider_automate(slider159); ) :
+  b == 5 ? ( slider169 = v; slider_automate(slider169); ) :
+  b == 6 ? ( slider179 = v; slider_automate(slider179); ) :
+           ( slider189 = v; slider_automate(slider189); );
+  setup_band(b); setup_band_dyn(b);
+);
+
+
+// HP/LP: recompute the cascade exactly as @slider does, and mark the linear kernel dirty so
+// @block rebuilds it. Without this a slope change only took effect after reloading the plugin.
+function gc_apply_hplp(eng) local(kk) (
+  eng == 0 ? (
+    hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;
+    hp_fe = min(slider132, srate * 0.49);
+    hp_nsec > 0 ? (
+      kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
+      hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
+    );
+    // @slider does this too, and omitting it was the null-test defect: the filter state was
+    // never reset on a slope/placement change from the GUI, and prev_* stayed stale so @slider
+    // would reset it again later, out of step with the other instance.
+    (slider131 != prev_hp_slope || slider134 != prev_hp_pl) ? (
+      memset(hplp_state + 0, 0, 36); prev_hp_slope = slider131; prev_hp_pl = slider134;
+    );
+    hp_dirty = 1;
+  ) : (
+    lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;
+    lp_fe = min(slider136, srate * 0.49);
+    lp_nsec > 0 ? (
+      kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
+      hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+    );
+    (slider135 != prev_lp_slope || slider138 != prev_lp_pl) ? (
+      memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
+    );
+    lp_dirty = 1;
+  );
+);
+
+
+// ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
+// definitions at file scope, and a definition inside a section is not reliable.
+function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );
+function gc_f_of_x(x)    ( 20 * pow(1000, min(max((x - gc_px) / gc_pw, 0), 1)); );
+function gc_y_of_bits(b) ( gc_py + gc_ph * (0.5 - min(max(b,-4),4) / 8); );
+function gc_bits_of_y(y) ( (0.5 - (y - gc_py) / gc_ph) * 8; );
+
+// ---- HP/LP contribution in bits. Placement is PHASE-CONDITIONAL: in Min the act_* pair is
+// never updated (topo_changed only fires for placement when slider140 == 1) while @sample uses
+// the raw slider, so reading act_* there would draw a domain abandoned minutes ago.
+function gc_hplp_placement(eng) ( act_phase == 0 ? (eng == 0 ? slider134 : slider138)
+                                                 : (eng == 0 ? act_hp_pl : act_lp_pl); );
+
+function gc_hplp_nsec(eng) local(sl) (
+  sl = eng == 0 ? slider131 : slider135;
+  sl == 6 ? 0 : sl == 5 ? 8 : sl;          // 6 = FIR Brick -> Off in the min path
+);
+
+function gc_hplp_audible(eng) local(sl) (
+  sl = eng == 0 ? slider131 : slider135;
+  sl == 6 ? act_phase == 1 : gc_hplp_nsec(eng) > 0;   // Min + Brick is identity, not a filter
+);
+
+function gc_hplp_bits(eng, f) local(nsec, base, k, acc, sl, idx, src, t, i, f0, f1, b0, b1) (
+  sl = eng == 0 ? slider131 : slider135;
+  !gc_hplp_audible(eng) ? ( 0; ) : (
+    act_phase == 0 ? (
+      // min-phase cascade: sum the staggered-Butterworth sections plus the resonance bell,
+      // reading the very coefficients @slider built for the audio path
+      nsec = gc_hplp_nsec(eng);
+      base = gc_fc + eng * 63;
+      acc = 0; k = 0;
+      loop(nsec, acc += log(max(gc_svf_mag(base + k*7, f), 0.0000001)) / log(2); k += 1;);
+      acc += log(max(gc_svf_mag(base + 56, f), 0.0000001)) / log(2);
+      acc;
+    ) : (
+      // linear phase: the REALIZED windowed kernel, sampled from the published grid and
+      // interpolated in LOG frequency on values already in bits
+      idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
+      src = gc_lin + idx * (2*GC_LIN_N) + eng * GC_LIN_N;
+      t = log(min(max(f,20),20000) / 20) / log(1000) * (GC_LIN_N - 1);
+      i = floor(t);
+      i >= GC_LIN_N - 1 ? ( src[GC_LIN_N - 1]; ) : (
+        b0 = src[i]; b1 = src[i+1];
+        b0 + (b1 - b0) * (t - i);
+      );
+    );
+  );
+);
+
+function gc_applies(pl, dom) ( pl == 0 || pl == dom; );
+
+function gc_domain_bits(dom, f) local(acc, b) (
+  acc = 0;
+  gc_applies(gc_hplp_placement(0), dom) ? acc += gc_hplp_bits(0, f);
+  gc_applies(gc_hplp_placement(1), dom) ? acc += gc_hplp_bits(1, f);
+  b = 0;
+  loop(N_BANDS,
+    (slider(stb[b]+1) == 1 && gc_applies(slider(stb[b]+8), dom)) ?
+      acc += gc_band_bits(b, f);
+    b += 1;
+  );
+  acc;
+);
+
+function gc_dom_used(dom) local(u, b) (
+  u = 0;
+  (gc_hplp_audible(0) && gc_hplp_placement(0) == dom) ? u = 1;
+  (gc_hplp_audible(1) && gc_hplp_placement(1) == dom) ? u = 1;
+  b = 0;
+  loop(N_BANDS,
+    (slider(stb[b]+1) == 1 && slider(stb[b]+8) == dom) ? u = 1;
+    b += 1;
+  );
+  u;
+);
+
+function gc_draw_trace(dom, r, g, b, dashed) local(i, x, y, py, first) (
+  gfx_set(r, g, b, 1);
+  first = 1; i = 0;
+  loop(GC_N,
+    x = gc_px + gc_pw * i / (GC_N - 1);
+    y = gc_y_of_bits(gc_src[dom * GC_N + i]);
+    (first == 0 && (dashed == 0 || (i % 10) < 6)) ? gfx_line(x - gc_pw / (GC_N - 1), py, x, y);
+    py = y; first = 0;
+    i += 1;
+  );
+);
+
+
+function gc_filt_x(eng) ( gc_x_of_f(eng == 0 ? slider132 : slider136); );
+
+// (the HP/LP handle hit test used to sit HERE, at @init file scope, so it ran once at load with
+//  a meaningless mouse position and never again: gc_fnode was frozen and the handles answered
+//  neither right-click nor drag. Moved into @gfx, where it belongs. Broken since V1.0.)
+function gc_button(bx, by, bw, label, on) local(hot) (
+  hot = (mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + 18 * gc_sc);
+  on ? gfx_set(0.25, 0.45, 0.3, 1) : gfx_set(0.16, 0.16, 0.18, 1);
+  hot ? gfx_set(0.3, 0.5, 0.36, 1);
+  gfx_rect(bx, by, bw, 18 * gc_sc);
+  gfx_set(0.85, 0.85, 0.9, 1);
+  gfx_x = bx + 5 * gc_sc; gfx_y = by + 3 * gc_sc;
+  gfx_drawstr(label);
+  hot;
+);
+function gc_field(i, label, value, dec) local(fx, hot) (
+  fx = gc_px + i * (gc_fw + 8 * gc_sc);
+  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
+  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
+  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
+  gfx_set(0.6, 0.6, 0.65, 1);
+  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
+  gfx_drawstr(label);
+  gfx_set(0.9, 0.9, 0.95, 1);
+  gc_edit == i ? (
+    // show what is being typed, with a cursor
+    gc_ci = 0;
+    loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
+    gfx_drawstr("_");
+  ) : (
+    gfx_drawnumber(value, dec);
+  );
+  hot;
+);
+
+@slider
+
+out_gain = pow(2, slider2 + slider3 * 0.01);
+b = 0;
+loop(N_BANDS, setup_band(b); setup_band_dyn(b); b += 1;);
+
+// Rebuild the enabled-band list. @slider runs on every parameter change, automation included, so
+// this cache cannot go stale: nothing can enable a band without passing through here.
+nb_n = 0; b = 0;
+loop(N_BANDS,
+  slider(stb[b] + 1) == 1 ? ( nb_list[nb_n] = b; nb_n += 1; );
+  b += 1;
+);
+
+// Mode-B global lookahead + PDC
+Lk = floor(slider4 * 0.001 * srate + 0.5);
+Lk = min(max(Lk, 1), MAX_LOOK - 1);
+any_b = 0;
+b = 0;
+loop(N_BANDS,
+  mbmode[b] = slider(dynb[b] + 7);                                       // 0 A, 1 B
+  hc[b] = pow(2, -(slider(ceb[b] + 2) + slider(ceb[b] + 3) * 0.01));   // hard ceiling
+  // V1.1: Enable is part of the gate. In V1.0 it was not, so a band switched OFF but left with
+  // Dyn on and Mode B still ran its split limiter on the bus, still forced the lookahead and PDC
+  // machinery active, and was audible - "disabled" did not mean disabled. Deliberate divergence
+  // from V1.0, and the null test asserts that it diverges exactly here and nowhere else.
+  (slider(stb[b] + 1) == 1 && slider(dynb[b] + 1) == 1 && mbmode[b] == 1
+   && slider(stb[b]+2) <= 2) ? any_b = 1;
+  b += 1;
+);
+// (PDC is computed further down, AFTER the linear-engine geometry reconcile, so a Resolution
+//  change is reflected in the same @slider pass that applies it.)
+
+// ===== V0.5 HP/LP: staggered-Butterworth sections + resonance bell + reset =====
+hp_nsec = slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131;   // FIR Brick (6) -> Off in min-phase path
+hp_fe = min(slider132, srate * 0.49);
+hp_nsec > 0 ? (
+  kk = 0; loop(hp_nsec, hplp_coef(hplp_cf + kk*7, 3, hp_fe, butter_q(kk, hp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 56, hp_fe, 1 + slider133 * 5);
+);
+(slider131 != prev_hp_slope || slider134 != prev_hp_pl) ? (
+  memset(hplp_state + 0, 0, 36); prev_hp_slope = slider131; prev_hp_pl = slider134;
+);
+
+lp_nsec = slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135;   // FIR Brick (6) -> Off in min-phase path
+lp_fe = min(slider136, srate * 0.49);
+lp_nsec > 0 ? (
+  kk = 0; loop(lp_nsec, hplp_coef(hplp_cf + 63 + kk*7, 4, lp_fe, butter_q(kk, lp_nsec)); kk += 1;);
+  hplp_bell(hplp_cf + 63 + 56, lp_fe, 1 + slider137 * 5);
+);
+(slider135 != prev_lp_slope || slider138 != prev_lp_pl) ? (
+  memset(hplp_state + 36, 0, 36); prev_lp_slope = slider135; prev_lp_pl = slider138;
+);
+
+// ===== V0.7 linear engines: selected geometry, reconcile, rebuild signatures, PDC =====
+// SELECTED resolution (slider) vs ACTIVE geometry (lp_geo). While Phase=Min nothing is
+// configured and no hi-res memory is touched, so choosing High in Min costs nothing; the
+// Min->Linear transition is covered by the same geometry compare.
+sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
+sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
+
+// V0.9 BOOT: the FIRST @slider pass adopts the loaded state immediately - relayout, window
+// builds, resets, forced snap rebuilds - exactly as V0.8 did, with no mute and no deferral.
+// This is what stops a project reload (and a sample-rate change, which re-runs @init) from
+// arming a spurious transition and playing through the wrong topology until it expired.
+topo_boot ? (
+  (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? (
+    lp_relayout(sel_bd0, sel_bd1);  // re-lays out BOTH engines (engine 1 is packed after 0)
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  );
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force a snap-rebuild on both
+  mt_state = 0; mt_g = 1; mt_pend = 0; mt_ready = 1; mt_pos = 0;
+  topo_boot = 0;
+);
+
+// V0.9: after boot a topology change is ARMED here, NEVER applied. Applying it in this pass is
+// what V0.8 did, and it is why a switch under audio emitted garbage: the first affected sample
+// is already in flight when @slider runs. @block adopts it once the envelope reaches zero.
+topo_changed = slider140 != act_phase;
+(slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4])) ? topo_changed = 1;
+(slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)) ? topo_changed = 1;
+
+// NOTE (Fable, V0.9 final review): the inner `mt_state != 1 ? (...)` below sits inside an outer
+// ternary that HAS an else-branch - structurally the same family as V0.8's defect, differing
+// only in using plain `=` rather than `+=`. It is kept because this is the arm-from-idle path
+// that every live switch exercises (no silence would ever have been heard otherwise), and both
+// of its writes are plain assignments inside explicit parens. The blanket claim in the @sample
+// comment ("does not use the construct at all") is true of @block and @sample, not of this block.
+topo_changed ? (
+  mt_pend = 1;
+  mt_ready = 0;
+  mt_state != 1 ? (
+    mt_pos = floor((1 - mt_g) * mt_fo + 0.5);   // restart the fade-out from where we are
+    mt_state = 1;
+  );
+) : (
+  // Reversal back to the active topology while still pending: cancel and fade back in.
+  mt_pend ? (
+    mt_pend = 0;
+    mt_state = 3;
+    mt_pos = floor(mt_g * mt_fi + 0.5);
+  );
+);
+
+// Rebuild signature per engine: slope, freq, resonance (placement is routing, not magnitude).
+hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
+hp_sig != hp_sig_prev ? ( hp_sig_prev = hp_sig; hp_dirty = 1; );
+lp_sig = slider135 + slider136 * 100003 + slider137 * 1009;
+lp_sig != lp_sig_prev ? ( lp_sig_prev = lp_sig; lp_dirty = 1; );
+
+lp_fs[2] = floor(srate * 0.05); lp_fs[6] = lp_fs[2];   // 50 ms V0.8 kernel fade, follows srate
+mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;   // 5 ms mute fades, follow srate
+// PDC + tail from the ACTIVE topology. A pending Phase/Resolution change does NOT move them
+// here; topo_pdc() is called again at commit, while the output is at zero.
+topo_pdc();
+
+@block
+
+// ---- V0.9 topology commit. Order is pinned: commit -> relayout/clear -> adopt+PDC -> the
+// forced snap builds below -> mt_ready. While mt_ready is 0 the hold does not count down, so no
+// sample is ever processed against a cleared, invalid Hspec.
+mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
+  geo_changed = slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]);
+  phase_edge = slider140 != act_phase;
+  geo_changed ? (
+    lp_relayout(sel_bd0, sel_bd1);      // memsets the whole span, so it clears too
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  ) : (
+    lp_engine_clear(0); lp_engine_clear(1);
+  );
+  phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+  topo_pdc();
+  // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency lp_geo[2]/[6]
+  // = BD/2+P, and 2 hops because each engine contributes its own. Oracle-measured: at BD+BD+P
+  // the residual vs a continuous engine is -219 dBFS, at +2P it is -282 (float64 noise), and at
+  // the reported latency it is -43 dBFS - audible.
+  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + 2*lpP) : 0;
+  mt_blocks = 2;
+  mt_just_committed = 1;   // this pass PUBLISHES pdc_delay; it does not count as an epoch
+  mt_pos = 0;
+  mt_pend = 0;
+  mt_ready = 0;
+  mt_state = 2;
+  gc_meta[GCM_GACT] = gc_meta[GCM_GACT] + 1;   // the graph must follow COMMITTED topology:
+                                                // act_* changes HERE, in @block, and @slider is
+                                                // not guaranteed to run again afterwards
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
+);
+
+// Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
+// knob sweep must not rebuild every block. The dirty flag persists, so the final knob
+// position is always built; the first build after a geometry change is never delayed.
+// V0.8: build into Hspec2, then either SNAP (first build after load/relayout, or while
+// Phase=Min where the engines do not run so a fade could never advance) or start a
+// per-sample crossfade. A rebuild is REFUSED while that engine is already fading - the
+// dirty flag persists, so the queued target is built as soon as the fade completes. That
+// makes an instantaneous kernel switch structurally impossible rather than merely unlikely
+// (the 100 ms limiter is wall time, the 50 ms fade is audio time; they can diverge).
+hp_dirty && lp_fs[0] == 0 ? (
+  (lp_fs[3] == 0 || (time_precise() - hp_tbuild) >= 0.1) ? (
+    lpk_build(0, 3, slider132, slider133,
+      (slider131 == 6 ? 0 : slider131 == 5 ? 8 : slider131), slider131 == 6);
+    (lp_fs[3] == 0 || act_phase == 0) ? ( lpk_commit(0); ) : ( lp_fs[0] = 1; lp_fs[1] = 0; );
+    hp_dirty = 0; lp_fs[3] = 1; hp_tbuild = time_precise();
+    act_phase == 1 ? ( gc_build_grid(0); gc_publish(0); );   // realized HP curve for the graph
+  );
+);
+lp_dirty && lp_fs[4] == 0 ? (
+  (lp_fs[7] == 0 || (time_precise() - lp_tbuild) >= 0.1) ? (
+    lpk_build(1, 4, slider136, slider137,
+      (slider135 == 6 ? 0 : slider135 == 5 ? 8 : slider135), slider135 == 6);
+    (lp_fs[7] == 0 || act_phase == 0) ? ( lpk_commit(1); ) : ( lp_fs[4] = 1; lp_fs[5] = 0; );
+    lp_dirty = 0; lp_fs[7] = 1; lp_tbuild = time_precise();
+    act_phase == 1 ? ( gc_build_grid(1); gc_publish(1); );   // realized LP curve for the graph
+  );
+);
+
+// V0.9: kernels are valid once both engines have a built Hspec (or when Min is active, where no
+// kernel is used). Only then may the hold be consumed. NOTE the shape of both assignments: the
+// V0.8 defect was a compound assignment inside a NESTED ternary (an inner `?` within an outer
+// one that has an else-branch), which parses and reads correctly but never executes. Single-level
+// `idx < 0 ? idx += KM;` is fine and is used throughout the engine; nested is not. Both writes
+// below therefore use max() or an assignment whose right-hand side is the conditional.
+mt_state == 2 && mt_pend == 0 ? (
+  mt_ready = (act_phase == 0 || (lp_fs[3] && lp_fs[7])) ? 1 : mt_ready;
+  mt_just_committed ? (
+    mt_just_committed = 0;    // the commit block publishes PDC; epochs are the blocks after it
+  ) : (
+    mt_blocks = max(mt_blocks - 1, 0);
+  );
+);
+
+@sample
+
+// Running signal stays L/R. Each band derives its working domain by placement.
+// Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
+slider1 != 1 ? (
+  anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
+  // ===== DEDICATED HP/LP FILTER SECTION (Phase Min = cascade / Linear = convolution) =====
+  act_phase == 0 ? (                                    // Min phase (V0.5 path, zero-latency)
+    hp_nsec > 0 ? hplp_run(0, hp_nsec, slider134);
+    lp_nsec > 0 ? hplp_run(1, lp_nsec, slider138);
+  ) : (                                                 // Linear phase (convolution engines)
+    lpk_process(0, act_hp_pl);                          // HP engine + ACTIVE HP placement
+    lpk_process(1, act_lp_pl);                          // LP engine + ACTIVE LP placement
+  );
+  nbi = 0;
+  loop(nb_n,
+    b = nb_list[nbi];                   // enabled bands only; the list is built in @slider
+    (
+      base = b * 8; sb = b * 4;
+      a1 = cf[base]; a2 = cf[base+1]; a3 = cf[base+2];
+      m0 = cf[base+4]; m1 = cf[base+5]; m2 = cf[base+6];
+      pl = slider(stb[b] + 8);          // 0 Both,1 Mid,2 Side,3 Left,4 Right
+      both_ms = 0;
+
+      pl == 0 ? (                             // Both: domain by dyn mode
+        (dp[b*4+3] == 1 && dm[b] == 2) ? (    // dyn on + Dual M/S -> work in M/S
+          mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+          chA = mid; chB = sid; both_ms = 1;
+        ) : (
+          chA = spl0; chB = spl1;
+        );
+        do_b = 1;
+      ) : pl == 3 ? (                         // Left -> L only
+        chA = spl0; do_b = 0;
+      ) : pl == 4 ? (                         // Right -> R only
+        chA = spl1; do_b = 0;
+      ) : (                                   // Mid/Side -> M/S
+        mid = (spl0 + spl1) * 0.5; sid = (spl0 - spl1) * 0.5;
+        pl == 1 ? ( chA = mid; ) : ( chA = sid; );
+        do_b = 0;
+      );
+
+      // Filter channel A (slot A state)
+      ic1 = st[sb]; ic2 = st[sb+1];
+      v3 = chA - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+      st[sb] = 2*v1 - ic1; st[sb+1] = 2*v2 - ic2;
+      chA = m0*chA + m1*v1 + m2*v2;
+
+      // Filter channel B if needed (Both; slot B state)
+      do_b ? (
+        ic1 = st[sb+2]; ic2 = st[sb+3];
+        v3 = chB - ic2; v1 = a1*ic1 + a2*v3; v2 = ic2 + a2*ic1 + a3*v3;
+        st[sb+2] = 2*v1 - ic1; st[sb+3] = 2*v2 - ic2;
+        chB = m0*chB + m1*v1 + m2*v2;
+      );
+
+      // ----- Dynamics (Mode A Soft): Bell type only, Dyn on, Dyn Mode A -----
+      (dp[b*4+3] == 1 && slider(stb[b]+2) == 0 && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(dynb[b] + 8); hard_on = slider(ceb[b] + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = abs(dk * v1);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = abs(dk * v1);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant)
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        A = sqrt(gA); ck = 1 / (qb * A);
+        ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = chA + cm1 * v1;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); ck = 1 / (qb * A);
+          ca1 = 1 / (1 + cg * (cg + ck)); ca2 = cg * ca1; ca3 = cg * ca2; cm1 = ck * (A*A - 1);
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = chB + cm1 * v1;
+        );
+      );
+
+      // ----- Dynamics (Mode A shelf): Low/High Shelf, Dyn on, Dyn Mode A -----
+      // Additive sibling of the Bell block above (types are mutually exclusive,
+      // so dst/cst/eg/egh slots are shared safely). Transcribed line-by-line
+      // from _shelf_cascade_ch in tools/rcbitnova_dsp.py.
+      ty = slider(stb[b] + 2);
+      (dp[b*4+3] == 1 && (ty == 1 || ty == 2) && mbmode[b] == 0) ? (
+        qb = bp[b*3+1]; cg = bp[b*3+2];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; atk = dp[b*4+1]; rel = dp[b*4+2];
+        soft_on = slider(dynb[b] + 8); hard_on = slider(ceb[b] + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        // detector on chA: HP tap (High Shelf) or LP tap (Low Shelf)
+        ic1 = dst[sb]; ic2 = dst[sb+1];
+        v3 = chA - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[sb] = 2*v1 - ic1; dst[sb+1] = 2*v2 - ic2;
+        levA = ty == 2 ? abs(chA - dk*v1 - v2) : abs(v2);
+        levB = 0;
+        do_b ? (
+          ic1 = dst[sb+2]; ic2 = dst[sb+3];
+          v3 = chB - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[sb+2] = 2*v1 - ic1; dst[sb+3] = 2*v2 - ic2;
+          levB = ty == 2 ? abs(chB - dk*v1 - v2) : abs(v2);
+        );
+
+        linked ? ( levA = max(levA, levB); );
+
+        // channel A cascade gain (gSoft atk/rel * gHard instant) - same as Bell
+        soft_on ? (
+          tS = levA > cS ? cS / levA : 1;
+          es = eg[b*2]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2] = es; gsA = es;
+        ) : ( gsA = 1; );
+        hard_on ? (
+          ps = levA * gsA;
+          tH = ps > cH ? cH / ps : 1;
+          eh = egh[b*2]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2] = eh; ghA = eh;
+        ) : ( ghA = 1; );
+        gA = gsA * ghA;
+
+        // shelf-cut coeffs without tan(): g = cg*rA (HS) or cg/rA (LS); full
+        // m0/m1/m2 output (not the bell x + cm1*v1 shortcut)
+        A = sqrt(gA); rA = sqrt(A); ckq = 1 / qb;
+        ty == 2 ? (
+          cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+        ) : (
+          cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+        );
+        ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+        ic1 = cst[sb]; ic2 = cst[sb+1];
+        v3 = chA - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+        cst[sb] = 2*v1 - ic1; cst[sb+1] = 2*v2 - ic2;
+        chA = cm0*chA + cm1*v1 + cm2*v2;
+
+        do_b ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = levB > cS ? cS / levB : 1;
+              es = eg[b*2+1]; coef = tS < es ? atk : rel; es = tS + (es - tS)*coef; eg[b*2+1] = es; gsB = es;
+            ) : ( gsB = 1; );
+            hard_on ? (
+              ps = levB * gsB;
+              tH = ps > cH ? cH / ps : 1;
+              eh = egh[b*2+1]; tH < eh ? eh = tH : ( eh = tH + (eh - tH)*rel; eh = min(eh,1); ); egh[b*2+1] = eh; ghB = eh;
+            ) : ( ghB = 1; );
+            gB = gsB * ghB;
+          );
+          A = sqrt(gB); rA = sqrt(A);
+          ty == 2 ? (
+            cgs = cg * rA; cm0 = A*A; cm1 = ckq*(1-A)*A; cm2 = 1 - A*A;
+          ) : (
+            cgs = cg / rA; cm0 = 1; cm1 = ckq*(A-1); cm2 = A*A - 1;
+          );
+          ca1 = 1 / (1 + cgs*(cgs + ckq)); ca2 = cgs * ca1; ca3 = cgs * ca2;
+          ic1 = cst[sb+2]; ic2 = cst[sb+3];
+          v3 = chB - ic2; v1 = ca1*ic1 + ca2*v3; v2 = ic2 + ca2*ic1 + ca3*v3;
+          cst[sb+2] = 2*v1 - ic1; cst[sb+3] = 2*v2 - ic2;
+          chB = cm0*chB + cm1*v1 + cm2*v2;
+        );
+      );
+
+      // Write working channels back to L/R
+      pl == 0 ? ( both_ms ? ( spl0 = chA + chB; spl1 = chA - chB; ) : ( spl0 = chA; spl1 = chB; ) ) :
+      pl == 3 ? ( spl0 = chA; ) :
+      pl == 4 ? ( spl1 = chA; ) :
+      pl == 1 ? ( spl0 = chA + sid; spl1 = chA - sid; ) :  // Mid filtered, side intact
+                ( spl0 = mid + chA; spl1 = mid - chA; );    // Side filtered, mid intact
+    );
+    nbi += 1;
+  );
+
+  // ===== Mode B (Brick, band-split, bit-exact) on the globally-delayed bus =====
+  any_b ? (
+    L_in = spl0; R_in = spl1;          // intermediate (post static + Mode-A)
+    corrL = 0; corrR = 0;
+    nbi = 0;
+    loop(nb_n,
+      b = nb_list[nbi];                 // enabled bands only, same cache the static pass uses
+      (slider(dynb[b] + 1) == 1 && mbmode[b] == 1 && slider(stb[b]+2) <= 2) ? (
+        pl = slider(stb[b]+8);
+        ty = slider(stb[b]+2);
+        qb = bp[b*3+1];
+        da1 = det[b*4]; da2 = det[b*4+1]; da3 = det[b*4+2]; dk = det[b*4+3];
+        cS = dp[b*4]; cH = hc[b]; rel = dp[b*4+2];
+        soft_on = slider(dynb[b] + 8); hard_on = slider(ceb[b] + 1);
+        linked = (pl == 0) && (dm[b] == 0);
+
+        ms_dom = 0; two = 0;
+        pl == 0 ? (
+          (dm[b] == 2) ? ( xa = (L_in + R_in)*0.5; xb = (L_in - R_in)*0.5; ms_dom = 1; ) :
+                         ( xa = L_in; xb = R_in; );
+          two = 1;
+        ) : pl == 1 ? ( xa = (L_in + R_in)*0.5; ms_dom = 1; ) :
+            pl == 2 ? ( xa = (L_in - R_in)*0.5; ms_dom = 1; ) :
+            pl == 3 ? ( xa = L_in; ) : ( xa = R_in; );
+
+        wp = mbwpos[b];
+        csA = b*2; csB = b*2 + 1;
+        baseA = csA*MAX_LOOK; baseB = csB*MAX_LOOK;
+
+        // channel A: extract band (detector state slot A), ring write, worst-peak
+        ic1 = dst[b*4]; ic2 = dst[b*4+1];
+        v3 = xa - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+        dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
+        bA = ty == 2 ? (xa - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+        mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
+        worstA = 0; i = 0;
+        loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
+
+        two ? (
+          ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
+          v3 = xb - ic2; v1 = da1*ic1 + da2*v3; v2 = ic2 + da2*ic1 + da3*v3;
+          dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
+          bB = ty == 2 ? (xb - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
+          mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
+          worstB = 0; i = 0;
+          loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
+        );
+
+        linked ? ( worstA = max(worstA, worstB); );   // linked: both channels share max peak
+
+        // ----- channel A cascade gain (gSoft smoothed * gHard instant) -----
+        soft_on ? (
+          tS = worstA > cS ? cS / worstA : 1;
+          esa = mbenv[csA]; tS < esa ? esa = tS : ( esa = tS + (esa - tS)*rel; esa = min(esa,1); ); mbenv[csA] = esa;
+          mbgc[csA] = (mbgc[csA] * GSMOOTH + esa) * inv_gsmooth;
+        ) : ( mbgc[csA] = 1; );
+        hard_on ? (
+          ps = worstA * mbgc[csA];
+          tH = ps > cH ? cH / ps : 1;
+          eha = mbeh[csA]; tH < eha ? eha = tH : ( eha = tH + (eha - tH)*rel; eha = min(eha,1); ); mbeh[csA] = eha;
+        ) : ( mbeh[csA] = 1; );
+        gA = mbgc[csA] * mbeh[csA];
+
+        rpos = (wp - Lk + MAX_LOOK) % MAX_LOOK;
+        bdA = mb_band[baseA + rpos];
+        limA = bdA * gA; hard_on ? ( abs(limA) > cH ? (limA = limA > 0 ? cH : -cH); );
+        dcA = limA - bdA;
+
+        two ? (
+          linked ? ( gB = gA; ) : (
+            soft_on ? (
+              tS = worstB > cS ? cS / worstB : 1;
+              esb = mbenv[csB]; tS < esb ? esb = tS : ( esb = tS + (esb - tS)*rel; esb = min(esb,1); ); mbenv[csB] = esb;
+              mbgc[csB] = (mbgc[csB] * GSMOOTH + esb) * inv_gsmooth;
+            ) : ( mbgc[csB] = 1; );
+            hard_on ? (
+              ps = worstB * mbgc[csB];
+              tH = ps > cH ? cH / ps : 1;
+              ehb = mbeh[csB]; tH < ehb ? ehb = tH : ( ehb = tH + (ehb - tH)*rel; ehb = min(ehb,1); ); mbeh[csB] = ehb;
+            ) : ( mbeh[csB] = 1; );
+            gB = mbgc[csB] * mbeh[csB];
+          );
+          bdB = mb_band[baseB + rpos];
+          limB = bdB * gB; hard_on ? ( abs(limB) > cH ? (limB = limB > 0 ? cH : -cH); );
+          dcB = limB - bdB;
+        );
+
+        pl == 0 ? (
+          ms_dom ? ( corrL += dcA + dcB; corrR += dcA - dcB; ) : ( corrL += dcA; corrR += dcB; );
+        ) : pl == 1 ? ( corrL += dcA; corrR += dcA; ) :
+            pl == 2 ? ( corrL += dcA; corrR -= dcA; ) :
+            pl == 3 ? ( corrL += dcA; ) : ( corrR += dcA; );
+
+        mbwpos[b] = (wp + 1) % MAX_LOOK;
+      );
+      nbi += 1;
+    );
+
+    // delayed dry L/R bus + accumulated band corrections
+    bus_dry[bus_wp] = L_in; bus_dry[bus_wp + MAX_LOOK] = R_in;
+    rp = (bus_wp - Lk + MAX_LOOK) % MAX_LOOK;
+    spl0 = bus_dry[rp] + corrL;
+    spl1 = bus_dry[rp + MAX_LOOK] + corrR;
+    bus_wp = (bus_wp + 1) % MAX_LOOK;
+  );
+
+  spl0 *= out_gain;
+  spl1 *= out_gain;
+
+  // ---- V0.9 topology mute, at the FINAL output. It must be here and not at the HP/LP
+  // boundary: the bands, the dynamics and the Mode-B bus are all stateful, so silence there is
+  // not silence at the output. When mt_state == 0 this whole block is SKIPPED by the condition
+  // - not multiplied by 1.0 - which is what keeps the steady-state path byte-identical to V0.8.
+  // It also sits INSIDE the bypass branch, so bypass freezes the machine entirely: a counter
+  // that ran while the engines were not being fed would expire the warm-up and then open into
+  // a cold topology.
+  //
+  // Every write below is a PLAIN assignment inside explicit parens, never `+=` or `*=`.
+  // V0.8's one real defect was `iA == 0 ? ( rt[6] < skip_after ? rt[6] += 1; ) : ( rt[6] = 0; );`
+  // - an inner conditional whose action was BOTH compound AND unparenthesized, inside an outer
+  // conditional that had an else-branch. Two hypotheses fit the evidence equally well (compound
+  // assignment is the trigger; or an unparenthesized inner branch is), and neither the oracle nor
+  // live testing can distinguish them, because single-level `ow -= 16384` demonstrably works in
+  // this same file. So this block avoids BOTH: no compound assignment, and every branch's action
+  // parenthesized. Belt and braces beats relying on a rule nobody has proven.
+  mt_state ? (
+    mt_state == 1 ? (
+      // fade-out. Increment BEFORE computing the gain: computing first and overwriting the
+      // last value would make the final step 2/N instead of 1/N (~ -41.6 dB at 5 ms / 48k),
+      // which would be the largest discontinuity in a feature built for bounded discontinuity.
+      mt_pos = mt_pos + 1;
+      mt_g = (mt_fo - mt_pos) / mt_fo;
+      mt_pos >= mt_fo ? (
+        mt_g = 0; mt_state = 2; mt_pos = 0;
+      );
+    ) : (
+      mt_state == 2 ? (
+        // hold: silent until the commit has happened (mt_ready), the host has seen the new PDC
+        // (mt_blocks), and the new topology is warm (mt_hold processed samples).
+        mt_g = 0;
+        (mt_ready && mt_blocks <= 0) ? (
+          mt_pos = mt_pos + 1;
+          mt_pos >= mt_hold ? (
+            mt_state = 3; mt_pos = 0;
+          );
+        );
+      ) : (
+        mt_pos = mt_pos + 1;
+        mt_g = mt_pos / mt_fi;
+        mt_pos >= mt_fi ? (
+          mt_g = 1; mt_state = 0;
+        );
+      );
+    );
+    spl0 = spl0 * mt_g;
+    spl1 = spl1 * mt_g;
+  );
+);
+
+@gfx 900 500
+
+// ============================ V1.0 EQ CURVE ============================
+// Everything here is in BITS and composes by SUMMING. @gfx writes no audio state and reads no
+// engine buffer directly: realized kernel data arrives only through the published gc_lin cache.
+
+// ---- one transform for BOTH drawing and hit-testing. On Retina these must agree, or nodes
+// render in one place and respond in another.
+// Retina: on macOS gfx_w/gfx_h and mouse_x/mouse_y are PHYSICAL pixels (2x logical). Drawing
+// and hit-testing must go through the SAME transform, or nodes render in one place and respond
+// in another.
+!gfx_ext_retina ? gfx_ext_retina = 1;
+gc_ret = gfx_ext_retina > 0 ? gfx_ext_retina : 1;
+gc_sc = min(gfx_w / 900, gfx_h / 500);
+gc_px = 40 * gc_sc;
+gc_py = 10 * gc_sc;
+gc_pw = gfx_w - gc_px - 10 * gc_sc;
+gc_ph = gfx_h - gc_py - 84 * gc_sc;
+gc_small = (gfx_w / gc_ret < 480 || gfx_h / gc_ret < 280);
+gc_small ? gc_ph = gfx_h - gc_py - 24 * gc_sc;    // below minimum size the readout strip goes first
+
+// ---- V1.1: the whole layout, computed HERE rather than near the end of @gfx, because pointer
+// ownership has to be decided before the node hit test runs.
+//   gc_fy        .. +20   readout fields
+//   gc_fy + 26   .. +40   "Bx effective ... bits" summary (V1.0, unchanged)
+//   gc_sy        .. +18   band strip
+gc_fy = gc_py + gc_ph + 6 * gc_sc;
+gc_fh = 20 * gc_sc;
+// Six fields now, not five. Keep them on one row by shrinking rather than overflowing.
+gc_fw = min(150 * gc_sc, (gc_pw - 5 * 8 * gc_sc) / 6);
+gc_sy = gc_fy + gc_fh + 24 * gc_sc;
+gc_sh = 18 * gc_sc;
+// Small mode reserves only 24 px below the plot, which the fields alone fill: the strip is hidden
+// there rather than clipped. Nodes and the right-click menu still reach every band.
+gc_strip_on = gc_small ? 0 : 1;
+gc_strip_hot = gc_strip_on && mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh &&
+               mouse_x >= gc_px && mouse_x < gc_px + N_BANDS * 34 * gc_sc;
+// Nodes may only be picked while the pointer is inside the plot. That is what keeps a strip click
+// from also enabling or dragging whatever sits nearest to it.
+gc_in_plot = mouse_x >= gc_px && mouse_x <= gc_px + gc_pw &&
+             mouse_y >= gc_py && mouse_y <= gc_py + gc_ph;
+gc_hit_r = max(8 * gc_sc, 6);                      // node hit radius, never smaller than a finger
+
+
+
+
+// ---- domain composition. Summing WITHIN a domain is exact; summing across domains is not,
+// because a selective block is a stereo matrix - hence one trace per domain, never one curve.
+
+
+// ---- frame: snapshot the published generations ONCE, compute into the inactive trace buffer,
+// then publish only if nothing landed mid-draw. Otherwise keep the previous completed frame -
+// a torn read would draw a mixture of two kernels.
+gc_b = 0;
+loop(N_BANDS, gc_band_setup(gc_b); gc_b += 1;);   // GUI coefficients, fresh every frame
+gc_hplp_setup(0); gc_hplp_setup(1);
+
+gc_snap_hp = gc_meta[GCM_GEN_HP];
+gc_snap_lp = gc_meta[GCM_GEN_LP];
+gc_dst = gc_trace + (1 - gc_meta[GCM_TIDX]) * (5 * GC_N);
+
+gc_d = 0;
+loop(5,
+  gc_dom_used(gc_d) ? (
+    gc_i = 0;
+    loop(GC_N,
+      gc_fx = gc_px + gc_pw * gc_i / (GC_N - 1);
+      gc_dst[gc_d * GC_N + gc_i] = gc_domain_bits(gc_d, gc_f_of_x(gc_fx));
+      gc_i += 1;
+    );
+  );
+  gc_d += 1;
+);
+
+(gc_snap_hp == gc_meta[GCM_GEN_HP] && gc_snap_lp == gc_meta[GCM_GEN_LP]) ? (
+  gc_meta[GCM_TIDX] = 1 - gc_meta[GCM_TIDX];
+  gc_meta[GCM_TGEN] = gc_meta[GCM_TGEN] + 1;
+);
+gc_src = gc_trace + gc_meta[GCM_TIDX] * (5 * GC_N);
+
+// ---- background and grid
+gfx_set(0.09, 0.09, 0.10, 1); gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_set(0.25, 0.25, 0.27, 1);
+gc_i = 0;
+loop(3,
+  gc_gx = gc_x_of_f(100 * pow(10, gc_i));
+  gfx_line(gc_gx, gc_py, gc_gx, gc_py + gc_ph);
+  gc_i += 1;
+);
+gc_b = -4;
+loop(9,
+  gc_gy = gc_y_of_bits(gc_b);
+  gfx_set(0.3, 0.3, 0.32, gc_b == 0 ? 1 : 0.45);
+  gfx_line(gc_px, gc_gy, gc_px + gc_pw, gc_gy);
+  gfx_set(0.55, 0.55, 0.57, 1);
+  gfx_x = 6 * gc_sc; gfx_y = gc_gy - 6 * gc_sc; gfx_drawnumber(gc_b, 0);
+  gc_b += 1;
+);
+
+// ---- traces. Dashed while M/S-placed and L/R-placed blocks coexist: no set of per-domain
+// scalar traces describes the true channel response then, and the user must see that without
+// reading the design document.
+gc_mixed = (gc_dom_used(1) || gc_dom_used(2)) && (gc_dom_used(3) || gc_dom_used(4));
+
+
+gc_dom_used(1) ? gc_draw_trace(1, 0.36, 0.75, 0.38, gc_mixed);   // Mid   green
+gc_dom_used(2) ? gc_draw_trace(2, 0.36, 0.93, 0.99, gc_mixed);   // Side  cyan
+gc_dom_used(3) ? gc_draw_trace(3, 0.94, 0.79, 0.11, gc_mixed);   // Left  yellow
+gc_dom_used(4) ? gc_draw_trace(4, 0.84, 0.25, 0.26, gc_mixed);   // Right red
+gc_dom_used(0) ? gc_draw_trace(0, 1.0, 1.0, 1.0, 0);             // Both  white
+
+gc_mixed ? (
+  gfx_set(0.8, 0.8, 0.5, 1);
+  gfx_x = gc_px + 6 * gc_sc; gfx_y = gc_py + 4 * gc_sc;
+  gfx_drawstr("group view - M/S and L/R mixed, traces are not channel responses");
+);
+
+// ---------------------------------------------------------------- nodes and interaction
+//
+// ONE GESTURE WRITES ONE SLIDER. The modifier is captured at MOUSE-DOWN and held for the whole
+// drag: reading it live would let a mid-drag Shift redirect the write to another slider, which
+// is the two-parameter hazard coming back through the side door.
+
+gc_click = (mouse_cap & 1) && !(gc_last_cap & 1);
+gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);   // ONE detection, two consumers
+
+// Collect EVERY node under the pointer, disabled ones included - that is how a band gets
+// enabled. The selection rule below is still V1.0's (the last match wins, i.e. the topmost band
+// index); coincident-node cycling replaces only that one line, later. Building the set here
+// rather than with the cycling keeps this build behaviour-identical while giving the source gate
+// the structure it asserts.
+gc_hit_n = 0;
+gc_b = 0;
+loop(N_BANDS,
+  gc_nx = gc_x_of_f(slider(stb[gc_b]+3));
+  gc_ny = gc_y_of_bits((slider(stb[gc_b]+5) + slider(stb[gc_b]+6) * 0.01) * slider(stb[gc_b]+7));
+  (gc_in_plot && abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
+    gc_hits[gc_hit_n] = gc_b; gc_hit_n += 1;
+  );
+  gc_b += 1;
+);
+// V1.1: repeated clicks in the same spot walk the stack. Movement, timeout, or a click elsewhere
+// resets to the lowest band. This overrides "topmost band wins": otherwise a node sitting on top
+// of another traps the pointer and the one underneath is unreachable.
+gc_click ? (
+  (abs(mouse_x - gc_cyc_x) < gc_hit_r && abs(mouse_y - gc_cyc_y) < gc_hit_r
+   && (time_precise() - gc_cyc_t) < 0.4) ? ( gc_cyc_n += 1; ) : ( gc_cyc_n = 0; );
+  gc_cyc_x = mouse_x; gc_cyc_y = mouse_y; gc_cyc_t = time_precise();
+);
+// Modulo the CURRENT count every frame: the hit set shrinks when a node moves or a band is
+// disabled, and a free-running counter would then point past it and select nothing.
+gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; gc_cyc_n = 0; );
+
+// ---- HP/LP handles, hit-tested EVERY FRAME. Also keep how far each candidate is, because a
+// filter handle sits on the 0-bit line at its cutoff and a band node at unity gain sits on the
+// same line: they can overlap, and then the nearer one must win rather than a fixed precedence.
+gc_fnode = -1; gc_fd = 1000000000;    // EEL2 has no 1e18 literal - written out
+gc_e = 0;
+loop(2,
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  (gc_in_plot && abs(mouse_x - gc_nx) < gc_hit_r && abs(mouse_y - gc_ny) < gc_hit_r) ? (
+    gc_d = sqr(mouse_x - gc_nx) + sqr(mouse_y - gc_ny);
+    gc_d < gc_fd ? ( gc_fd = gc_d; gc_fnode = gc_e; );
+  );
+  gc_e += 1;
+);
+gc_bd = 1000000000;
+gc_hover >= 0 ? (
+  gc_nx = gc_x_of_f(slider(stb[gc_hover] + 3));
+  gc_ny = gc_y_of_bits((slider(stb[gc_hover] + 5) + slider(stb[gc_hover] + 6) * 0.01)
+                       * slider(stb[gc_hover] + 7));
+  gc_bd = sqr(mouse_x - gc_nx) + sqr(mouse_y - gc_ny);
+);
+gc_band_wins = gc_hover >= 0 && (gc_fnode < 0 || gc_bd <= gc_fd);
+gc_filt_wins = gc_fnode >= 0 && !gc_band_wins;
+
+// ---- V1.1: right-click a band node for the parameters no gesture reaches. V1.0's graph could
+// set six of a band's nine and had no way to switch a band OFF - clicking a disabled node enables
+// it, and that gesture had no inverse.
+// gfx_showmenu takes ONE string; a ternary sitting beside string literals is not concatenation in
+// EEL2, it is a syntax error. Assemble it.
+gc_rclick && gc_band_wins ? (
+  // "!" marks an item as checked. Without it the menu shows what you CAN pick and never what is
+  // already picked - a band set to Side looked exactly like a band set to Both.
+  gc_ty = slider(stb[gc_hover] + 2);
+  gc_pl = slider(stb[gc_hover] + 8);
+  gc_qc = slider(stb[gc_hover] + 9);
+  slider(stb[gc_hover] + 1) == 1 ? ( strcpy(#gc_menu, "Disable band||"); )
+                                 : ( strcpy(#gc_menu, "Enable band||"); );
+  strcat(#gc_menu, gc_ty == 0 ? "!Bell|"       : "Bell|");
+  strcat(#gc_menu, gc_ty == 1 ? "!Low Shelf|"  : "Low Shelf|");
+  strcat(#gc_menu, gc_ty == 2 ? "!High Shelf||" : "High Shelf||");
+  strcat(#gc_menu, ">Placement|");
+  strcat(#gc_menu, gc_pl == 0 ? "!Both|"  : "Both|");
+  strcat(#gc_menu, gc_pl == 1 ? "!Mid|"   : "Mid|");
+  strcat(#gc_menu, gc_pl == 2 ? "!Side|"  : "Side|");
+  strcat(#gc_menu, gc_pl == 3 ? "!Left|"  : "Left|");
+  strcat(#gc_menu, gc_pl == 4 ? "!Right|" : "Right|");
+  strcat(#gc_menu, "<|>Q Character|");
+  // A typed value like 0.333 matches no preset, and then NOTHING is ticked - which is the honest
+  // answer. Half a step is the tolerance, because the slider grid is 0.001.
+  strcat(#gc_menu, abs(gc_qc - 0.00) < 0.0005 ? "!0.00 constant|" : "0.00 constant|");
+  strcat(#gc_menu, abs(gc_qc - 0.25) < 0.0005 ? "!0.25|" : "0.25|");
+  strcat(#gc_menu, abs(gc_qc - 0.50) < 0.0005 ? "!0.50|" : "0.50|");
+  strcat(#gc_menu, abs(gc_qc - 0.75) < 0.0005 ? "!0.75|" : "0.75|");
+  strcat(#gc_menu, abs(gc_qc - 1.00) < 0.0005 ? "!1.00 proportional|<" : "1.00 proportional|<");
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  // Index arithmetic below follows V1.0's proven scheme: "||" separators and a ">Header" submenu
+  // opener consume no number, so items run 1 / 2-4 / 5-9 / 10-14. It is not obvious from the
+  // string alone - RE-VERIFY LIVE if this menu is ever re-strung.
+  gc_bm = gfx_showmenu(#gc_menu);
+  gc_bm == 1 ? ( gc_w_enable(gc_hover, slider(stb[gc_hover] + 1) == 1 ? 0 : 1); ) :
+  gc_bm >= 2 && gc_bm <= 4 ? ( gc_w_type(gc_hover, gc_bm - 2); ) :
+  gc_bm >= 5 && gc_bm <= 9 ? ( gc_w_place(gc_hover, gc_bm - 5); ) :
+  gc_bm >= 10 && gc_bm <= 14 ? ( gc_w_qchar(gc_hover, (gc_bm - 10) * 0.25); );
+  gc_sel = gc_hover;
+);
+
+// a click on a DISABLED band's node switches it on - otherwise the only way to enable a band
+// would be the Param list, which defeats the point of having a graph
+gc_click && gc_hover >= 0 && slider(stb[gc_hover]+1) == 0 ? gc_w_enable(gc_hover, 1);
+
+// start a drag: capture the band, the origin, the modifier and every value we may write
+gc_click && gc_band_wins ? (
+  gc_drag = gc_hover;
+  gc_dx = mouse_x; gc_dy = mouse_y;
+  gc_mod = mouse_cap & (8 | 16);                    // 8 = Shift -> Ratio, 16 = Alt -> Q
+  gc_s = stb[gc_drag];
+  gc_at_macro = slider(gc_s + 5);
+  gc_at_ratio = slider(gc_s + 7);
+  gc_at_q     = slider(gc_s + 4);
+  gc_at_freq  = slider(gc_s + 3);
+  gc_sel = gc_drag;
+);
+
+!(mouse_cap & 1) ? gc_drag = -1;
+
+gc_drag >= 0 ? (
+  gc_s = stb[gc_drag];
+  gc_dyu = (mouse_y - gc_dy) / gc_sc;               // vertical travel in LOGICAL units
+  gc_dxu = (mouse_x - gc_dx) / gc_sc;
+  // below the 4-unit threshold this is still a click, not a drag
+  (abs(gc_dyu) >= 4 || abs(gc_dxu) >= 4) ? (
+    abs(gc_dxu) > abs(gc_dyu) ? (
+      // horizontal: Frequency follows the pointer along the log axis
+      gc_v = gc_f_of_x(mouse_x);
+      gc_v != slider(gc_s + 3) ? gc_w_freq(gc_drag, gc_v, 1);
+    ) : (
+      gc_mod & 8 ? (
+        // Shift: Bit Ratio, one 0.05 step per 12 units, kept exactly on the grid
+        gc_st = -floor(gc_dyu / 12);
+        gc_v = gc_at_ratio + gc_st * 0.05;
+        gc_v = min(max(gc_v, 0), 3);
+        gc_v = (gc_v < 0 ? -floor(-gc_v / 0.05 + 0.5) : floor(gc_v / 0.05 + 0.5)) * 0.05;
+        gc_v != slider(gc_s + 7) ? gc_w_ratio(gc_drag, gc_v, 1);
+      ) : gc_mod & 16 ? (
+        // Alt: Q
+        gc_st = -floor(gc_dyu / 12);
+        gc_v = min(max(gc_at_q + gc_st * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
+        gc_v != slider(gc_s + 4) ? gc_w_q(gc_drag, gc_v, 1);
+      ) : (
+        // plain: Macro, whole bits, one per 24 units. Ratio 0 has no solution - the node locks
+        // rather than silently resetting a deliberate setting.
+        gc_at_ratio == 0 ? ( 0; ) : (
+          // A NEGATIVE Bit Ratio mirrors the node: raising Macro then LOWERS the effective
+          // gain. The node is drawn at the effective gain, so the gesture must mirror too,
+          // otherwise the node runs away from the cursor. Found live - a project had B2 at a
+          // negative Ratio, and only that one band appeared to drag backwards.
+          gc_st = -floor(gc_dyu / 24) * (gc_at_ratio < 0 ? -1 : 1);
+          gc_v = min(max(gc_at_macro + gc_st, -16), 16);
+          gc_v != slider(gc_s + 5) ? gc_w_macro(gc_drag, gc_v, 1);
+        );
+      );
+    );
+  );
+);
+
+// wheel on a hovered node: Q, one step per notch
+gc_wd = mouse_wheel - gc_last_wheel;
+gc_last_wheel = mouse_wheel;
+(gc_wd != 0 && gc_hover >= 0) ? (
+  gc_s = stb[gc_hover];
+  gc_v = min(max(slider(gc_s + 4) + (gc_wd > 0 ? 1 : -1) * ((mouse_cap & 4) ? 0.005 : 0.01), 0.1), 10);
+  gc_w_q(gc_hover, gc_v, 1);
+);
+
+// ---- draw the nodes. Position uses the FULL effective gain including Bit Ratio, so a node
+// always sits where the audio actually is. A shelf node is a HANDLE at (fc, full gain) and
+// deliberately does not lie on its own curve, which reaches only half the gain at fc.
+gc_b = 0;
+loop(N_BANDS,
+  gc_s = stb[gc_b];
+  gc_en = slider(gc_s + 1);
+  gc_bits = (slider(gc_s + 5) + slider(gc_s + 6) * 0.01) * slider(gc_s + 7);
+  gc_nx = gc_x_of_f(slider(gc_s + 3));
+  gc_ny = gc_y_of_bits(gc_bits);
+  gc_pl = slider(gc_s + 8);
+  gc_a = gc_en ? 1 : 0.3;
+  gc_pl == 0 ? gfx_set(1, 1, 1, gc_a) :
+  gc_pl == 1 ? gfx_set(0.36, 0.75, 0.38, gc_a) :
+  gc_pl == 2 ? gfx_set(0.36, 0.93, 0.99, gc_a) :
+  gc_pl == 3 ? gfx_set(0.94, 0.79, 0.11, gc_a) :
+               gfx_set(0.84, 0.25, 0.26, gc_a);
+  gfx_circle(gc_nx, gc_ny, 6 * gc_sc, gc_en ? 1 : 0, 1);
+  // ---- V1.1: live gain reduction, so the graph shows which bands are working. Adapted from
+  // Fable Eq Dynamic, where a band's CARD glows in proportion to current GR; here it goes on the
+  // node. Node tint only - the V1.2 dynamics display is not pulled in.
+  //
+  // The applied gain is a two-stage cascade PER CHANNEL, and which pair is live depends on the
+  // mode. A disabled stage must contribute exactly 1: @sample uses a local 1 and never resets the
+  // stored envelope (`) : ( gsA = 1; );`), so reading eg[] unconditionally would show a reduction
+  // nobody hears. Channel B is only maintained for Placement=Both with a Dual stereo mode; under
+  // Linked, or Mid/Side/Left/Right, mirror A rather than trusting a stale word.
+  gc_gr = 0;
+  (gc_en && slider(dynb[gc_b] + 1) == 1) ? (
+    gc_soft = slider(dynb[gc_b] + 8) == 1;
+    gc_hard = slider(ceb[gc_b] + 1) == 1;
+    gc_bch  = slider(stb[gc_b] + 8) == 0 && slider(dynb[gc_b] + 2) != 0;
+    mbmode[gc_b] == 1 ? (
+      gc_ga = (gc_soft ? mbgc[gc_b * 2] : 1) * (gc_hard ? mbeh[gc_b * 2] : 1);
+      gc_gb = gc_bch ? ((gc_soft ? mbgc[gc_b * 2 + 1] : 1) * (gc_hard ? mbeh[gc_b * 2 + 1] : 1))
+                     : gc_ga;
+    ) : (
+      gc_ga = (gc_soft ? eg[gc_b * 2] : 1) * (gc_hard ? egh[gc_b * 2] : 1);
+      gc_gb = gc_bch ? ((gc_soft ? eg[gc_b * 2 + 1] : 1) * (gc_hard ? egh[gc_b * 2 + 1] : 1))
+                     : gc_ga;
+    );
+    gc_gr = 1 - min(gc_ga, gc_gb);        // the DEEPEST reduction across the two channels
+  );
+  gc_gr > 0.002 ? (
+    gc_gl = min(gc_gr * 6, 1);
+    gfx_set(1.0, 0.5, 0.12, 0.3 + 0.6 * gc_gl);
+    gfx_circle(gc_nx, gc_ny, (8 + 2 * gc_gl) * gc_sc, 0, 1);
+  );
+  (gc_hover == gc_b || gc_drag == gc_b) ? gfx_circle(gc_nx, gc_ny, 9 * gc_sc, 0, 1);
+  // locked states, drawn so they do not read as an unresponsive GUI
+  slider(gc_s + 7) == 0 ? (
+    gfx_set(0.9, 0.5, 0.2, 1);
+    gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawstr("ratio 0");
+  ) : slider(gc_s + 7) < 0 ? (
+    gfx_set(0.9, 0.5, 0.2, 1);
+    gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawstr("ratio<0 inverted");
+  );
+  abs(gc_bits) > 4 ? (
+    gfx_x = gc_nx + 10 * gc_sc; gfx_y = gc_ny - 6 * gc_sc; gfx_drawnumber(gc_bits, 2);
+  );
+  gc_b += 1;
+);
+
+
+// ---------------------------------------------------------------- HP / LP filters
+// Square handles, so they read as a different kind of control from the round band nodes.
+// Each gesture still writes exactly ONE slider.
+//   drag horizontally -> cutoff frequency
+//   Shift + vertical  -> resonance
+//   right-click       -> slope and placement menu
+// Sitting on the zero line keeps them out of the way of the band nodes.
+
+
+// right-click menu: slope, then placement. One menu, one write.
+// Band nodes are drawn on top and own the event when the pointer is on one; the HP/LP handles
+// take it otherwise. Detection itself moved up beside gc_click.
+gc_rclick && gc_filt_wins ? (
+  gfx_x = mouse_x; gfx_y = mouse_y;
+  gc_mres = gfx_showmenu(
+    "Off|12 dB/oct|24 dB/oct|36 dB/oct|48 dB/oct|96 dB/oct|FIR Brick||>Placement|Both|Mid|Side|Left|Right|<");
+  gc_mres > 0 ? (
+    gc_mres <= 7 ? (
+      gc_fnode == 0 ? ( slider131 = gc_mres - 1; slider_automate(slider131); gc_apply_hplp(0); )
+                    : ( slider135 = gc_mres - 1; slider_automate(slider135); gc_apply_hplp(1); );
+    ) : (
+      gc_fnode == 0 ? ( slider134 = gc_mres - 8; slider_automate(slider134); )
+                    : ( slider138 = gc_mres - 8; slider_automate(slider138); );
+    );
+  );
+);
+
+// start a filter drag
+gc_click && gc_filt_wins ? (
+  gc_fdrag = gc_fnode;
+  gc_fdx = mouse_x; gc_fdy = mouse_y;
+  gc_fmod = mouse_cap & 8;
+  gc_at_fres = gc_fdrag == 0 ? slider133 : slider137;
+);
+!(mouse_cap & 1) ? gc_fdrag = -1;
+
+gc_fdrag >= 0 ? (
+  gc_fdyu = (mouse_y - gc_fdy) / gc_sc;
+  gc_fmod ? (
+    // Shift: resonance, 0.05 per 12 logical units
+    gc_v = min(max(gc_at_fres - floor(gc_fdyu / 12) * 0.05, 0), 1);
+    gc_fdrag == 0 ? ( gc_v != slider133 ? ( slider133 = floor(gc_v / 0.001 + 0.5) * 0.001; slider_automate(slider133); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider137 ? ( slider137 = floor(gc_v / 0.001 + 0.5) * 0.001; slider_automate(slider137); gc_apply_hplp(1); ); );
+  ) : (
+    // plain: cutoff follows the pointer along the log axis
+    gc_v = gc_f_of_x(mouse_x);
+    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = floor(gc_v + 0.5); slider_automate(slider132); gc_apply_hplp(0); ); )
+                  : ( gc_v != slider136 ? ( slider136 = floor(gc_v + 0.5); slider_automate(slider136); gc_apply_hplp(1); ); );
+  );
+);
+
+// draw the two handles
+gc_e = 0;
+loop(2,
+  gc_sl = gc_e == 0 ? slider131 : slider135;
+  gc_nx = gc_filt_x(gc_e);
+  gc_ny = gc_y_of_bits(0);
+  gc_on = gc_hplp_audible(gc_e);
+  gfx_set(0.75, 0.75, 0.8, gc_on ? 1 : 0.35);
+  gfx_rect(gc_nx - 5 * gc_sc, gc_ny - 5 * gc_sc, 10 * gc_sc, 10 * gc_sc, gc_on ? 1 : 0);
+  (gc_fnode == gc_e || gc_fdrag == gc_e) ? (
+    gfx_rect(gc_nx - 8 * gc_sc, gc_ny - 8 * gc_sc, 16 * gc_sc, 16 * gc_sc, 0);
+    gfx_x = gc_nx + 12 * gc_sc; gfx_y = gc_ny - 6 * gc_sc;
+    gfx_drawstr(gc_e == 0 ? "HP " : "LP ");
+    gfx_drawnumber(gc_e == 0 ? slider132 : slider136, 0);
+    gfx_drawstr(" Hz  ");
+    gfx_drawstr(gc_sl == 0 ? "Off" : gc_sl == 6 ? "FIR Brick" : "");
+    gc_sl > 0 && gc_sl < 6 ? ( gfx_drawnumber(gc_sl == 5 ? 96 : gc_sl * 12, 0); gfx_drawstr(" dB/oct"); );
+  );
+  gc_e += 1;
+);
+
+// ---- global switches: Phase and per-engine Resolution. Click to toggle.
+
+gc_by = gc_py + 4 * gc_sc;
+gc_bw = 110 * gc_sc;
+gc_hb0 = gc_button(gc_px + gc_pw - 3 * gc_bw - 16 * gc_sc, gc_by, gc_bw,
+                   slider140 == 1 ? "Phase: Linear" : "Phase: Min", slider140 == 1);
+gc_hb1 = gc_button(gc_px + gc_pw - 2 * gc_bw - 8 * gc_sc, gc_by, gc_bw,
+                   slider141 == 1 ? "HP res: High" : "HP res: Norm", slider141 == 1);
+gc_hb2 = gc_button(gc_px + gc_pw - gc_bw, gc_by, gc_bw,
+                   slider142 == 1 ? "LP res: High" : "LP res: Norm", slider142 == 1);
+
+gc_click ? (
+  gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); ) :
+  gc_hb1 ? ( slider141 = 1 - slider141; slider_automate(slider141); ) :
+  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); );
+);
+
+// ---- readout strip: five FIELDS, each named for the slider it edits.
+// Named per parameter on purpose - a single "G" field would be ambiguous between Macro and
+// effective gain the moment Ratio is not 1, and under the one-gesture-one-slider rule a typed
+// number must mean exactly one parameter.
+gc_sel < 0 ? gc_sel = 0;
+gc_s = stb[gc_sel];
+
+
+gc_h0 = gc_field(0, "Freq ",  slider(gc_s + 3), 0);
+gc_h1 = gc_field(1, "Macro ", slider(gc_s + 5), 0);
+gc_h2 = gc_field(2, "Micro ", slider(gc_s + 6), 1);
+gc_h3 = gc_field(3, "Ratio ", slider(gc_s + 7), 2);
+gc_h4 = gc_field(4, "Q ",     slider(gc_s + 4), 3);
+// V1.1: Q Character reaches its declared 0.001 grid. The menu's five presets cannot reproduce an
+// existing 0.333, which would leave the GUI unable to represent a value the engine plays.
+gc_h5 = gc_field(5, "QChar ", slider(gc_s + 9), 3);
+
+gfx_set(0.55, 0.55, 0.6, 1);
+gfx_x = gc_px; gfx_y = gc_fy + gc_fh + 6 * gc_sc;
+gfx_drawstr("B"); gfx_drawnumber(gc_sel + 1, 0);
+gfx_drawstr("   effective ");
+gfx_drawnumber((slider(gc_s+5) + slider(gc_s+6)*0.01) * slider(gc_s+7), 2);
+gfx_drawstr(" bits");
+
+// ---- V1.1: B1..B8 selector strip, in its OWN row below the summary line. A deterministic way to
+// reach any band regardless of node overlap. Hidden in small mode, where there is no room for it.
+gc_strip_on ? (
+  gc_b = 0;
+  loop(N_BANDS,
+    gc_bx = gc_px + gc_b * 34 * gc_sc;
+    gc_bhot = mouse_x >= gc_bx && mouse_x < gc_bx + 30 * gc_sc &&
+              mouse_y >= gc_sy && mouse_y < gc_sy + gc_sh;
+    gc_sel == gc_b ? ( gfx_set(0.3, 0.45, 0.6, 1); ) : ( gfx_set(0.16, 0.16, 0.18, 1); );
+    gc_bhot ? ( gfx_set(0.35, 0.5, 0.66, 1); );
+    gfx_rect(gc_bx, gc_sy, 30 * gc_sc, gc_sh);
+    slider(stb[gc_b] + 1) == 1 ? ( gfx_set(0.95, 0.9, 0.95, 1); ) : ( gfx_set(0.45, 0.45, 0.5, 1); );
+    gfx_x = gc_bx + 5 * gc_sc; gfx_y = gc_sy + 4 * gc_sc;
+    gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
+    gc_click && gc_bhot ? ( gc_sel = gc_b; );
+    gc_b += 1;
+  );
+);
+
+// click a field to focus it
+gc_click ? (
+  gc_h0 ? ( gc_edit = 0; gc_elen = 0; ) :
+  gc_h1 ? ( gc_edit = 1; gc_elen = 0; ) :
+  gc_h2 ? ( gc_edit = 2; gc_elen = 0; ) :
+  gc_h3 ? ( gc_edit = 3; gc_elen = 0; ) :
+  gc_h4 ? ( gc_edit = 4; gc_elen = 0; ) :
+  gc_h5 ? ( gc_edit = 5; gc_elen = 0; ) :
+           ( gc_edit = -1; );
+);
+
+// ---- keyboard. ALL queued keys are consumed in a while loop while a field has focus:
+// otherwise Escape propagates to REAPER and closes the plugin window instead of cancelling.
+gc_edit >= 0 ? (
+  while ((gc_key = gfx_getchar()) > 0) (
+    gc_key == 13 ? (
+      // commit: parse the buffer, write ONE slider, automate it
+      gc_val = 0; gc_dot = 0; gc_frac = 1; gc_neg = 0; gc_ci = 0;
+      loop(gc_elen,
+        gc_c = gc_ebuf[gc_ci];
+        gc_c == 45 ? ( gc_neg = 1; ) :
+        gc_c == 46 ? ( gc_dot = 1; ) :
+        ( gc_dot == 0 ? ( gc_val = gc_val * 10 + (gc_c - 48); )
+                      : ( gc_frac = gc_frac * 0.1; gc_val = gc_val + (gc_c - 48) * gc_frac; ) );
+        gc_ci += 1;
+      );
+      gc_neg ? gc_val = -gc_val;
+      gc_elen > 0 ? (
+        // typed values are NOT quantised: the owner asked to be able to enter any number.
+        // Mouse gestures snap to the slider grid; the keyboard is the precision path.
+        gc_edit == 0 ? gc_w_freq (gc_sel, min(max(gc_val,20),20000), 0) :
+        gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16),   0) :
+        gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100), 0) :
+        gc_edit == 3 ? gc_w_ratio(gc_sel, min(max(gc_val,0),3),      0) :
+        gc_edit == 4 ? gc_w_q    (gc_sel, min(max(gc_val,0.1),10),   0) :
+        // Q Character is CLAMPED AND QUANTISED to its declared 0.001 step, unlike the five fields
+        // above. "Full resolution" means the whole grid instead of five coarse presets, not
+        // off-grid values: V1.0 measured what those cost - a continuous 59.752306 Hz written to a
+        // step-1 slider left -62 dB of null residue - and an off-grid 0.3335 would be reachable
+        // from the graph and unreachable from the host. Arthur's family rounds typed entry the
+        // same way. The five existing fields keep their typed-exact behaviour; changing them is
+        // its own version.
+                       gc_w_qchar(gc_sel, floor(min(max(gc_val,0),1) / 0.001 + 0.5) * 0.001);
+      );
+      gc_edit = -1; gc_elen = 0;
+    ) : gc_key == 27 ? ( gc_edit = -1; gc_elen = 0; )
+      : gc_key == 8  ? ( gc_elen > 0 ? gc_elen = gc_elen - 1; )
+      : ( ((gc_key >= 48 && gc_key <= 57) || gc_key == 45 || gc_key == 46) && gc_elen < 20 ?
+            ( gc_ebuf[gc_elen] = gc_key; gc_elen = gc_elen + 1; ); );
+  );
+);
+
+// Pointer moved away without clicking: the next click starts the stack again from the lowest band.
+(abs(mouse_x - gc_cyc_x) >= gc_hit_r || abs(mouse_y - gc_cyc_y) >= gc_hit_r) ? ( gc_cyc_n = 0; );
+gc_last_cap = mouse_cap;

@@ -35,9 +35,15 @@ def check(track_index=0):
     with reapy.inside_reaper():
         from reapy import reascript_api as RPR
         pr = reapy.Project()
+        made_track = 0
+        if len(pr.tracks) == 0:               # an empty project is the normal state for a check
+            RPR.InsertTrackAtIndex(0, False)
+            RPR.TrackList_AdjustWindows(False)
+            made_track = 1
+            pr = reapy.Project()
         tr = pr.tracks[track_index]
         before = [f.name for f in tr.fxs]
-        fx = tr.add_fx("JS: RCBitNova V1.1")
+        fx = tr.add_fx("JS: RCBitNova V1.2")
         i = fx.index
         n = fx.n_params
         RPR.TrackFX_Show(tr.id, i, 3)          # float the window so its text exists to be read
@@ -47,8 +53,10 @@ def check(track_index=0):
         pr = reapy.Project()
         tr = pr.tracks[track_index]
         RPR.TrackFX_Show(tr.id, i, 2)
-        [f for f in tr.fxs if "RCBitNova V1.1" in f.name][-1].delete()
+        [f for f in tr.fxs if "RCBitNova V1.2" in f.name][-1].delete()
         assert [f.name for f in tr.fxs] == before, "the scratch instance was not removed"
+        if made_track:
+            RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
     problems = []
     if n != 178:

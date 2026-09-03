@@ -27,6 +27,11 @@ from tools.make_null_fixture import write_wav   # noqa: E402
 FIXTURE = os.path.abspath(os.path.join("tests", "fixtures", "null_30s.wav"))
 TRACK = "RCBN NULL TEMP"
 
+# The panel's contract is "no DSP change from V1.1", so V1.1 is the baseline. Comparing against
+# V1.0 would still be true and would answer a question nobody is asking about this feature.
+BASE = "JS: RCBitNova V1.1"
+UNDER_TEST = "JS: RCBitNova V1.2"
+
 # case -> {declared parameter name: value in ITS OWN units}
 CASES = {
     "defaults": {},
@@ -45,18 +50,14 @@ CASES = {
                     "HP Resolution (Linear only)": 1, "LP Resolution (Linear only)": 1},
 }
 
-# The ONE configuration where V1.1 is meant to differ, and the test demands that it does.
-#
-# V1.0 gated Mode B on Dyn + Mode + Type and never on the band's own Enable, so a band switched
-# OFF but left with Dyn on and Mode B still ran its split limiter on the delayed bus, still forced
-# the lookahead and PDC machinery active, and was audible. V1.1 adds Enable to that gate: disabled
-# means disabled. A suite that only asserted sameness would have let this divergence through
-# silently, and a fix nobody can see the boundary of is a fix nobody can trust.
-DIVERGENT = {
-    "modeB_disabled_band": {"B1 Enable": 0, "B1 Freq": 200, "B1 Dyn": 1, "B1 Dyn Mode": 1,
-                            "B1 Soft Ceiling Macro (bits below 0)": 3, "B1 Soft": 1,
-                            "B2 Enable": 1, "B2 Macro (bits)": 1, "B2 Freq": 1000},
-}
+# Nothing diverges any more. This case WAS a deliberate divergence while the baseline was V1.0,
+# which had no Enable gate on Mode B; against V1.1 both sides have it, so it becomes an ordinary
+# identical case - and a useful one, because it exercises a disabled band that still has dynamics
+# configured, which is exactly the state a panel gesture can leave behind.
+CASES["modeB_disabled_band"] = {"B1 Enable": 0, "B1 Freq": 200, "B1 Dyn": 1, "B1 Dyn Mode": 1,
+                                "B1 Soft Ceiling Macro (bits below 0)": 3, "B1 Soft": 1,
+                                "B2 Enable": 1, "B2 Macro (bits)": 1, "B2 Freq": 1000}
+DIVERGENT = {}
 
 
 def read_float_wav(path):
@@ -204,10 +205,10 @@ def main():
         for case, values in {**CASES, **DIVERGENT}.items():
             if only and case != only:
                 continue
-            a, norms10 = render("JS: RCBitNova V1.0", values=values)
-            keep = a + ".v10.wav"
+            a, norms10 = render(BASE, values=values)
+            keep = a + ".base.wav"
             os.rename(a, keep)
-            b, norms11 = render("JS: RCBitNova V1.1", norms=norms10)
+            b, norms11 = render(UNDER_TEST, norms=norms10)
             assert norms10 == norms11, \
                 f"{case}: the two instances do not hold the same 95 declared values"
             if case in DIVERGENT:

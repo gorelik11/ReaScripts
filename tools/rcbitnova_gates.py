@@ -28,7 +28,11 @@ except ImportError:                      # also runnable from inside tools/
 DECLARED_FIXTURE = os.path.join("tests", "fixtures", "v11_declared_175.json")
 
 V10 = "JSFX/RCBitNova V1.0"
-V11 = "JSFX/RCBitNova V1.1"
+V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, in the owner's
+                                     # projects. Never edited again.
+V12 = "JSFX/RCBitNova V1.2"          # the working file - every source check below targets this
+N_DECLARED_V11 = 175                 # frozen forever
+N_DECLARED_V12 = 175                 # becomes 176 when the panel slider is declared
 
 # finditer, not match: several assignments can share a line, and anchoring to the first one loses
 # the rest.
@@ -290,7 +294,7 @@ def check_addresses(text, path):
         f"{path}: the GUI region must end below lp_base"
 
 
-def check_source(path=V11, project=False):
+def check_source(path=V12, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
         text, n = re.subn(r"^N_BANDS = 4;", "N_BANDS = 8;", text, count=1, flags=re.M)
@@ -311,7 +315,6 @@ def check_source(path=V11, project=False):
 # --------------------------------------------------------------------------------------------
 
 N_DECLARED_V10 = 95
-N_DECLARED_V11 = 175
 HOST_TAIL = ["Bypass", "Wet", "Delta"]
 
 
@@ -339,7 +342,7 @@ def _records(RPR, track, fx_index, n_params, defaults=None):
 def _fine_ceiling_indices():
     """Declared-parameter indices of the sixteen ceiling Macro sliders, derived from the source's
     own declaration order rather than counted by hand."""
-    text = open(V11, encoding="utf-8", errors="replace").read()
+    text = open(V12, encoding="utf-8", errors="replace").read()
     order = [int(n) for n in re.findall(r"^slider(\d+):", text, re.M)]
     t = layout.base_tables(8)
     targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
@@ -356,6 +359,12 @@ def check_live(track_index=0):
     with reapy.inside_reaper():
         from reapy import reascript_api as RPR
         pr = reapy.Project()
+        made_track = 0
+        if len(pr.tracks) == 0:
+            RPR.InsertTrackAtIndex(0, False)
+            RPR.TrackList_AdjustWindows(False)
+            made_track = 1
+            pr = reapy.Project()
         tr = pr.tracks[track_index]
         assert not [f for f in tr.fxs if "RCBitNova" in f.name], \
             f"track {track_index} already holds an RCBitNova; use an empty scratch track"
@@ -372,10 +381,13 @@ def check_live(track_index=0):
             return n, recs[:n_declared], recs[n_declared:]
 
         n10, dec10, host10 = manifest("JS: RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("JS: RCBitNova V1.1", N_DECLARED_V11)
+        n11, dec11, host11 = manifest("JS: RCBitNova V1.2", N_DECLARED_V12)
+        if made_track:
+            RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
     assert n10 == N_DECLARED_V10 + 3, f"V1.0 reports {n10} parameters, expected 98"
-    assert n11 == N_DECLARED_V11 + 3, f"V1.1 reports {n11} parameters, expected 178"
+    assert n11 == N_DECLARED_V12 + 3, \
+        f"V1.2 reports {n11} parameters, expected {N_DECLARED_V12} declared + 3 host"
     assert [r[1] for r in host10] == HOST_TAIL, f"V1.0 host tail is {[r[1] for r in host10]}"
     assert [r[1] for r in host11] == HOST_TAIL, f"V1.1 host tail is {[r[1] for r in host11]}"
     # The ONE documented deviation from "the 95 declared records are identical": the ceiling Macro
@@ -392,7 +404,21 @@ def check_live(track_index=0):
                 f"ceiling parameter {a[0]} step went {a[4]} -> {b[4]}, expected 1 -> 0.05"
         else:
             assert a == b, f"declared parameter {a[0]} differs:\n  V1.0 {a}\n  V1.1 {b}"
-    assert len(dec11) == N_DECLARED_V11
+    assert len(dec11) == N_DECLARED_V12
+
+    # V1.2's first 175 records must BE V1.1's, to the range, step and default. This is what makes a
+    # V1.1 -> V1.2 migration possible: REAPER stores parameters by position, so a record inserted
+    # anywhere but the end silently moves every later one.
+    frozen = load_declared()
+    # the live record is (index, name, lo, hi, step, is_toggle, default, trips); the fixture is
+    # (index, name, lo, hi, step, default) - so pick fields, do not slice.
+    got = [(r[0], r[1], r[2], r[3], r[4], r[6]) for r in dec11[:len(frozen)]]
+    assert len(dec11) >= len(frozen), \
+        f"V1.2 has {len(dec11)} declared records, fewer than the frozen {len(frozen)}"
+    assert got == frozen, next(
+        (f"record {i} differs: frozen {a}, V1.2 {b}"
+         for i, (a, b) in enumerate(zip(frozen, got)) if a != b),
+        "the frozen prefix and V1.2 disagree")
     for rec in dec11:
         i, name, lo, hi, step, is_toggle, default, trips = rec
         assert hi > lo, f"parameter {i} ({name}) has an empty range"
@@ -417,7 +443,7 @@ def main(argv):
               f"the 95 declared records are identical and the host tail matches by position")
         return 0
     try:
-        check_source(V11, project=(mode == "--preflip"))
+        check_source(V12, project=(mode == "--preflip"))
     except AssertionError as exc:
         print(f"FAIL {mode}: {exc}")
         return 1
