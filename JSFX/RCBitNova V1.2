@@ -2130,9 +2130,24 @@ gc_sc = min(gfx_w / 900, gfx_h / 500);
 gc_px = 40 * gc_sc;
 gc_py = 10 * gc_sc;
 gc_pw = gfx_w - gc_px - 10 * gc_sc;
-gc_ph = gfx_h - gc_py - 84 * gc_sc;
 gc_small = (gfx_w / gc_ret < 480 || gfx_h / gc_ret < 280);
-gc_small ? gc_ph = gfx_h - gc_py - 24 * gc_sc;    // below minimum size the readout strip goes first
+
+// ---- V1.2: how much room the dynamics panel gets, decided BEFORE gc_ph so the plot can give it
+// up rather than be overdrawn. Both are DERIVED visibility states and neither writes slider246:
+// dragging a window edge must not automate a value into the project, the undo history or
+// automation playback.
+//
+// slider246, not slider143 - the plan predates the measurement that moved it. There IS no
+// slider143 in this build, and EEL2 would have taken the name as an ordinary variable: the panel
+// would open and close for the session and store nothing in the project, with no error anywhere.
+gc_open = min(max(floor(slider246 + 0.5), 0), N_BANDS);   // automation and presets can send a
+                                                          // fractional value through a <0,8,1>
+gc_panel_on = !gc_small && (gfx_h - gc_py - 228 * gc_sc) >= 180 * gc_sc;
+gc_card_on  = gc_panel_on && gc_open > 0 &&
+              (gfx_h - gc_py - 318 * gc_sc) >= 180 * gc_sc;
+// 84 and 24 are V1.1's, unchanged: with the panel off the layout is exactly what it was.
+gc_ph = gfx_h - gc_py -
+        (gc_small ? 24 : gc_panel_on ? (gc_card_on ? 318 : 228) : 84) * gc_sc;
 
 // ---- V1.1: the whole layout, computed HERE rather than near the end of @gfx, because pointer
 // ownership has to be decided before the node hit test runs.
@@ -2145,6 +2160,12 @@ gc_fh = 20 * gc_sc;
 gc_fw = min(150 * gc_sc, (gc_pw - 5 * 8 * gc_sc) / 6);
 gc_sy = gc_fy + gc_fh + 24 * gc_sc;
 gc_sh = 18 * gc_sc;
+gc_rows_y = gc_sy + gc_sh + 6 * gc_sc;      // first dynamics row, clear of the B1..B8 strip
+gc_rh     = 18 * gc_sc;                     // row height, matching gc_button's own
+gc_card_h = 90 * gc_sc;
+// The panel owns the pointer over its whole extent, card included.
+gc_panel_hot = gc_panel_on && mouse_y >= gc_rows_y &&
+               mouse_y < gc_rows_y + N_BANDS * gc_rh + (gc_card_on ? gc_card_h : 0);
 // Small mode reserves only 24 px below the plot, which the fields alone fill: the strip is hidden
 // there rather than clipped. Nodes and the right-click menu still reach every band.
 gc_strip_on = gc_small ? 0 : 1;
@@ -2270,6 +2291,10 @@ gc_click ? (
 // Modulo the CURRENT count every frame: the hit set shrinks when a node moves or a band is
 // disabled, and a free-running counter would then point past it and select nothing.
 gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; gc_cyc_n = 0; );
+// V1.2: and neither the strip nor the panel may leave a node hovered underneath. gc_in_plot
+// already makes this true - both sit below the plot - so this is belt and braces, and it is the
+// FIRST use of gc_strip_hot: V1.1 computed it and never read it.
+gc_strip_hot || gc_panel_hot ? ( gc_hit_n = 0; gc_hover = -1; );
 
 // ---- HP/LP handles, hit-tested EVERY FRAME. Also keep how far each candidate is, because a
 // filter handle sits on the 0-bit line at its cutoff and a band node at unity gain sits on the
@@ -2597,6 +2622,51 @@ gc_strip_on ? (
     gfx_x = gc_bx + 5 * gc_sc; gfx_y = gc_sy + 4 * gc_sc;
     gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
     gc_click && gc_bhot ? ( gc_sel = gc_b; );
+    gc_b += 1;
+  );
+);
+
+// ---- V1.2: the eight dynamics rows. One per band, both cascade stages on the same line, so the
+// relationship the plugin is actually about - a soft stage above a hard ceiling - is visible
+// without opening anything.
+//
+// gc_button draws and returns hot; combining that with gc_click is the CALLER's job, and here the
+// caller is the single owner of this frame's click. Rows below an open card are pushed down by
+// exactly the card's height - the plan's expression multiplied "is this the open band" by "is this
+// band after the open one", which is zero for every band and would have drawn the card on top of
+// the rows below it.
+gc_panel_on ? (
+  gc_b = 0;
+  loop(N_BANDS,
+    gc_ry = gc_rows_y + gc_b * gc_rh + (gc_card_on && gc_b + 1 > gc_open ? gc_card_h : 0);
+    gc_bx = gc_px;
+    // B<n>: expands this card, or collapses it when it is already open. Drawn with an empty label
+    // and the number written on top, the way the B1..B8 strip above does it - gc_button's own
+    // label starts where the digit would go.
+    gc_button(gc_bx, gc_ry, 28 * gc_sc, "", gc_open == gc_b + 1) && gc_click ?
+      ( slider246 = (gc_open == gc_b + 1 ? 0 : gc_b + 1); slider_automate(slider246); );
+    gfx_x = gc_bx + 6 * gc_sc; gfx_y = gc_ry + 3 * gc_sc;
+    gfx_drawstr("B"); gfx_drawnumber(gc_b + 1, 0);
+    gc_bx += 32 * gc_sc;
+    gc_button(gc_bx, gc_ry, 34 * gc_sc, "Dyn", slider(dynb[gc_b] + 1) == 1) && gc_click ?
+      ( gc_w_dyn(gc_b, (slider(dynb[gc_b] + 1) == 1 ? 0 : 1)); );
+    gc_bx += 38 * gc_sc;
+    gc_button(gc_bx, gc_ry, 20 * gc_sc, "A", slider(dynb[gc_b] + 7) == 0) && gc_click ?
+      ( gc_w_dynmode(gc_b, 0); );
+    gc_button(gc_bx + 22 * gc_sc, gc_ry, 20 * gc_sc, "B", slider(dynb[gc_b] + 7) == 1) && gc_click ?
+      ( gc_w_dynmode(gc_b, 1); );
+    gc_bx += 48 * gc_sc;
+    gc_button(gc_bx, gc_ry, 20 * gc_sc, "S", slider(dynb[gc_b] + 8) == 1) && gc_click ?
+      ( gc_w_soft(gc_b, (slider(dynb[gc_b] + 8) == 1 ? 0 : 1)); );
+    gc_field_at(100 + gc_b * 10 + 0, gc_bx + 24 * gc_sc, gc_ry, 96 * gc_sc, "Soft ",
+                slider(dynb[gc_b] + 3), 2) ?
+      ( gc_pfield = 100 + gc_b * 10 + 0; gc_pfield_v = slider(dynb[gc_b] + 3); );
+    gc_bx += 124 * gc_sc;
+    gc_button(gc_bx, gc_ry, 20 * gc_sc, "H", slider(ceb[gc_b] + 1) == 1) && gc_click ?
+      ( gc_w_hard(gc_b, (slider(ceb[gc_b] + 1) == 1 ? 0 : 1)); );
+    gc_field_at(100 + gc_b * 10 + 1, gc_bx + 24 * gc_sc, gc_ry, 96 * gc_sc, "Hard ",
+                slider(ceb[gc_b] + 2), 2) ?
+      ( gc_pfield = 100 + gc_b * 10 + 1; gc_pfield_v = slider(ceb[gc_b] + 2); );
     gc_b += 1;
   );
 );
