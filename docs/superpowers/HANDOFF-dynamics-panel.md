@@ -11,9 +11,9 @@
 | Working | `JSFX/RCBitNova V1.2` |
 | Spec | `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` **rev 5** |
 | Plan | `docs/superpowers/plans/2026-09-02-rcbitnova-dynamics-panel.md`, 9 tasks |
-| Done | Tasks 1–5 (`56af29a`, `c086457`, `2063c34`, `33d341b`, `8cdb606`) |
-| Next | **Task 6** — one field primitive (`gc_field`) and one interaction controller |
-| Green | 278 tests · gate 30 sites, 20 writers · live: 175 frozen records identical · compile 179 params |
+| Done | Tasks 1–6 (`56af29a`, `c086457`, `2063c34`, `33d341b`, `8cdb606`, `7a8d3bf`) |
+| Next | **Task 7** — the eight rows; they publish `gc_pfield` / `gc_pfield_v` |
+| Green | 278 tests · gate 32 sites, 20 writers · live: 175 frozen records identical · compile 179 · null `defaults` identical |
 
 ## The one thing to know before touching parameters
 
@@ -28,7 +28,7 @@ distinguish them: sliders added later in the file *and* higher in number satisfy
 What caught it: `tests/fixtures/v11_declared_175.json` — V1.1's 175 records frozen with ranges,
 steps and defaults, compared field by field by `--live`.
 
-## Task 5, in passing
+## Tasks 5 and 6, in passing
 
 The plan's own writer sample could not have passed the plan's own gate: it aligns the assignments
 (`slider51  = v;`) and the gate matches `slider(\d+) = v;` with one space. The nine V1.0 writers
@@ -36,7 +36,18 @@ are unpadded, so the house style was already the correct answer. Cost five minut
 that a plan's code blocks are not gate-checked before they are pasted.
 
 The null test was NOT re-run for Task 5 — the eleven writers are not called from anywhere yet.
-Task 9 owns it.
+Task 9 owns the full 6/6 suite; Task 6 ran `defaults` only, as its step 6 asks.
+
+**The plan's `gc_meta = 304` would have been a silent disaster.** `gc_meta` is already a
+sixteen-word NAMED region at `gc_snap + 128` holding the curve buffers' indices and generations
+(`GCM_IDX_HP` … `GCM_TGEN`). EEL2 takes the last assignment, so the panel's 48 words would have
+gone to a dead address while every panel read landed in the curve region — no error on either
+side. The table is `gc_fmeta`, and two gate sites now hold it: `panel-meta-address` and
+`curve-meta-unshadowed`. Grep an address name against the source before trusting a plan for it.
+
+`gc_pfield` must be reset to −1 at the top of every frame from Task 6 onward, not from Task 7:
+undefined EEL2 variables are 0, and `gc_pfield >= 0` then makes every click capture readout
+field 0.
 
 ## Commands
 
