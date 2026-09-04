@@ -11,8 +11,8 @@
 | Working | `JSFX/RCBitNova V1.2` |
 | Spec | `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` **rev 5** |
 | Plan | `docs/superpowers/plans/2026-09-02-rcbitnova-dynamics-panel.md`, 9 tasks |
-| Done | Tasks 1–6 (`56af29a`, `c086457`, `2063c34`, `33d341b`, `8cdb606`, `7a8d3bf`) |
-| Next | **Task 7** — the eight rows; they publish `gc_pfield` / `gc_pfield_v` |
+| Done | Tasks 1–8 (`…33d341b`, `8cdb606`, `7a8d3bf`, `0c39936`, `df7e77d`) |
+| Next | **Task 9** — gates, the null suite 6/6, and the LIVE matrix. The panel has never been clicked. |
 | Green | 278 tests · gate 32 sites, 20 writers · live: 175 frozen records identical · compile 179 · null `defaults` identical |
 
 ## The one thing to know before touching parameters
@@ -28,7 +28,7 @@ distinguish them: sliders added later in the file *and* higher in number satisfy
 What caught it: `tests/fixtures/v11_declared_175.json` — V1.1's 175 records frozen with ranges,
 steps and defaults, compared field by field by `--live`.
 
-## Tasks 5 and 6, in passing
+## Tasks 5–8, in passing
 
 The plan's own writer sample could not have passed the plan's own gate: it aligns the assignments
 (`slider51  = v;`) and the gate matches `slider(\d+) = v;` with one space. The nine V1.0 writers
@@ -48,6 +48,21 @@ side. The table is `gc_fmeta`, and two gate sites now hold it: `panel-meta-addre
 `gc_pfield` must be reset to −1 at the top of every frame from Task 6 onward, not from Task 7:
 undefined EEL2 variables are 0, and `gc_pfield >= 0` then makes every click capture readout
 field 0.
+
+Task 7 carried three more stale or wrong lines, all caught by reading the source:
+
+- **`slider143` does not exist.** The panel parameter is `slider246`; the plan predates the
+  measurement that moved it. EEL2 would have taken `slider143` as an ordinary variable — the panel
+  opening and closing for the session and storing nothing in the project, silently.
+- **The row offset was always zero.** `(gc_open == gc_b+1 ? gc_card_h : 0) * (gc_b+1 > gc_open)`
+  multiplies two factors that are never both non-zero, so every row below an open card would have
+  been drawn underneath it.
+- **There was no strip veto to extend.** V1.1 computes `gc_strip_hot` and never reads it. The veto
+  now reads it and `gc_panel_hot`, and is belt and braces: `gc_in_plot` already excludes everything
+  below the plot.
+
+Pattern across four tasks: every plan defect was found by grepping the source for the name the plan
+used, and none by reading the plan carefully. `--source-only` and `--live` found the rest.
 
 ## Commands
 
