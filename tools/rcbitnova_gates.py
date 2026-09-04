@@ -102,8 +102,16 @@ SITES = {
     "helper-gc_dom_used":    (r"function gc_dom_used[\s\S]*?loop\((\w+),", "N_BANDS"),
     "slider-setup":          (r"^loop\((\w+), setup_band\(b\); setup_band_dyn\(b\); b \+= 1;\);",
                               "N_BANDS"),
-    "slider-modeb-scan":     (r"loop\((\w+),\s*\n\s*mbmode\[b\] = slider\(dynb\[b\] \+ 7\);",
-                              "N_BANDS"),
+    # The scan became a helper so GUI writers can call the same code. Two rows now: the loop that
+    # drives it, and the helper itself - which must rebuild and must NOT publish.
+    "slider-dyn-global-loop": (r"^loop\((\w+), apply_band_dyn_global\(b\); b \+= 1;\);",
+                               "N_BANDS"),
+    "dyn-global-helper":      (r"function apply_band_dyn_global\(b\)[\s\S]*?"
+                               r"mbmode\[b\] = slider\(dynb\[(b)\] \+ 7\);", "b"),
+    "dyn-global-sets-flag":   (r"function apply_band_dyn_global\(b\)[\s\S]*?"
+                               r"(pdc_dirty) = 1;", "pdc_dirty"),
+    "block-publishes-pdc":    (r"^(pdc_dirty) \? \( topo_pdc\(\); pdc_dirty = 0; \);",
+                               "pdc_dirty"),
     # The enabled-band cache and the loop that walks it. These two rows were ONE row until the
     # cache existed, and the moment it did the old pattern started matching the BUILDER instead of
     # the audio loop - passing for the wrong reason. Anchor each to something only it contains.
@@ -115,8 +123,11 @@ SITES = {
     # band switched OFF but left in Mode B still ran its split limiter on the bus.
     "sample-modeb-pass":     (r"corrL = 0; corrR = 0;\s*\n\s*nbi = 0;\s*\n\s*loop\((\w+),",
                               "nb_n"),
-    "modeb-any-gate":        (r"\(slider\(stb\[b\] \+ 1\) == 1 && slider\(dynb\[b\] \+ 1\) "
-                              r"== 1 && (mbmode)\[b\] == 1", "mbmode"),
+    # Enable is part of the any_b fold - without it a band switched OFF but left in Mode B still
+    # ran its split limiter. The fold moved into the helper and counts with `i`.
+    "modeb-any-gate":        (r"function apply_band_dyn_global\(b\)[\s\S]*?"
+                              r"slider\(stb\[i\] \+ 1\) == 1 && slider\(dynb\[i\] \+ 1\) == 1 "
+                              r"&& (mbmode)\[i\] == 1", "mbmode"),
     "gfx-band-setup":        (r"^loop\((\w+), gc_band_setup\(gc_b\); gc_b \+= 1;\);", "N_BANDS"),
     "gfx-hit-test":          (r"^gc_hit_n = 0;\ngc_b = 0;\nloop\((\w+),", "N_BANDS"),
     "gfx-node-draw":         (r"loop\((\w+),\s*\n\s*gc_s = stb\[gc_b\];\s*\n\s*gc_en = "

@@ -853,6 +853,7 @@ mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;
 // The geometry itself is adopted by the FIRST @slider pass rather than here, because JSFX does
 // not guarantee that slider values are already loaded when @init runs.
 topo_boot = 1;
+pdc_dirty = 0;
 // Hi-res geometry. 32768 is fully supported by JSFX fft() but a 32768-pt complex FFT spans
 // exactly one 65536 page, so its buffer MUST start on a page boundary - lp_layout guarantees
 // that. (Live gate 2026-07-25: aligned |X[k]|=1.0 everywhere + exact ifft round trip;
@@ -1007,6 +1008,29 @@ function setup_band_dyn(b)
   dp[b*4+3] = slider(ds+1);                                    // dynOn
   dm[b]     = slider(ds+2);                                    // 0 Linked,1 DualLR,2 DualMS
   bp[b*3] = fc; bp[b*3+1] = band_qeff(b); bp[b*3+2] = tan($pi * fc / srate);
+);
+
+// ---- V1.2: the state the per-band setup functions do NOT own.
+// setup_band_dyn writes det, dp, dm and bp - and nothing else. mbmode[b], hc[b] and the any_b
+// fold were rebuilt only by the @slider scan, and V1.0 established live that @slider is NOT
+// guaranteed to run after slider_automate. So a GUI writer that called only the two per-band
+// rebuilds would move the field, the Param value and the menu tick while the audio stayed in the
+// old mode. This is what a dynamics writer calls instead.
+//
+// REBUILDS ONLY. topo_pdc() writes pdc_delay, pdc_bot_ch, pdc_top_ch and ext_tail_size -
+// variables REAPER itself reads - so it is never called from here and never from @gfx. This sets
+// a flag; @block, which already publishes PDC at topology commit, consumes it within one block.
+function apply_band_dyn_global(b) local(i) (
+  mbmode[b] = slider(dynb[b] + 7);
+  hc[b] = pow(2, -(slider(ceb[b] + 2) + slider(ceb[b] + 3) * 0.01));
+  any_b = 0;                        // a fold over ALL bands: one band changing can set or clear it
+  i = 0;
+  loop(N_BANDS,
+    (slider(stb[i] + 1) == 1 && slider(dynb[i] + 1) == 1 && mbmode[i] == 1
+     && slider(stb[i] + 2) <= 2) ? ( any_b = 1; );
+    i += 1;
+  );
+  pdc_dirty = 1;
 );
 
 // ---- V1.0 GUI writers. Two lessons from ReEQ, Fable Eq and EQall, learned the hard way:
@@ -1322,19 +1346,12 @@ loop(N_BANDS,
 // Mode-B global lookahead + PDC
 Lk = floor(slider4 * 0.001 * srate + 0.5);
 Lk = min(max(Lk, 1), MAX_LOOK - 1);
-any_b = 0;
+// The scan moved into apply_band_dyn_global so a GUI writer can call the same code. Behaviour is
+// unchanged: the helper rebuilds mbmode and hc for its band and re-folds any_b across all of them.
+// Enable is part of that gate - in V1.0 it was not, so a band switched OFF but left with Dyn on
+// and Mode B still ran its split limiter on the bus and was audible.
 b = 0;
-loop(N_BANDS,
-  mbmode[b] = slider(dynb[b] + 7);                                       // 0 A, 1 B
-  hc[b] = pow(2, -(slider(ceb[b] + 2) + slider(ceb[b] + 3) * 0.01));   // hard ceiling
-  // V1.1: Enable is part of the gate. In V1.0 it was not, so a band switched OFF but left with
-  // Dyn on and Mode B still ran its split limiter on the bus, still forced the lookahead and PDC
-  // machinery active, and was audible - "disabled" did not mean disabled. Deliberate divergence
-  // from V1.0, and the null test asserts that it diverges exactly here and nowhere else.
-  (slider(stb[b] + 1) == 1 && slider(dynb[b] + 1) == 1 && mbmode[b] == 1
-   && slider(stb[b]+2) <= 2) ? any_b = 1;
-  b += 1;
-);
+loop(N_BANDS, apply_band_dyn_global(b); b += 1;);
 // (PDC is computed further down, AFTER the linear-engine geometry reconcile, so a Resolution
 //  change is reflected in the same @slider pass that applies it.)
 
@@ -1422,8 +1439,16 @@ mt_fo = max(1, floor(srate * 0.005)); mt_fi = mt_fo;   // 5 ms mute fades, follo
 // PDC + tail from the ACTIVE topology. A pending Phase/Resolution change does NOT move them
 // here; topo_pdc() is called again at commit, while the output is at zero.
 topo_pdc();
+// @slider publishes PDC itself, here, AFTER the linear-engine geometry reconcile - the order the
+// source has always kept. So clear the flag the helper raised: it means "a GUI writer changed
+// something", not "@slider ran", and leaving it set would publish the same value twice.
+pdc_dirty = 0;
 
 @block
+
+// V1.2: PDC republished when a dynamics writer changed something that feeds it. topo_pdc() writes
+// variables REAPER reads, so @gfx must never call it; this lands the change within one audio block.
+pdc_dirty ? ( topo_pdc(); pdc_dirty = 0; );
 
 // ---- V0.9 topology commit. Order is pinned: commit -> relayout/clear -> adopt+PDC -> the
 // forced snap builds below -> mt_ready. While mt_ready is 0 the hold does not count down, so no
