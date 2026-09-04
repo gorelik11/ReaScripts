@@ -1494,6 +1494,17 @@ function gc_button(bx, by, bw, label, on) local(hot) (
   gfx_drawstr(label);
   hot;
 );
+// V1.2: a segmented control. gc_field_at draws a NUMBER and the keyboard parser accepts digits,
+// so it cannot show Linked / Dual L/R / Dual M/S - an enum needs cells, not a numeric field.
+// Returns the cell index clicked, or -1; the caller decides what that means.
+function gc_seg3(bx, by, bw, sel, l0, l1, l2) local(w, r) (
+  r = -1; w = bw / 3;
+  gc_button(bx,         by, w - 2 * gc_sc, l0, sel == 0) && gc_click ? ( r = 0; );
+  gc_button(bx + w,     by, w - 2 * gc_sc, l1, sel == 1) && gc_click ? ( r = 1; );
+  gc_button(bx + 2 * w, by, w - 2 * gc_sc, l2, sel == 2) && gc_click ? ( r = 2; );
+  r;
+);
+
 // V1.2: ONE field primitive. Draws a numeric field anywhere and returns whether the pointer is
 // over it; it does NOT consume the click - the caller combines `hot` with the frame's gc_click,
 // which is what keeps click arbitration in one place. `id` is the EDIT id, not a slot index:
@@ -2669,6 +2680,46 @@ gc_panel_on ? (
       ( gc_pfield = 100 + gc_b * 10 + 1; gc_pfield_v = slider(ceb[gc_b] + 2); );
     gc_b += 1;
   );
+);
+
+// ---- V1.2: the expanded card, drawn in the gap the rows opened for it. One at a time: the row
+// heights above already account for exactly this block.
+gc_card_on ? (
+  gc_cb = gc_open - 1;
+  gc_cy = gc_rows_y + gc_open * gc_rh + 4 * gc_sc;
+  gfx_set(0.10, 0.11, 0.14, 1);
+  gfx_rect(gc_px, gc_cy, N_BANDS * 34 * gc_sc + 240 * gc_sc, gc_card_h - 8 * gc_sc);
+
+  gfx_set(0.6, 0.6, 0.65, 1);
+  gfx_x = gc_px + 6 * gc_sc; gfx_y = gc_cy + 6 * gc_sc; gfx_drawstr("Stereo");
+  gc_seg = gc_seg3(gc_px + 60 * gc_sc, gc_cy + 4 * gc_sc, 180 * gc_sc,
+                   slider(dynb[gc_cb] + 2), "Linked", "Dual L/R", "Dual M/S");
+  gc_seg >= 0 ? ( gc_w_stereo(gc_cb, gc_seg); );
+
+  gc_field_at(100 + gc_cb * 10 + 2, gc_px + 250 * gc_sc, gc_cy + 4 * gc_sc, 110 * gc_sc,
+              "Atk ", slider(dynb[gc_cb] + 5), 2) ?
+    ( gc_pfield = 100 + gc_cb * 10 + 2; gc_pfield_v = slider(dynb[gc_cb] + 5); );
+  gc_field_at(100 + gc_cb * 10 + 3, gc_px + 366 * gc_sc, gc_cy + 4 * gc_sc, 110 * gc_sc,
+              "Rel ", slider(dynb[gc_cb] + 6), 0) ?
+    ( gc_pfield = 100 + gc_cb * 10 + 3; gc_pfield_v = slider(dynb[gc_cb] + 6); );
+
+  // Micro is PERCENT of a bit, step 0.1 %, which yields 0.001 bit after the division by 100.
+  // The total beside it is what the stage actually does: Macro + Micro/100, in bits below 0.
+  gc_field_at(100 + gc_cb * 10 + 4, gc_px + 6 * gc_sc, gc_cy + 30 * gc_sc, 130 * gc_sc,
+              "Soft Micro % ", slider(dynb[gc_cb] + 4), 1) ?
+    ( gc_pfield = 100 + gc_cb * 10 + 4; gc_pfield_v = slider(dynb[gc_cb] + 4); );
+  gfx_set(0.55, 0.55, 0.6, 1);
+  gfx_x = gc_px + 142 * gc_sc; gfx_y = gc_cy + 34 * gc_sc;
+  gfx_drawstr("= "); gfx_drawnumber(slider(dynb[gc_cb] + 3) + slider(dynb[gc_cb] + 4) * 0.01, 2);
+  gfx_drawstr(" bits");
+
+  gc_field_at(100 + gc_cb * 10 + 5, gc_px + 250 * gc_sc, gc_cy + 30 * gc_sc, 130 * gc_sc,
+              "Hard Micro % ", slider(ceb[gc_cb] + 3), 1) ?
+    ( gc_pfield = 100 + gc_cb * 10 + 5; gc_pfield_v = slider(ceb[gc_cb] + 3); );
+  gfx_set(0.55, 0.55, 0.6, 1);
+  gfx_x = gc_px + 386 * gc_sc; gfx_y = gc_cy + 34 * gc_sc;
+  gfx_drawstr("= "); gfx_drawnumber(slider(ceb[gc_cb] + 2) + slider(ceb[gc_cb] + 3) * 0.01, 2);
+  gfx_drawstr(" bits");
 );
 
 // ---- V1.2 field controller: press, drag, type. ONE state machine, because the two gestures share
