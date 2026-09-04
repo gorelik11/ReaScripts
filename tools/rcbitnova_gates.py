@@ -79,6 +79,12 @@ SITES = {
     # record 95 and pushed the whole B5-B8 block down by one, while V1.0's 95-record prefix stayed
     # intact so every V1.0-based check still passed.
     "panel-slider-number":   (r"^slider(246):0<0,8,1>-Panel:", "246"),
+    # V1.2: the panel's field metadata, and the name it must NOT reuse. gc_meta was already a
+    # sixteen-word NAMED region for the curve buffers' indices and generations; a second
+    # `gc_meta = 304` would simply have been the last assignment to win, putting the 48 panel words
+    # at a dead address while every panel read landed in the curve region. Silent, both ways.
+    "panel-meta-address":    (r"^gc_fmeta = (\d+);", "304"),
+    "curve-meta-unshadowed": (r"^gc_meta\s+= (gc_snap \+ 128);", "gc_snap + 128"),
     "table-decl-stb":        (r"^stb\s+= (\d+);", "272"),
     "table-decl-dynb":       (r"^dynb\s+= (\d+);", "280"),
     "table-decl-ceb":        (r"^ceb\s+= (\d+);", "288"),

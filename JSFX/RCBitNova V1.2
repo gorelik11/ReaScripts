@@ -293,6 +293,38 @@ ceb[4]  = 230;
 ceb[5]  = 234;
 ceb[6]  = 238;
 ceb[7]  = 242;   // stride 4, not 10: the block is three sliders wide and at 10 B8 would need 261
+
+// ---- V1.2: panel field metadata. One row per EDITABLE panel slot, read by the field controller
+// so no range, step or writer is spelled out twice.
+//
+// NOT called gc_meta: that name is already taken, by the sixteen NAMED words at gc_snap + 128 that
+// carry the curve buffers' indices and generations. Reusing it would have put these 48 words at a
+// dead address while every panel read landed in the curve region - silently, since EEL2 simply
+// takes the last assignment. The plan said gc_meta; the source said otherwise.
+//
+// `writer` is a numeric FAMILY ID, never a callable: metadata may choose a writer, only a named
+// writer may assign a slider. EEL2 has no function references, and the generic writer the tuple
+// invites would assign through slider(computed_index) - which V1.0 proved live never reaches the
+// parameter.
+W_DYN = 1; W_DYNMODE = 2; W_SOFT = 3; W_HARD = 4; W_SOFTCEIL = 5; W_HARDCEIL = 6;
+W_STEREO = 7; W_ATK = 8; W_REL = 9; W_SOFTMICRO = 10; W_HARDMICRO = 11;
+
+// slot -> (table_base_id, offset, lo, hi, step, decimals, drag_units, writer_id)
+// table_base_id: 0 = stb, 1 = dynb, 2 = ceb.   drag_units = LOGICAL pixels per step.
+// 48 words at 304..351: nb_list ends at 303 and mb_band is a literal 1024.
+gc_fmeta = 304;
+// slot 0 Soft ceiling   dynb+3   0..16     0.05  2 dec  12 px  W_SOFTCEIL
+gc_fmeta[0]=1;  gc_fmeta[1]=3;  gc_fmeta[2]=0;    gc_fmeta[3]=16;  gc_fmeta[4]=0.05; gc_fmeta[5]=2; gc_fmeta[6]=12; gc_fmeta[7]=W_SOFTCEIL;
+// slot 1 Hard ceiling   ceb+2    0..16     0.05  2 dec  12 px  W_HARDCEIL
+gc_fmeta[8]=2;  gc_fmeta[9]=2;  gc_fmeta[10]=0;   gc_fmeta[11]=16; gc_fmeta[12]=0.05; gc_fmeta[13]=2; gc_fmeta[14]=12; gc_fmeta[15]=W_HARDCEIL;
+// slot 2 Attack         dynb+5   0.05..50  0.01  2 dec   8 px  W_ATK
+gc_fmeta[16]=1; gc_fmeta[17]=5; gc_fmeta[18]=0.05; gc_fmeta[19]=50; gc_fmeta[20]=0.01; gc_fmeta[21]=2; gc_fmeta[22]=8; gc_fmeta[23]=W_ATK;
+// slot 3 Release        dynb+6   1..500    1     0 dec   4 px  W_REL
+gc_fmeta[24]=1; gc_fmeta[25]=6; gc_fmeta[26]=1;   gc_fmeta[27]=500; gc_fmeta[28]=1; gc_fmeta[29]=0; gc_fmeta[30]=4; gc_fmeta[31]=W_REL;
+// slot 4 Soft Micro     dynb+4   -100..100 0.1   1 dec   6 px  W_SOFTMICRO
+gc_fmeta[32]=1; gc_fmeta[33]=4; gc_fmeta[34]=-100; gc_fmeta[35]=100; gc_fmeta[36]=0.1; gc_fmeta[37]=1; gc_fmeta[38]=6; gc_fmeta[39]=W_SOFTMICRO;
+// slot 5 Hard Micro     ceb+3    -100..100 0.1   1 dec   6 px  W_HARDMICRO
+gc_fmeta[40]=2; gc_fmeta[41]=3; gc_fmeta[42]=-100; gc_fmeta[43]=100; gc_fmeta[44]=0.1; gc_fmeta[45]=1; gc_fmeta[46]=6; gc_fmeta[47]=W_HARDMICRO;
 memset(dst, 0, N_BANDS * 4);
 memset(cst, 0, N_BANDS * 4);
 i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
@@ -846,6 +878,8 @@ memset(gc_trace, 0, gc_hits + 8 - gc_trace);
 gc_drag = -1; gc_sel = -1; gc_last_cap = 0; gc_last_wheel = 0; gc_hover = -1; gc_hit_n = 0;
 gc_cyc_n = 0; gc_cyc_x = -1000000; gc_cyc_y = -1000000; gc_cyc_t = -1000000;
 gc_edit = -1; gc_elen = 0; gc_fdrag = -1; gc_fnode = -1;   // numeric entry: which field has focus, and how many chars typed          // V1.0 GUI region: indices, generations and grids start clean
+gc_cap = -1; gc_cap_v = 0; gc_cap_y = 0; gc_dragging = 0;   // V1.2 field controller: captured field, value at press
+gc_pfield = -1; gc_pfield_v = 0;   // the panel field under the pointer THIS frame, and its value
 act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
 mt_state = 0; mt_pos = 0; mt_g = 1; mt_pend = 0; mt_ready = 1;
 mt_hold = 0; mt_blocks = 0; mt_just_committed = 0;
@@ -1460,16 +1494,21 @@ function gc_button(bx, by, bw, label, on) local(hot) (
   gfx_drawstr(label);
   hot;
 );
-function gc_field(i, label, value, dec) local(fx, hot) (
-  fx = gc_px + i * (gc_fw + 8 * gc_sc);
-  hot = (mouse_x >= fx && mouse_x < fx + gc_fw && mouse_y >= gc_fy && mouse_y < gc_fy + gc_fh);
-  gc_edit == i ? gfx_set(0.25, 0.35, 0.5, 1) : hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
-  gfx_rect(fx, gc_fy, gc_fw, gc_fh);
+// V1.2: ONE field primitive. Draws a numeric field anywhere and returns whether the pointer is
+// over it; it does NOT consume the click - the caller combines `hot` with the frame's gc_click,
+// which is what keeps click arbitration in one place. `id` is the EDIT id, not a slot index:
+// 0..5 are the readout fields and keep their present meaning, panel fields use
+// 100 + band * 10 + slot. One integer, no new state.
+function gc_field_at(id, bx, by, bw, label, value, dec) local(hot) (
+  hot = mouse_x >= bx && mouse_x < bx + bw && mouse_y >= by && mouse_y < by + gc_fh;
+  gc_edit == id ? gfx_set(0.25, 0.35, 0.5, 1) :
+    hot ? gfx_set(0.2, 0.2, 0.22, 1) : gfx_set(0.14, 0.14, 0.16, 1);
+  gfx_rect(bx, by, bw, gc_fh);
   gfx_set(0.6, 0.6, 0.65, 1);
-  gfx_x = fx + 4 * gc_sc; gfx_y = gc_fy + 4 * gc_sc;
+  gfx_x = bx + 4 * gc_sc; gfx_y = by + 4 * gc_sc;
   gfx_drawstr(label);
   gfx_set(0.9, 0.9, 0.95, 1);
-  gc_edit == i ? (
+  gc_edit == id ? (
     // show what is being typed, with a cursor
     gc_ci = 0;
     loop(gc_elen, gfx_drawchar(gc_ebuf[gc_ci]); gc_ci += 1;);
@@ -1478,6 +1517,34 @@ function gc_field(i, label, value, dec) local(fx, hot) (
     gfx_drawnumber(value, dec);
   );
   hot;
+);
+
+// The five readout fields keep their behaviour and become calls to it, so there is one field
+// primitive rather than two that drift apart.
+function gc_field(i, label, value, dec) (
+  gc_field_at(i, gc_px + i * (gc_fw + 8 * gc_sc), gc_fy, gc_fw, label, value, dec);
+);
+
+// Which slider a (band, slot) pair edits. READ path only - writes go through a named writer.
+function gc_slot_slider(b, slot) local(tb) (
+  tb = gc_fmeta[slot*8];
+  (tb == 0 ? stb[b] : tb == 1 ? dynb[b] : ceb[b]) + gc_fmeta[slot*8 + 1];
+);
+
+// The one dispatcher. Clamp AND quantise before dispatching: off-grid GUI writes are what left
+// -62 dB of null residue in V1.0, found live 2026-08-18.
+function gc_field_commit(id, v) local(b, slot, w, lo, hi, st) (
+  b = floor((id - 100) / 10); slot = (id - 100) % 10;
+  lo = gc_fmeta[slot*8 + 2]; hi = gc_fmeta[slot*8 + 3]; st = gc_fmeta[slot*8 + 4];
+  v = min(max(v, lo), hi);
+  v = floor(v / st + 0.5) * st;
+  w = gc_fmeta[slot*8 + 7];
+  w == W_SOFTCEIL  ? ( gc_w_softceil(b, v);  ) :
+  w == W_HARDCEIL  ? ( gc_w_hardceil(b, v);  ) :
+  w == W_ATK       ? ( gc_w_atk(b, v);       ) :
+  w == W_REL       ? ( gc_w_rel(b, v);       ) :
+  w == W_SOFTMICRO ? ( gc_w_softmicro(b, v); ) :
+  w == W_HARDMICRO ? ( gc_w_hardmicro(b, v); );
 );
 
 @slider
@@ -2172,6 +2239,11 @@ gc_mixed ? (
 gc_click = (mouse_cap & 1) && !(gc_last_cap & 1);
 gc_rclick = (mouse_cap & 2) && !(gc_last_cap & 2);   // ONE detection, two consumers
 
+// V1.2: the panel field under the pointer is republished every frame, by the rows and the card as
+// they draw. Reset it HERE, before anything hit-tests: left stale at 0 it would read as "field id
+// 0 is under the pointer", and every click anywhere would capture the Freq readout.
+gc_pfield = -1; gc_pfield_v = 0;
+
 // Collect EVERY node under the pointer, disabled ones included - that is how a band gets
 // enabled. The selection rule below is still V1.0's (the last match wins, i.e. the topmost band
 // index); coincident-node cycling replaces only that one line, later. Building the set here
@@ -2529,6 +2601,36 @@ gc_strip_on ? (
   );
 );
 
+// ---- V1.2 field controller: press, drag, type. ONE state machine, because the two gestures share
+// a button. Rev 2 of the spec described a contradiction - a press gives typing focus AND arms a
+// drag, yet a drag never begins while the field has focus - which on the initiating press makes
+// both true and nothing can ever start dragging. The transition belongs at the THRESHOLD:
+//
+//   mouse-down on a field        capture it and record the value; no edit mode yet
+//   past 4 logical px captured   start dragging, and clear any existing edit focus
+//   release before the threshold this field gets typing focus
+//   release while dragging       disarm; focus is untouched
+//
+// Right-click is not the alternative here even though both references use it for keyboard entry:
+// it is already the band context menu, and a third meaning for one button is worse than this.
+gc_click && gc_pfield >= 0 ? ( gc_cap = gc_pfield; gc_cap_v = gc_pfield_v; gc_cap_y = mouse_y;
+                               gc_dragging = 0; );
+gc_cap >= 0 && (mouse_cap & 1) ? (
+  !gc_dragging && abs(mouse_y - gc_cap_y) / gc_sc >= 4 ? ( gc_dragging = 1; gc_edit = -1;
+                                                           gc_elen = 0; );
+  gc_dragging ? (
+    gc_slot = (gc_cap - 100) % 10;
+    gc_v = gc_cap_v - floor((mouse_y - gc_cap_y) / gc_sc / gc_fmeta[gc_slot*8 + 6])
+                      * gc_fmeta[gc_slot*8 + 4];
+    gc_v != slider(gc_slot_slider(floor((gc_cap - 100) / 10), gc_slot)) ?
+      ( gc_field_commit(gc_cap, gc_v); );
+  );
+);
+!(mouse_cap & 1) && gc_cap >= 0 ? (
+  !gc_dragging ? ( gc_edit = gc_cap; gc_elen = 0; );   // a short press is a focus click
+  gc_cap = -1; gc_dragging = 0;
+);
+
 // click a field to focus it
 gc_click ? (
   gc_h0 ? ( gc_edit = 0; gc_elen = 0; ) :
@@ -2537,7 +2639,7 @@ gc_click ? (
   gc_h3 ? ( gc_edit = 3; gc_elen = 0; ) :
   gc_h4 ? ( gc_edit = 4; gc_elen = 0; ) :
   gc_h5 ? ( gc_edit = 5; gc_elen = 0; ) :
-           ( gc_edit = -1; );
+  gc_pfield < 0 ? ( gc_edit = -1; );     // only clear when nothing else claimed this click
 );
 
 // ---- keyboard. ALL queued keys are consumed in a while loop while a field has focus:
@@ -2557,8 +2659,13 @@ gc_edit >= 0 ? (
       );
       gc_neg ? gc_val = -gc_val;
       gc_elen > 0 ? (
-        // typed values are NOT quantised: the owner asked to be able to enter any number.
-        // Mouse gestures snap to the slider grid; the keyboard is the precision path.
+        // The five readout fields do NOT quantise typed values: the owner asked to be able to
+        // enter any number, so mouse gestures snap to the slider grid and the keyboard is the
+        // precision path. PANEL fields follow the other precedent - gc_w_qchar's - and clamp and
+        // quantise, inside gc_field_commit. Deliberate, not an oversight: a panel field is the
+        // only way to reach these parameters from the GUI, so an off-grid value typed here would
+        // be reachable from the plugin and unreachable from the host.
+        gc_edit >= 100 ? ( gc_field_commit(gc_edit, gc_val); ) :
         gc_edit == 0 ? gc_w_freq (gc_sel, min(max(gc_val,20),20000), 0) :
         gc_edit == 1 ? gc_w_macro(gc_sel, min(max(gc_val,-16),16),   0) :
         gc_edit == 2 ? gc_w_micro(gc_sel, min(max(gc_val,-100),100), 0) :
