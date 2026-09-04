@@ -1172,6 +1172,157 @@ function gc_w_qchar(b, v) (
 );
 
 
+// ---- V1.2 dynamics writers. Same two lessons as the nine above - named branches, and
+// rebuild here rather than trusting @slider - plus a third that is this panel's own:
+// mbmode[b], hc[b] and the any_b fold belong to apply_band_dyn_global, not to
+// setup_band_dyn. A writer that changes them must go through the helper, which also raises
+// pdc_dirty so @block republishes the delay. Values arrive already quantised: the field
+// primitive owns the step, so these take (b, v) and write what they are given.
+
+// Dyn on/off: setup_band_dyn owns dp[b*4+3], the helper owns the any_b fold.
+function gc_w_dyn(b, v) (
+  b == 0 ? ( slider51 = v; slider_automate(slider51); ) :
+  b == 1 ? ( slider61 = v; slider_automate(slider61); ) :
+  b == 2 ? ( slider71 = v; slider_automate(slider71); ) :
+  b == 3 ? ( slider81 = v; slider_automate(slider81); ) :
+  b == 4 ? ( slider191 = v; slider_automate(slider191); ) :
+  b == 5 ? ( slider201 = v; slider_automate(slider201); ) :
+  b == 6 ? ( slider211 = v; slider_automate(slider211); ) :
+           ( slider221 = v; slider_automate(slider221); );
+  setup_band_dyn(b); apply_band_dyn_global(b);
+);
+
+// Stereo mode feeds dm[b], which setup_band_dyn writes.
+function gc_w_stereo(b, v) (
+  b == 0 ? ( slider52 = v; slider_automate(slider52); ) :
+  b == 1 ? ( slider62 = v; slider_automate(slider62); ) :
+  b == 2 ? ( slider72 = v; slider_automate(slider72); ) :
+  b == 3 ? ( slider82 = v; slider_automate(slider82); ) :
+  b == 4 ? ( slider192 = v; slider_automate(slider192); ) :
+  b == 5 ? ( slider202 = v; slider_automate(slider202); ) :
+  b == 6 ? ( slider212 = v; slider_automate(slider212); ) :
+           ( slider222 = v; slider_automate(slider222); );
+  setup_band_dyn(b);
+);
+
+// Soft Ceiling Macro: dp[b*4] is rebuilt from Macro and Micro together.
+function gc_w_softceil(b, v) (
+  b == 0 ? ( slider53 = v; slider_automate(slider53); ) :
+  b == 1 ? ( slider63 = v; slider_automate(slider63); ) :
+  b == 2 ? ( slider73 = v; slider_automate(slider73); ) :
+  b == 3 ? ( slider83 = v; slider_automate(slider83); ) :
+  b == 4 ? ( slider193 = v; slider_automate(slider193); ) :
+  b == 5 ? ( slider203 = v; slider_automate(slider203); ) :
+  b == 6 ? ( slider213 = v; slider_automate(slider213); ) :
+           ( slider223 = v; slider_automate(slider223); );
+  setup_band_dyn(b);
+);
+
+// Soft Ceiling Micro: the other half of dp[b*4].
+function gc_w_softmicro(b, v) (
+  b == 0 ? ( slider54 = v; slider_automate(slider54); ) :
+  b == 1 ? ( slider64 = v; slider_automate(slider64); ) :
+  b == 2 ? ( slider74 = v; slider_automate(slider74); ) :
+  b == 3 ? ( slider84 = v; slider_automate(slider84); ) :
+  b == 4 ? ( slider194 = v; slider_automate(slider194); ) :
+  b == 5 ? ( slider204 = v; slider_automate(slider204); ) :
+  b == 6 ? ( slider214 = v; slider_automate(slider214); ) :
+           ( slider224 = v; slider_automate(slider224); );
+  setup_band_dyn(b);
+);
+
+// Attack feeds dp[b*4+1], a per-srate coefficient.
+function gc_w_atk(b, v) (
+  b == 0 ? ( slider55 = v; slider_automate(slider55); ) :
+  b == 1 ? ( slider65 = v; slider_automate(slider65); ) :
+  b == 2 ? ( slider75 = v; slider_automate(slider75); ) :
+  b == 3 ? ( slider85 = v; slider_automate(slider85); ) :
+  b == 4 ? ( slider195 = v; slider_automate(slider195); ) :
+  b == 5 ? ( slider205 = v; slider_automate(slider205); ) :
+  b == 6 ? ( slider215 = v; slider_automate(slider215); ) :
+           ( slider225 = v; slider_automate(slider225); );
+  setup_band_dyn(b);
+);
+
+// Release feeds dp[b*4+2].
+function gc_w_rel(b, v) (
+  b == 0 ? ( slider56 = v; slider_automate(slider56); ) :
+  b == 1 ? ( slider66 = v; slider_automate(slider66); ) :
+  b == 2 ? ( slider76 = v; slider_automate(slider76); ) :
+  b == 3 ? ( slider86 = v; slider_automate(slider86); ) :
+  b == 4 ? ( slider196 = v; slider_automate(slider196); ) :
+  b == 5 ? ( slider206 = v; slider_automate(slider206); ) :
+  b == 6 ? ( slider216 = v; slider_automate(slider216); ) :
+           ( slider226 = v; slider_automate(slider226); );
+  setup_band_dyn(b);
+);
+
+// Dyn Mode is mbmode[b] - owned by the helper, and it moves the any_b fold.
+function gc_w_dynmode(b, v) (
+  b == 0 ? ( slider57 = v; slider_automate(slider57); ) :
+  b == 1 ? ( slider67 = v; slider_automate(slider67); ) :
+  b == 2 ? ( slider77 = v; slider_automate(slider77); ) :
+  b == 3 ? ( slider87 = v; slider_automate(slider87); ) :
+  b == 4 ? ( slider197 = v; slider_automate(slider197); ) :
+  b == 5 ? ( slider207 = v; slider_automate(slider207); ) :
+  b == 6 ? ( slider217 = v; slider_automate(slider217); ) :
+           ( slider227 = v; slider_automate(slider227); );
+  apply_band_dyn_global(b);
+);
+
+// Soft is read per sample from the slider; setup_band_dyn keeps dp coherent.
+function gc_w_soft(b, v) (
+  b == 0 ? ( slider58 = v; slider_automate(slider58); ) :
+  b == 1 ? ( slider68 = v; slider_automate(slider68); ) :
+  b == 2 ? ( slider78 = v; slider_automate(slider78); ) :
+  b == 3 ? ( slider88 = v; slider_automate(slider88); ) :
+  b == 4 ? ( slider198 = v; slider_automate(slider198); ) :
+  b == 5 ? ( slider208 = v; slider_automate(slider208); ) :
+  b == 6 ? ( slider218 = v; slider_automate(slider218); ) :
+           ( slider228 = v; slider_automate(slider228); );
+  setup_band_dyn(b);
+);
+
+// Hard on/off. The helper owns hc[b] and republishes PDC.
+function gc_w_hard(b, v) (
+  b == 0 ? ( slider91 = v; slider_automate(slider91); ) :
+  b == 1 ? ( slider101 = v; slider_automate(slider101); ) :
+  b == 2 ? ( slider111 = v; slider_automate(slider111); ) :
+  b == 3 ? ( slider121 = v; slider_automate(slider121); ) :
+  b == 4 ? ( slider231 = v; slider_automate(slider231); ) :
+  b == 5 ? ( slider235 = v; slider_automate(slider235); ) :
+  b == 6 ? ( slider239 = v; slider_automate(slider239); ) :
+           ( slider243 = v; slider_automate(slider243); );
+  apply_band_dyn_global(b);
+);
+
+// Hard Ceiling Macro: hc[b] is the helper's, not setup_band_dyn's.
+function gc_w_hardceil(b, v) (
+  b == 0 ? ( slider92 = v; slider_automate(slider92); ) :
+  b == 1 ? ( slider102 = v; slider_automate(slider102); ) :
+  b == 2 ? ( slider112 = v; slider_automate(slider112); ) :
+  b == 3 ? ( slider122 = v; slider_automate(slider122); ) :
+  b == 4 ? ( slider232 = v; slider_automate(slider232); ) :
+  b == 5 ? ( slider236 = v; slider_automate(slider236); ) :
+  b == 6 ? ( slider240 = v; slider_automate(slider240); ) :
+           ( slider244 = v; slider_automate(slider244); );
+  apply_band_dyn_global(b);
+);
+
+// Hard Ceiling Micro: the other half of hc[b].
+function gc_w_hardmicro(b, v) (
+  b == 0 ? ( slider93 = v; slider_automate(slider93); ) :
+  b == 1 ? ( slider103 = v; slider_automate(slider103); ) :
+  b == 2 ? ( slider113 = v; slider_automate(slider113); ) :
+  b == 3 ? ( slider123 = v; slider_automate(slider123); ) :
+  b == 4 ? ( slider233 = v; slider_automate(slider233); ) :
+  b == 5 ? ( slider237 = v; slider_automate(slider237); ) :
+  b == 6 ? ( slider241 = v; slider_automate(slider241); ) :
+           ( slider245 = v; slider_automate(slider245); );
+  apply_band_dyn_global(b);
+);
+
+
 // HP/LP: recompute the cascade exactly as @slider does, and mark the linear kernel dirty so
 // @block rebuilds it. Without this a slope change only took effect after reloading the plugin.
 function gc_apply_hplp(eng) local(kk) (

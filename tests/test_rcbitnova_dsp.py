@@ -2864,6 +2864,16 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("b == 6 ? ( slider173 = v; slider_automate(slider173); ) :",
                          "b == 6 ? ( slider175 = v; slider_automate(slider175); ) :"),
      "gc_w_freq writes sliders"),
+    # dynamics writers: one digit, one wrong TABLE, and one that rebuilds but never republishes
+    (lambda t: t.replace("b == 6 ? ( slider211 = v; slider_automate(slider211); ) :",
+                         "b == 6 ? ( slider212 = v; slider_automate(slider212); ) :"),
+     "gc_w_dyn writes sliders"),
+    (lambda t: t.replace("function gc_w_hardceil(b, v) (\n  b == 0 ? ( slider92",
+                         "function gc_w_hardceil(b, v) (\n  b == 0 ? ( slider53"),
+     "gc_w_hardceil writes sliders"),          # wrong TABLE, not just a wrong digit
+    (lambda t: t.replace("  setup_band_dyn(b); apply_band_dyn_global(b);\n);",
+                         "  setup_band_dyn(b);\n);"),
+     "gc_w_dyn does not call apply_band_dyn_global(b)"),
 ]
 
 

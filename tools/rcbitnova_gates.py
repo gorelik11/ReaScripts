@@ -145,8 +145,33 @@ FORBIDDEN = [
 
 TABLE_ENTRY = re.compile(r"^\s*(stb|dynb|ceb)\[(\d+)\]\s*=\s*(\d+);", re.M)
 
-WRITERS = {"gc_w_enable": 1, "gc_w_type": 2, "gc_w_freq": 3, "gc_w_q": 4, "gc_w_macro": 5,
-           "gc_w_micro": 6, "gc_w_ratio": 7, "gc_w_place": 8, "gc_w_qchar": 9}
+# name -> (table, offset, step, rebuilds, publishes)
+#   rebuilds  : exact call strings the body MUST contain
+#   publishes : must go through apply_band_dyn_global (which sets pdc_dirty).
+#               SEPARATE from rebuilds on purpose - one field doing both is how a writer that
+#               rebuilds but never republishes PDC passes the gate.
+WRITERS = {
+    "gc_w_enable":    ("stb",  1, 1,    ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_type":      ("stb",  2, 1,    ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_freq":      ("stb",  3, 1,    ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_q":         ("stb",  4, 0.001,("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_macro":     ("stb",  5, 1,    ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_micro":     ("stb",  6, 0.1,  ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_ratio":     ("stb",  7, 0.05, ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_place":     ("stb",  8, 1,    ("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_qchar":     ("stb",  9, 0.001,("setup_band(b)", "setup_band_dyn(b)"), False),
+    "gc_w_dyn":       ("dynb", 1, 1,    ("setup_band_dyn(b)", "apply_band_dyn_global(b)"), True),
+    "gc_w_stereo":    ("dynb", 2, 1,    ("setup_band_dyn(b)",), False),
+    "gc_w_softceil":  ("dynb", 3, 0.05, ("setup_band_dyn(b)",), False),
+    "gc_w_softmicro": ("dynb", 4, 0.1,  ("setup_band_dyn(b)",), False),
+    "gc_w_atk":       ("dynb", 5, 0.01, ("setup_band_dyn(b)",), False),
+    "gc_w_rel":       ("dynb", 6, 1,    ("setup_band_dyn(b)",), False),
+    "gc_w_dynmode":   ("dynb", 7, 1,    ("apply_band_dyn_global(b)",), True),
+    "gc_w_soft":      ("dynb", 8, 1,    ("setup_band_dyn(b)",), False),
+    "gc_w_hard":      ("ceb",  1, 1,    ("apply_band_dyn_global(b)",), False),
+    "gc_w_hardceil":  ("ceb",  2, 0.05, ("apply_band_dyn_global(b)",), False),
+    "gc_w_hardmicro": ("ceb",  3, 0.1,  ("apply_band_dyn_global(b)",), False),
+}
 
 AUDIO = [n for n, _, _ in layout.AUDIO_CHAIN]
 GUI = ["gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc", "gc_ebuf", "gc_hits"]
@@ -266,17 +291,29 @@ def _function_body(text, name):
 
 
 def check_writers(text, path):
-    bases = layout.base_tables(8)["stb"]
-    for fn, off in WRITERS.items():
+    tables = layout.base_tables(8)
+    for fn, (table, off, _step, rebuilds, publishes) in WRITERS.items():
         body = _function_body(text, fn)
         assert body, f"{path}: writer {fn} not found"
-        want = [str(base + off) for base in bases]
+        want = [str(tables[table][b] + off) for b in range(8)]
         got = re.findall(r"slider(\d+) = v;", body)
         assert got == want, f"{path}: {fn} writes sliders {got}, expected {want}"
         assert len(re.findall(r"slider_automate\(", body)) == 8, \
             f"{path}: {fn} must call slider_automate in all eight branches"
-        assert "setup_band(b)" in body, f"{path}: {fn} does not rebuild static coefficients"
-        assert "setup_band_dyn(b)" in body, f"{path}: {fn} does not rebuild dynamics"
+        for call in rebuilds:
+            assert call in body, f"{path}: {fn} does not call {call}"
+        if publishes:
+            assert "apply_band_dyn_global(b)" in body, \
+                f"{path}: {fn} changes state that feeds PDC and must go through the helper"
+        assert "topo_pdc(" not in body, \
+            f"{path}: {fn} calls topo_pdc directly - it writes variables REAPER reads, and @block " \
+            f"publishes them from pdc_dirty"
+        # write, automate, THEN rebuild: the helper folds any_b by reading sliders, so rebuilding
+        # first would fold the previous value and leave the state one gesture behind.
+        first_write = body.index("slider_automate(")
+        for call in rebuilds:
+            assert body.index(call) > first_write, \
+                f"{path}: {fn} calls {call} before writing the slider"
 
 
 def check_addresses(text, path):
