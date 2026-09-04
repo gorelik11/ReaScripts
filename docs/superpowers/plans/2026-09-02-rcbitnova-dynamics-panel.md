@@ -276,7 +276,7 @@ git commit -m "feat(rcbitnova): V1.2 as an exact copy of V1.1, tools made versio
 
 **Files:** modify `JSFX/RCBitNova V1.2`, `tools/rcbitnova_gates.py`
 
-- [ ] **Step 1: Declare it after every existing slider**
+- [ ] **Step 1: Number it above every existing slider**
 
 At the very end of the slider block — after `slider245`, not after `slider142`:
 

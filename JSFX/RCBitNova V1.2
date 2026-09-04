@@ -222,6 +222,18 @@ slider243:0<0,1,1{Off,On}>-B8 Hard
 slider244:0<0,16,0.05>-B8 Hard Ceiling Macro (bits below 0)
 slider245:0<-100,100,0.1>-B8 Hard Ceiling Micro (% bit)
 
+// ---- V1.2 panel state. The NUMBER is what matters, not where this line sits.
+// MEASURED 2026-09-04, and it contradicts what this project believed until today: REAPER orders
+// parameters by SLIDER NUMBER, not by declaration order. Declared last but numbered 143, this
+// landed at record 95 and pushed B5 Enable to 96 - shifting all eighty B5-B8 records while V1.0's
+// 95-record prefix stayed intact, so every V1.0-based check still passed. Numbered 246, above
+// every existing slider, it is record 175 and nothing moves.
+//
+// An ENUM, not a bitmask: the geometry draws one card at a time, and a mask would accept all 256
+// subsets from Param, automation or a preset. The invalid state is unrepresentable rather than
+// sanitised on every read.
+slider246:0<0,8,1>-Panel: open dynamics card (0 none, 1..8 band)
+
 
 @init
 

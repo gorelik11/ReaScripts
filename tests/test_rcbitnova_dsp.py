@@ -2779,7 +2779,8 @@ def test_v11_curve_covers_all_three_slider_families():
     assert curve.band_slider(0, 1) == 11 and curve.band_slider(7, 1) == 181     # Enable
     assert curve.dyn_slider(0, 1) == 51 and curve.dyn_slider(7, 1) == 221       # Dyn
     assert curve.ceil_slider(0, 1) == 91 and curve.ceil_slider(7, 1) == 243     # Hard
-    assert curve.ceil_slider(7, 3) == 245, "the highest number V1.1 declares"
+    assert curve.ceil_slider(7, 3) == 245, \
+        "the highest BAND slider; V1.2 adds only the panel state above it, at 246"
 
 
 def test_v11_curve_helpers_agree_with_the_tables_for_every_band():
@@ -2798,7 +2799,7 @@ def _needs_projection(text=None):
     """The gate has two phases and this suite has to be right in both. Before Task 5 the source is
     still four-band and the contract is checked against a projection; after it, against the real
     text. Hard-coding project=True made sixteen tests fail the moment the count was raised."""
-    text = open(gates.V11).read() if text is None else text
+    text = open(gates.V12).read() if text is None else text
     return "N_BANDS = 4;" in text
 
 
@@ -2807,11 +2808,11 @@ def test_v11_gate_passes_on_the_clean_source():
     by the very source they were written for - a row that matched nothing, a line-anchored regex
     against four entries per line, an evaluator that read `st` as a loop counter. Mutants prove
     rejection; only this proves the contract is satisfiable at all."""
-    gates.check_source(gates.V11, project=_needs_projection())
+    gates.check_source(gates.V12, project=_needs_projection())
 
 
 def test_v11_gate_pieces_agree_on_the_table_block():
-    text = open(gates.V11).read()
+    text = open(gates.V12).read()
     assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
     assert gates.eval_init(text, ["st"])["st"] == 64, "the address block must beat the loop counter"
     gates.check_tables(text, "clean")
@@ -2868,7 +2869,7 @@ SEEDED_DEFECTS = [
 
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
-    clean = open(gates.V11).read()
+    clean = open(gates.V12).read()
     mutated = mutate(clean)
     assert mutated != clean, f"the seeding lambda for {expect!r} changed nothing"
     src = tmp_path / "mutant"

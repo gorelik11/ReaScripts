@@ -32,7 +32,7 @@ V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, i
                                      # projects. Never edited again.
 V12 = "JSFX/RCBitNova V1.2"          # the working file - every source check below targets this
 N_DECLARED_V11 = 175                 # frozen forever
-N_DECLARED_V12 = 175                 # becomes 176 when the panel slider is declared
+N_DECLARED_V12 = 176                 # 175 inherited + the panel-state slider, last
 
 # finditer, not match: several assignments can share a line, and anchoring to the first one loses
 # the rest.
@@ -74,6 +74,11 @@ def eval_init(text, wanted):
 # --------------------------------------------------------------------------------------------
 SITES = {
     "count-declaration":     (r"^N_BANDS = (\d+);", "8"),
+    # The panel slider's NUMBER must be above every existing one. REAPER orders parameters by
+    # slider number, not by declaration order (measured 2026-09-04): numbered 143 it landed at
+    # record 95 and pushed the whole B5-B8 block down by one, while V1.0's 95-record prefix stayed
+    # intact so every V1.0-based check still passed.
+    "panel-slider-number":   (r"^slider(246):0<0,8,1>-Panel:", "246"),
     "table-decl-stb":        (r"^stb\s+= (\d+);", "272"),
     "table-decl-dynb":       (r"^dynb\s+= (\d+);", "280"),
     "table-decl-ceb":        (r"^ceb\s+= (\d+);", "288"),

@@ -383,12 +383,19 @@ open card, and Param, automation or a preset could hand the GUI a value it canno
 makes the invalid state unrepresentable instead of asking every reader to sanitise. Written through
 a named `slider143 = v; slider_automate(slider143);`, like every other write.
 
-**It must be declared LAST, after all 175 existing declarations, despite its number** — and the
-reason is worse than the one rev 2 gave.
+**Its NUMBER must be above every existing slider.** Rev 3 said "declared last, despite its
+number" — that was wrong, and measuring it on 2026-09-04 is what showed it.
 
-`slider142` is record **94**; B5's first record is **95**. Declaring `slider143` next to it, where
-it belongs numerically, keeps V1.0's 95-record prefix intact — records 0..94 are untouched — and
-shifts the eighty B5–B8 records to 96..175. So:
+**REAPER orders parameters by slider NUMBER, not by declaration order.** Measured 2026-09-04, and
+it inverts the advice three revisions of this spec and two reviewers agreed on. The earlier "verified
+live" check could not tell the two apart: sliders 151–245 were added both later in the file *and*
+higher in number, so both hypotheses predicted the same result. Numbering the panel slider 143 and
+declaring it last put it at record **95** and pushed `B5 Enable` to 96 — proving the order is
+numeric.
+
+`slider142` is record **94**; B5's first record is **95**. A panel slider numbered anywhere between
+them keeps V1.0's 95-record prefix intact — records 0..94 are untouched — and shifts the eighty
+B5–B8 records to 96..175. So:
 
 - the `--live` gate **passes**: it compares V1.0's 95 records against V1.1's first 95, and those
   still match;
@@ -416,9 +423,11 @@ diff shows what was frozen and when.
 The V1.0 95-record comparison stays as well — it is the migration's contract, and it is a different
 question.
 
-**Seed the defect:** a build with `slider143` declared immediately after `slider142` must be
-rejected, *even though the V1.0 prefix check still passes on it*. A gate that cannot fail on this
-is not protecting anything.
+The panel slider is therefore **`slider246`** — above every existing number, so it sorts to record
+175 and nothing moves. 246–256 are free.
+
+**Seed the defect:** a build numbering it 143 must be rejected, *even though the V1.0 prefix check
+still passes on it*. A gate that cannot fail on this is not protecting anything.
 
 ### 4.2 The declared-count contract has five consumers, not one
 

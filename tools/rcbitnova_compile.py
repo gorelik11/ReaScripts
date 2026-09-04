@@ -1,6 +1,6 @@
 """Does JSFX/RCBitNova V1.1 actually COMPILE?
 
-`n_params == 178` does not answer that. A JSFX with a syntax error in @gfx still loads and still
+`n_params == 179` does not answer that. A JSFX with a syntax error in @gfx still loads and still
 reports every declared slider - which is exactly how `gc_fd = 1e18` (EEL2 has no such literal)
 passed a "compiles: True" check and reached the owner as a broken plugin window.
 
@@ -59,8 +59,8 @@ def check(track_index=0):
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
     problems = []
-    if n != 178:
-        problems.append(f"reports {n} parameters, expected 178")
+    if n != 179:
+        problems.append(f"reports {n} parameters, expected 179")
     for line in text.splitlines():
         low = line.lower()
         if "error" in low or "syntax" in low:
