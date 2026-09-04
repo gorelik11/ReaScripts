@@ -11,9 +11,9 @@
 | Working | `JSFX/RCBitNova V1.2` |
 | Spec | `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` **rev 5** |
 | Plan | `docs/superpowers/plans/2026-09-02-rcbitnova-dynamics-panel.md`, 9 tasks |
-| Done | Tasks 1–4 (`56af29a`, `c086457`, `2063c34`, `33d341b`) |
-| Next | **Task 5** — eleven dynamics writers, 88 named assignments, per-writer gate record |
-| Green | 275 tests · gate 30 sites · null 6/6 identical to V1.1 · compile 179 params |
+| Done | Tasks 1–5 (`56af29a`, `c086457`, `2063c34`, `33d341b`, `8cdb606`) |
+| Next | **Task 6** — one field primitive (`gc_field`) and one interaction controller |
+| Green | 278 tests · gate 30 sites, 20 writers · live: 175 frozen records identical · compile 179 params |
 
 ## The one thing to know before touching parameters
 
@@ -27,6 +27,16 @@ distinguish them: sliders added later in the file *and* higher in number satisfy
 
 What caught it: `tests/fixtures/v11_declared_175.json` — V1.1's 175 records frozen with ranges,
 steps and defaults, compared field by field by `--live`.
+
+## Task 5, in passing
+
+The plan's own writer sample could not have passed the plan's own gate: it aligns the assignments
+(`slider51  = v;`) and the gate matches `slider(\d+) = v;` with one space. The nine V1.0 writers
+are unpadded, so the house style was already the correct answer. Cost five minutes; worth knowing
+that a plan's code blocks are not gate-checked before they are pasted.
+
+The null test was NOT re-run for Task 5 — the eleven writers are not called from anywhere yet.
+Task 9 owns it.
 
 ## Commands
 
