@@ -353,6 +353,38 @@ def check_addresses(text, path):
         f"{path}: the GUI region must end below lp_base"
 
 
+# The reference height gc_sc is defined against: gc_sc = min(gfx_w/900, gfx_h/500).
+GC_REF_H = 500
+
+
+def check_panel_geometry(text, path):
+    """Every panel reservation must leave the plot GC_PLOT_MIN at the REFERENCE height.
+
+    This is not a taste check. gc_sc is the scale at which GC_REF_H logical units fill the
+    height, so `gc_py + reserve + GC_PLOT_MIN <= GC_REF_H` is exactly the condition under which
+    `(gfx_h - gc_py - reserve*gc_sc) >= GC_PLOT_MIN*gc_sc` can EVER be true while gc_sc is
+    height-driven. The plan's card sum was 508 against 500: false at every window size, so the
+    card never opened while the click that asked for it still wrote slider246. Silent both ways.
+    """
+    def num(pattern, what):
+        m = re.search(pattern, text, re.M)
+        assert m, f"{path}: cannot find {what}"
+        return int(m.group(1))
+
+    plot_min = num(r"^GC_PLOT_MIN = (\d+);", "GC_PLOT_MIN")
+    py = num(r"^gc_py = (\d+) \* gc_sc;", "gc_py")
+    reserves = {
+        "panel": num(r"^gc_panel_on = !gc_small && \(gfx_h - gc_py - (\d+) \* gc_sc\)", "the panel reserve"),
+        "card":  num(r"^\s*\(gfx_h - gc_py - (\d+) \* gc_sc\) >= GC_PLOT_MIN \* gc_sc;", "the card reserve"),
+    }
+    for what, reserve in reserves.items():
+        assert py + reserve + plot_min <= GC_REF_H, (
+            f"{path}: the {what} reservation cannot be satisfied - "
+            f"gc_py {py} + reserve {reserve} + GC_PLOT_MIN {plot_min} = "
+            f"{py + reserve + plot_min} > {GC_REF_H}, so its own condition is false at every "
+            f"window size while gc_sc is height-driven")
+
+
 def check_source(path=V12, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
@@ -363,6 +395,7 @@ def check_source(path=V12, project=False):
     check_forbidden(text, path)
     check_writers(text, path)
     check_addresses(text, path)
+    check_panel_geometry(text, path)
 
 
 # --------------------------------------------------------------------------------------------

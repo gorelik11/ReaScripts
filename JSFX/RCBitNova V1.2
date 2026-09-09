@@ -2153,9 +2153,17 @@ gc_small = (gfx_w / gc_ret < 480 || gfx_h / gc_ret < 280);
 // would open and close for the session and store nothing in the project, with no error anywhere.
 gc_open = min(max(floor(slider246 + 0.5), 0), N_BANDS);   // automation and presets can send a
                                                           // fractional value through a <0,8,1>
-gc_panel_on = !gc_small && (gfx_h - gc_py - 228 * gc_sc) >= 180 * gc_sc;
+// GC_PLOT_MIN is what the plot must keep after the panel has taken its share. It cannot be
+// chosen freely: gc_sc is DEFINED as the scale at which 500 logical units fill the height, so
+// asking for `gc_py + reserve + GC_PLOT_MIN` units is asking for a fraction of 500. At the
+// plan's 180 the card's sum was 10 + 318 + 180 = 508 > 500, which under a height-driven gc_sc
+// (gc_sc = gfx_h/500, i.e. any window wider than 1.8:1) reduces to gfx_h >= 1.016 * gfx_h -
+// false at EVERY size. The card could not open, and the click that asked for it still wrote
+// slider246. Found live 2026-09-07, on the panel's first render.
+GC_PLOT_MIN = 160;                   // 10 + 318 + 160 = 488 <= 500: satisfiable in both regimes
+gc_panel_on = !gc_small && (gfx_h - gc_py - 228 * gc_sc) >= GC_PLOT_MIN * gc_sc;
 gc_card_on  = gc_panel_on && gc_open > 0 &&
-              (gfx_h - gc_py - 318 * gc_sc) >= 180 * gc_sc;
+              (gfx_h - gc_py - 318 * gc_sc) >= GC_PLOT_MIN * gc_sc;
 // 84 and 24 are V1.1's, unchanged: with the panel off the layout is exactly what it was.
 gc_ph = gfx_h - gc_py -
         (gc_small ? 24 : gc_panel_on ? (gc_card_on ? 318 : 228) : 84) * gc_sc;
@@ -2662,11 +2670,14 @@ gc_panel_on ? (
     gc_button(gc_bx, gc_ry, 34 * gc_sc, "Dyn", slider(dynb[gc_b] + 1) == 1) && gc_click ?
       ( gc_w_dyn(gc_b, (slider(dynb[gc_b] + 1) == 1 ? 0 : 1)); );
     gc_bx += 38 * gc_sc;
-    gc_button(gc_bx, gc_ry, 20 * gc_sc, "A", slider(dynb[gc_b] + 7) == 0) && gc_click ?
+    // "EQ" and "Split", not "A" and "B". The letters are the PARAMETER's names (A Dynamic EQ,
+    // B Band-Split) and mean nothing to anyone who has not read the parameter list; the words
+    // say the thing that actually differs - whether the band is separated out or not.
+    gc_button(gc_bx, gc_ry, 26 * gc_sc, "EQ", slider(dynb[gc_b] + 7) == 0) && gc_click ?
       ( gc_w_dynmode(gc_b, 0); );
-    gc_button(gc_bx + 22 * gc_sc, gc_ry, 20 * gc_sc, "B", slider(dynb[gc_b] + 7) == 1) && gc_click ?
-      ( gc_w_dynmode(gc_b, 1); );
-    gc_bx += 48 * gc_sc;
+    gc_button(gc_bx + 28 * gc_sc, gc_ry, 38 * gc_sc, "Split", slider(dynb[gc_b] + 7) == 1)
+      && gc_click ? ( gc_w_dynmode(gc_b, 1); );
+    gc_bx += 72 * gc_sc;
     gc_button(gc_bx, gc_ry, 20 * gc_sc, "S", slider(dynb[gc_b] + 8) == 1) && gc_click ?
       ( gc_w_soft(gc_b, (slider(dynb[gc_b] + 8) == 1 ? 0 : 1)); );
     gc_field_at(100 + gc_b * 10 + 0, gc_bx + 24 * gc_sc, gc_ry, 96 * gc_sc, "Soft ",

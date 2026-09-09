@@ -2874,6 +2874,9 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("  setup_band_dyn(b); apply_band_dyn_global(b);\n);",
                          "  setup_band_dyn(b);\n);"),
      "gc_w_dyn does not call apply_band_dyn_global(b)"),
+    # the plan's own number: 10 + 318 + 180 = 508 > 500, so the card could never open
+    (lambda t: t.replace("GC_PLOT_MIN = 160;", "GC_PLOT_MIN = 180;"),
+     "the card reservation cannot be satisfied"),
 ]
 
 
