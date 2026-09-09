@@ -2880,6 +2880,25 @@ SEEDED_DEFECTS = [
 ]
 
 
+def test_panel_metadata_sits_above_the_tables_and_below_mb_band():
+    """The fixed addresses above the base tables, and the room left under mb_band's literal."""
+    m = lay.low_layout(8)
+    assert max(hi for _, hi in m.values()) + 1 == lay.TABLES_FIRST == 272
+    assert lay.TABLES_LAST == 295
+    assert lay.NB_LIST == (296, 303)
+    assert lay.GC_FMETA == (304, 351)
+    assert lay.GC_FMETA[1] < lay.MB_BAND, "everything still sits below mb_band's literal"
+    assert lay.NB_LIST[1] + 1 == lay.GC_FMETA[0], "no gap and no overlap between the two"
+
+
+def test_check_capacity_reports_a_collision_with_the_panel_metadata():
+    """A band count that grows the low map into nb_list or gc_fmeta must be REPORTED."""
+    problems = lay.check_capacity(9)
+    assert problems, "nine bands must not be reported as fitting"
+    joined = " ".join(problems)
+    assert "base tables" in joined or "gc_fmeta" in joined or "nb_list" in joined, joined
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V12).read()

@@ -28,6 +28,14 @@ V10_BASES = {"cf": 0, "st": 64, "det": 96, "dst": 128, "cst": 160,
 # The three slider-base tables are FIXED here, immediately above the eight-band low map.
 TABLES_FIRST, TABLES_LAST = 272, 295      # stb 272..279, dynb 280..287, ceb 288..295
 
+# V1.1's enabled-band list and V1.2's panel field metadata sit directly above the tables. Both
+# are FIXED addresses in @init, so a band count that grows the low map into them must be reported
+# here rather than discovered as a band reading another band's metadata.
+NB_LIST = (296, 303)                      # 8 words, one per band
+GC_FMETA = (304, 351)                     # 6 panel slots x 8 words. NOT gc_meta - that name is
+                                          # the curve buffers' 16 NAMED words at gc_snap + 128.
+FIXED_ABOVE_TABLES = {"nb_list": NB_LIST, "gc_fmeta": GC_FMETA}
+
 # Slider numbers bands 1-4 already own, plus the globals and the filter section. Immovable:
 # REAPER stores parameters by number, so renumbering breaks every existing project.
 RESERVED = (set(range(1, 5)) | set(range(11, 50)) | set(range(51, 89))
@@ -108,6 +116,10 @@ def check_capacity(n_bands):
         if last >= TABLES_FIRST and first <= TABLES_LAST:
             problems.append(f"{name} occupies {first}..{last} and collides with the base tables "
                             f"at {TABLES_FIRST}..{TABLES_LAST}")
+        for other, (o_first, o_last) in FIXED_ABOVE_TABLES.items():
+            if last >= o_first and first <= o_last:
+                problems.append(f"{name} occupies {first}..{last} and collides with {other} "
+                                f"at {o_first}..{o_last}")
 
     taken = set(RESERVED)
     t = base_tables(min(n_bands, 8))

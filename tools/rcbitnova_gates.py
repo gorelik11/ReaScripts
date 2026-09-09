@@ -85,6 +85,13 @@ SITES = {
     # at a dead address while every panel read landed in the curve region. Silent, both ways.
     "panel-meta-address":    (r"^gc_fmeta = (\d+);", "304"),
     "curve-meta-unshadowed": (r"^gc_meta\s+= (gc_snap \+ 128);", "gc_snap + 128"),
+    # The panel itself: the row loop must follow the band count, and the enum must be sanitised.
+    # slider246, not the plan's slider143 - which does not exist, and which EEL2 would have taken
+    # as an ordinary variable, opening and closing the panel for the session and storing nothing.
+    "panel-rows-loop":       (r"gc_panel_on \? \(\s*\n\s*gc_b = 0;\s*\n\s*loop\((\w+),",
+                              "N_BANDS"),
+    "panel-enum-clamp":      (r"gc_open = min\(max\(floor\(slider246 \+ 0\.5\), 0\), (\w+)\);",
+                              "N_BANDS"),
     "table-decl-stb":        (r"^stb\s+= (\d+);", "272"),
     "table-decl-dynb":       (r"^dynb\s+= (\d+);", "280"),
     "table-decl-ceb":        (r"^ceb\s+= (\d+);", "288"),
