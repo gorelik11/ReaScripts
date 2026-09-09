@@ -2564,7 +2564,15 @@ gc_fdrag >= 0 ? (
   );
 );
 
-// draw the two handles
+// draw the two handles.
+//
+// The label used to sit unconditionally at gc_nx + 12, which runs off the plot as soon as the
+// handle reaches the top of its range - and that is exactly where the LP handle lives whenever
+// the filter is off or wide open, so its frequency was unreadable in its most common position.
+// Measure the WIDEST label this block can draw, once, and flip the label to the other side of
+// the handle when it would not fit. Measured rather than estimated: a guessed width just moves
+// where the clipping happens.
+gfx_measurestr("LP 20000 Hz  FIR Brick", gc_lw, gc_lh);
 gc_e = 0;
 loop(2,
   gc_sl = gc_e == 0 ? slider131 : slider135;
@@ -2575,7 +2583,9 @@ loop(2,
   gfx_rect(gc_nx - 5 * gc_sc, gc_ny - 5 * gc_sc, 10 * gc_sc, 10 * gc_sc, gc_on ? 1 : 0);
   (gc_fnode == gc_e || gc_fdrag == gc_e) ? (
     gfx_rect(gc_nx - 8 * gc_sc, gc_ny - 8 * gc_sc, 16 * gc_sc, 16 * gc_sc, 0);
-    gfx_x = gc_nx + 12 * gc_sc; gfx_y = gc_ny - 6 * gc_sc;
+    gc_lx = gc_nx + 12 * gc_sc;
+    gc_lx + gc_lw > gc_px + gc_pw ? ( gc_lx = gc_nx - 12 * gc_sc - gc_lw; );
+    gfx_x = gc_lx; gfx_y = gc_ny - 6 * gc_sc;
     gfx_drawstr(gc_e == 0 ? "HP " : "LP ");
     gfx_drawnumber(gc_e == 0 ? slider132 : slider136, 0);
     gfx_drawstr(" Hz  ");
