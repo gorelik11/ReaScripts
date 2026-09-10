@@ -11,9 +11,9 @@
 | Working | `JSFX/RCBitNova V1.2` |
 | Spec | `docs/superpowers/specs/2026-09-02-rcbitnova-dynamics-panel-design.md` **rev 5** |
 | Plan | `docs/superpowers/plans/2026-09-02-rcbitnova-dynamics-panel.md`, 9 tasks |
-| Done | Tasks 1–8 (`…33d341b`, `8cdb606`, `7a8d3bf`, `0c39936`, `df7e77d`) |
-| Next | **Task 9** — gates, the null suite 6/6, and the LIVE matrix. The panel has never been clicked. |
-| Green | 278 tests · gate 32 sites, 20 writers · live: 175 frozen records identical · compile 179 · null `defaults` identical |
+| Done | Tasks 1–9 (`…df7e77d`, `e481cb4`, `5c8b07a`, `19bc781`) — see the live matrix note below |
+| Next | Tag `rcbitnova-v1.2`, then V1.3 (`specs/2026-09-10-rcbitnova-v13-hplp-range.md`) |
+| Green | 281 tests · gate 34 sites, 20 writers · live: 175 frozen records identical · compile 179 · **null 6/6 identical, zero tolerance** |
 
 ## The one thing to know before touching parameters
 
@@ -63,6 +63,28 @@ Task 7 carried three more stale or wrong lines, all caught by reading the source
 
 Pattern across four tasks: every plan defect was found by grepping the source for the name the plan
 used, and none by reading the plan carefully. `--source-only` and `--live` found the rest.
+
+## The live matrix, as actually run (2026-09-09 / 09-10)
+
+Confirmed by the owner, on his own material:
+
+- fields write, and the Param list moves the parameter the field names;
+- **`EQ` <-> `Split` changes the sound immediately**, without a second touch — `mbmode[b]` reaches
+  the engine through `apply_band_dyn_global`, which was the one check the gates cannot make. What
+  he heard also matches the topology rather than merely differing: Split presses the whole split
+  band, Dynamic EQ modulates the filter's gain so the affected region follows its skirt;
+- Micro presses, verified with the host's Delta on a band with `Macro 0`, where the plugin's only
+  effect IS the reduction;
+- an open card survives save and reopen.
+
+**NOT confirmed: the gestures on B7/B8.** Bands 5–8 are separate named branches with the appended
+slider numbers. `check_writers` proves all eight addresses statically; nothing proves the high
+branches live. Small risk — the branches are generated from one table and are structurally
+identical — but it is unproven, not proven.
+
+Three GUI defects were found by using it, none by any gate: the card threshold false at every
+window size, `A`/`B` meaning nothing to a reader, and the HP/LP label running off the plot at the
+top of the range.
 
 ## Commands
 
