@@ -88,8 +88,19 @@ was never written down, only implied.** The other two are in section 4.
 `gc_apply_hplp(eng)` — write, automate, THEN rebuild, the order every writer in this plugin uses,
 because `@slider` is not guaranteed to run after `slider_automate` (established live in V1.0).
 
-Today that write is open-coded inline in three places — the handle drag, the handle's right-click
-menu, and the resonance path. The field would be a fourth. They collapse into these two.
+Today that write exists in exactly ONE place, the handle-drag block, as two branches:
+
+```
+gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = floor(gc_v + 0.5); slider_automate(slider132); gc_apply_hplp(0); ); )
+              : ( gc_v != slider136 ? ( slider136 = floor(gc_v + 0.5); slider_automate(slider136); gc_apply_hplp(1); ); );
+```
+
+(An earlier draft of this spec claimed three sites. Grepped: the handle's right-click menu writes
+the SLOPE and the PLACEMENT, and the resonance path writes sliders 133 and 137. One site.)
+
+So the writers are not consolidating a duplication that exists — they are preventing the one the
+field would create, and giving the gate something named to assert about. Both the drag and the
+field call them; the rounding, the automate and the rebuild live in one place per engine.
 
 The fields are `gc_field_at` calls in the top bar beside `Phase / HP res / LP res`, with edit ids
 **200 and 201**. `gc_field_commit` gains a branch for `id >= 200` BEFORE its band arithmetic:
@@ -106,7 +117,7 @@ match.
 ### 4.1 The migration
 
 `tools/migrate_v10_to_v11.py` copies `param.normalized` positionally for the declared block. For
-173 of the 176 records that stays right. For the two frequencies it is not:
+174 of the 176 records that stays right. For the two frequencies it is not:
 
 ```
 12000 Hz in V1.2  ->  (12000 - 20) / (20000 - 20)  =  0.5995996
@@ -121,8 +132,8 @@ already set and stays.
 
 ### 4.2 The null harness — the same trap, and it is SILENT
 
-`tools/rcbitnova_nulltest.py` renders the baseline from named VALUES, reads back the 95 normalised
-numbers, and writes those raw into the version under test:
+`tools/rcbitnova_nulltest.py` renders the baseline from named VALUES, reads back the first 95
+normalised numbers, and writes those raw into the version under test:
 
 ```
 a, norms10 = render(BASE, values=values)
@@ -133,6 +144,10 @@ assert norms10 == norms11
 The handshake exists to make the two instances equal BY CONSTRUCTION. A range change destroys that
 construction, and the assertion cannot see it: it compares normalised against normalised, and those
 do agree.
+
+The 95 is V1.0's declared count, carried over deliberately, and **both frequency records fall
+inside it** — declared order follows slider NUMBER, and 132 and 136 sit in the 131..142 block V1.0
+already owned. Had they landed above 95 this section would be moot; they do not.
 
 Concretely, `min_hplp` and `linear_hplp` both set `LP Freq (Hz): 12000` with a live slope. V1.3
 would render at 14398 Hz. The suite would go half green, half red — `defaults` passes because its
