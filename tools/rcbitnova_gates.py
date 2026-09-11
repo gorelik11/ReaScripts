@@ -439,10 +439,21 @@ def _records(RPR, track, fx_index, n_params, defaults=None):
 
 
 def _fine_ceiling_indices():
-    """Declared-parameter indices of the sixteen ceiling Macro sliders, derived from the source's
-    own declaration order rather than counted by hand."""
+    """Declared-parameter indices of the sixteen ceiling Macro sliders, derived from the source
+    rather than counted by hand.
+
+    SORTED BY SLIDER NUMBER, which is how REAPER orders declared parameters - measured 2026-09-04
+    and confirmed against tests/fixtures/v11_declared_175.json, where slider-number order matches
+    all 175 records and textual order misses 68 of them.
+
+    This used to take the TEXTUAL order of the declarations, and was wrong for seven of the sixteen
+    - every one of them in the B5-B8 block, where the two orders diverge. It never fired: the only
+    caller walks V1.0's 95 records and no wrong index is below 95. The V1.3 fixture comparison,
+    which walks all 176, is what would have woken it up. A gate that exists to guard the
+    parameter-order contract had the parameter-order bug inside it.
+    """
     text = open(V12, encoding="utf-8", errors="replace").read()
-    order = [int(n) for n in re.findall(r"^slider(\d+):", text, re.M)]
+    order = sorted(int(n) for n in re.findall(r"^slider(\d+):", text, re.M))
     t = layout.base_tables(8)
     targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
     out = {order.index(n) for n in targets}

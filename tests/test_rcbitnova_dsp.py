@@ -2899,6 +2899,25 @@ def test_check_capacity_reports_a_collision_with_the_panel_metadata():
     assert "base tables" in joined or "gc_fmeta" in joined or "nb_list" in joined, joined
 
 
+def test_fine_ceiling_indices_are_pinned_against_the_measured_manifest():
+    """All sixteen, checked by NAME against the fixture REAPER itself produced.
+
+    The helper derives indices from the source. Deriving them the wrong way - textual declaration
+    order instead of slider number - was wrong for seven, all in B5-B8, and nothing caught it
+    because the only caller stops at 95. Names come from live REAPER; this is the check that
+    cannot agree with a mistaken derivation.
+    """
+    frozen = gates.load_declared()
+    idx = sorted(gates._fine_ceiling_indices())
+    assert len(idx) == 16
+    for i in idx:
+        assert i < len(frozen), f"index {i} is past the frozen manifest"
+        assert "Ceiling Macro" in frozen[i][1], \
+            f"index {i} is {frozen[i][1]!r}, not a ceiling Macro slider"
+    assert {frozen[i][1].split()[0] for i in idx} == {f"B{b}" for b in range(1, 9)}, \
+        "all eight bands must be represented, twice each"
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V12).read()
