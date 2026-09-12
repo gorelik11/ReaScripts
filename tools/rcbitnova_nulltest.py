@@ -177,6 +177,14 @@ def main():
             RPR.InsertMedia(FIXTURE, 0)
             tr = track()
             fx = tr.add_fx(fx_name)
+            assert fx is not None, f"add_fx({fx_name!r}) returned None"
+            # PROVE it: TrackFX_AddByName fuzzy-matches an unscanned version to the nearest name
+            # REAPER knows. Measured 2026-09-12. Without this the harness happily renders the
+            # SAME version twice and reports six identical cases at zero tolerance.
+            want = fx_name.split(": ", 1)[1]
+            assert want in fx.name, (
+                f"asked for {want!r} and REAPER loaded {fx.name.split(' - ')[0]!r} - it has not "
+                f"scanned that file; rescan in Preferences > Plug-ins, or restart REAPER")
             i = fx.index
             if values:
                 names = [fx.params[k].name for k in range(fx.n_params)]

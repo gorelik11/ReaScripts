@@ -44,7 +44,16 @@ def check(track_index=0):
         tr = pr.tracks[track_index]
         before = [f.name for f in tr.fxs]
         fx = tr.add_fx("JS: RCBitNova V1.3")
+        assert fx is not None, "add_fx returned None - REAPER did not add anything"
         i = fx.index
+        # PROVE which effect was loaded. TrackFX_AddByName FUZZY-MATCHES: asked for a version
+        # REAPER has not scanned yet, it silently returns the nearest name it knows. Measured
+        # 2026-09-12: add_fx("JS: RCBitNova V1.3") produced a V1.2 instance reporting 179
+        # parameters and no error text - a clean pass for the wrong plugin. Every version-
+        # targeted tool has to say which one it actually got.
+        assert "RCBitNova V1.3" in fx.name, (
+            f"asked for V1.3 and REAPER loaded {fx.name.split(' - ')[0]!r}. It has not scanned "
+            f"the new file: rescan in Preferences > Plug-ins, or restart REAPER.")
         n = fx.n_params
         RPR.TrackFX_Show(tr.id, i, 3)          # float the window so its text exists to be read
     text = _window_text()

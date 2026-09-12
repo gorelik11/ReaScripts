@@ -528,6 +528,14 @@ def check_live(track_index=0):
 
         def manifest(name, n_declared):
             fx = tr.add_fx(name)
+            assert fx is not None, f"add_fx({name!r}) returned None"
+            # PROVE it. TrackFX_AddByName fuzzy-matches an unscanned version to the nearest name
+            # REAPER knows: measured 2026-09-12, asking for V1.3 returned V1.2, 179 parameters,
+            # no error. This gate would then have compared a version against ITSELF and passed.
+            want = name.split(": ", 1)[1]
+            assert want in fx.name, (
+                f"asked for {want!r} and REAPER loaded {fx.name.split(' - ')[0]!r} - it has not "
+                f"scanned that file; rescan in Preferences > Plug-ins, or restart REAPER")
             i = fx.index
             n = fx.n_params
             # defaults FIRST, from an untouched instance - a default cannot be recovered from one
