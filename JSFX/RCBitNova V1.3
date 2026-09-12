@@ -2601,7 +2601,7 @@ gc_fdrag >= 0 ? (
 // Measure the WIDEST label this block can draw, once, and flip the label to the other side of
 // the handle when it would not fit. Measured rather than estimated: a guessed width just moves
 // where the clipping happens.
-gfx_measurestr("LP 20000 Hz  FIR Brick", gc_lw, gc_lh);
+gfx_measurestr("LP 20000 Hz  FIR Brick - needs Phase: Linear", gc_lw, gc_lh);
 gc_e = 0;
 loop(2,
   gc_sl = gc_e == 0 ? slider131 : slider135;
@@ -2620,6 +2620,15 @@ loop(2,
     gfx_drawstr(" Hz  ");
     gfx_drawstr(gc_sl == 0 ? "Off" : gc_sl == 6 ? "FIR Brick" : "");
     gc_sl > 0 && gc_sl < 6 ? ( gfx_drawnumber(gc_sl == 5 ? 96 : gc_sl * 12, 0); gfx_drawstr(" dB/oct"); );
+    // V1.3: say WHY it is doing nothing. FIR Brick exists only in the linear-phase engine - in Min
+    // the slope maps to nsec = 0 and @sample's min-phase branch runs no filter at all, which
+    // gc_hplp_audible already knows ("Min + Brick is identity, not a filter") and the graph already
+    // reflects by drawing no curve. Nothing said so. Selecting Brick under Min looked like a
+    // broken filter rather than a filter in the wrong engine. Reported live 2026-09-12.
+    gc_sl == 6 && act_phase != 1 ? (
+      gfx_set(0.95, 0.75, 0.3, 1);
+      gfx_drawstr(" - needs Phase: Linear");
+    );
   );
   gc_e += 1;
 );
