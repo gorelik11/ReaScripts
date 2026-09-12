@@ -29,8 +29,8 @@ TRACK = "RCBN NULL TEMP"
 
 # The panel's contract is "no DSP change from V1.1", so V1.1 is the baseline. Comparing against
 # V1.0 would still be true and would answer a question nobody is asking about this feature.
-BASE = "JS: RCBitNova V1.2"
-UNDER_TEST = "JS: RCBitNova V1.3"
+BASE = "RCBitNova V1.2"
+UNDER_TEST = "RCBitNova V1.3"
 
 # case -> {declared parameter name: value in ITS OWN units}
 CASES = {
@@ -178,13 +178,11 @@ def main():
             tr = track()
             fx = tr.add_fx(fx_name)
             assert fx is not None, f"add_fx({fx_name!r}) returned None"
-            # PROVE it: TrackFX_AddByName fuzzy-matches an unscanned version to the nearest name
-            # REAPER knows. Measured 2026-09-12. Without this the harness happily renders the
-            # SAME version twice and reports six identical cases at zero tolerance.
-            want = fx_name.split(": ", 1)[1]
-            assert want in fx.name, (
-                f"asked for {want!r} and REAPER loaded {fx.name.split(' - ')[0]!r} - it has not "
-                f"scanned that file; rescan in Preferences > Plug-ins, or restart REAPER")
+            # fx_ident names the FILE; fx.name is a cached display string that goes stale when a
+            # desc changes. Without this the harness can render the SAME version twice and report
+            # six identical cases at zero tolerance - for a comparison that never happened.
+            ident = RPR.TrackFX_GetNamedConfigParm(tr.id, fx.index, "fx_ident", "", 512)[4]
+            assert ident == fx_name, f"asked for the {fx_name!r} file, REAPER loaded {ident!r}"
             i = fx.index
             if values:
                 names = [fx.params[k].name for k in range(fx.n_params)]

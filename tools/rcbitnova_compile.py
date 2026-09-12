@@ -43,17 +43,17 @@ def check(track_index=0):
             pr = reapy.Project()
         tr = pr.tracks[track_index]
         before = [f.name for f in tr.fxs]
-        fx = tr.add_fx("JS: RCBitNova V1.3")
+        fx = tr.add_fx("RCBitNova V1.3")
         assert fx is not None, "add_fx returned None - REAPER did not add anything"
         i = fx.index
-        # PROVE which effect was loaded. TrackFX_AddByName FUZZY-MATCHES: asked for a version
-        # REAPER has not scanned yet, it silently returns the nearest name it knows. Measured
-        # 2026-09-12: add_fx("JS: RCBitNova V1.3") produced a V1.2 instance reporting 179
-        # parameters and no error text - a clean pass for the wrong plugin. Every version-
-        # targeted tool has to say which one it actually got.
-        assert "RCBitNova V1.3" in fx.name, (
-            f"asked for V1.3 and REAPER loaded {fx.name.split(' - ')[0]!r}. It has not scanned "
-            f"the new file: rescan in Preferences > Plug-ins, or restart REAPER.")
+        # PROVE which FILE was loaded, via fx_ident. NOT fx.name: that is REAPER's cached DISPLAY
+        # string, which goes stale the moment a JSFX's desc line changes and is not refreshed by a
+        # restart. Measured 2026-09-12: the V1.3 file loaded correctly while its display name still
+        # read "RCBitNova V1.2", so a name-based guard rejected a correct build. fx_ident names the
+        # file, which is the thing we actually care about.
+        ident = RPR.TrackFX_GetNamedConfigParm(tr.id, i, "fx_ident", "", 512)[4]
+        assert ident == "RCBitNova V1.3", (
+            f"asked for the V1.3 file and REAPER loaded {ident!r}")
         n = fx.n_params
         RPR.TrackFX_Show(tr.id, i, 3)          # float the window so its text exists to be read
     text = _window_text()
@@ -62,7 +62,7 @@ def check(track_index=0):
         pr = reapy.Project()
         tr = pr.tracks[track_index]
         RPR.TrackFX_Show(tr.id, i, 2)
-        [f for f in tr.fxs if "RCBitNova V1.3" in f.name][-1].delete()
+        tr.fxs[i].delete()          # by INDEX: the display name may be stale
         assert [f.name for f in tr.fxs] == before, "the scratch instance was not removed"
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)

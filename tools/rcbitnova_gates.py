@@ -216,7 +216,7 @@ def _declared_records(RPR, track, fx, n_declared):
 
 
 def freeze_declared(path=DECLARED_FIXTURE, track_index=0, n_declared=175,
-                    effect="JS: RCBitNova V1.1"):
+                    effect="RCBitNova V1.1"):
     """Write the fixture from the live plugin. Run ONCE, from the FROZEN V1.1, before V1.2 exists."""
     import reapy
     with reapy.inside_reaper():
@@ -551,13 +551,11 @@ def check_live(track_index=0):
         def manifest(name, n_declared):
             fx = tr.add_fx(name)
             assert fx is not None, f"add_fx({name!r}) returned None"
-            # PROVE it. TrackFX_AddByName fuzzy-matches an unscanned version to the nearest name
-            # REAPER knows: measured 2026-09-12, asking for V1.3 returned V1.2, 179 parameters,
-            # no error. This gate would then have compared a version against ITSELF and passed.
-            want = name.split(": ", 1)[1]
-            assert want in fx.name, (
-                f"asked for {want!r} and REAPER loaded {fx.name.split(' - ')[0]!r} - it has not "
-                f"scanned that file; rescan in Preferences > Plug-ins, or restart REAPER")
+            # fx_ident names the FILE. fx.name is REAPER's cached display string and goes stale
+            # when a desc line changes - measured 2026-09-12, it named V1.2 for a correctly
+            # loaded V1.3 file. Without this the gate could compare a version against itself.
+            ident = RPR.TrackFX_GetNamedConfigParm(tr.id, fx.index, "fx_ident", "", 512)[4]
+            assert ident == name, f"asked for the {name!r} file and REAPER loaded {ident!r}"
             i = fx.index
             n = fx.n_params
             # defaults FIRST, from an untouched instance - a default cannot be recovered from one
@@ -567,8 +565,8 @@ def check_live(track_index=0):
             fx.delete()
             return n, recs[:n_declared], recs[n_declared:]
 
-        n10, dec10, host10 = manifest("JS: RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("JS: RCBitNova V1.3", N_DECLARED_V12)
+        n10, dec10, host10 = manifest("RCBitNova V1.0", N_DECLARED_V10)
+        n11, dec11, host11 = manifest("RCBitNova V1.3", N_DECLARED_V12)
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
