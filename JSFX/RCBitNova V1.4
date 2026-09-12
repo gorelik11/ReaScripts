@@ -978,6 +978,47 @@ function topo_pdc() (
   ext_tail_size = act_phase == 1 ? (2*lpP + lp_geo[0] + lp_geo[4] + Lk + 64) : 1024;
 );
 
+// ---- V1.4: the topology commit, EXTRACTED so it has more than one caller.
+//
+// It used to live inline in @block, and @block does not run when the transport is stopped and no
+// audio flows - which is exactly when a Phase switch is most likely to be made. The change queued
+// (mt_pend = 1), the mute ramp that would otherwise release it advances only in @sample, and
+// neither ever ran: act_phase stayed behind slider140 indefinitely. On screen the button read
+// "Phase: Linear" while the engine was still Min, FIR Brick stayed an identity, and reloading the
+// plugin "fixed" it because @init adopts act_phase directly. Reported live 2026-09-13.
+//
+// The condition is unchanged - play_state == 0 is what @block already trusted for an immediate
+// commit - so this adds a caller, not a new risk.
+function topo_commit() local(geo_changed, phase_edge) (
+  geo_changed = slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]);
+  phase_edge = slider140 != act_phase;
+  geo_changed ? (
+    lp_relayout(sel_bd0, sel_bd1);      // memsets the whole span, so it clears too
+    lp_win_build(0); lp_win_build(1);
+    lp_rt_reset(0);  lp_rt_reset(1);
+  ) : (
+    lp_engine_clear(0); lp_engine_clear(1);
+  );
+  phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
+  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
+  topo_pdc();
+  // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency lp_geo[2]/[6]
+  // = BD/2+P, and 2 hops because each engine contributes its own. Oracle-measured: at BD+BD+P
+  // the residual vs a continuous engine is -219 dBFS, at +2P it is -282 (float64 noise), and at
+  // the reported latency it is -43 dBFS - audible.
+  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + 2*lpP) : 0;
+  mt_blocks = 2;
+  mt_just_committed = 1;   // this pass PUBLISHES pdc_delay; it does not count as an epoch
+  mt_pos = 0;
+  mt_pend = 0;
+  mt_ready = 0;
+  mt_state = 2;
+  gc_meta[GCM_GACT] = gc_meta[GCM_GACT] + 1;   // the graph must follow COMMITTED topology:
+                                                // act_* changes HERE, in @block, and @slider is
+                                                // not guaranteed to run again afterwards
+  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
+);
+
 
 // Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
 // brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
@@ -1684,6 +1725,11 @@ topo_changed ? (
   );
 );
 
+// V1.4: and commit it HERE when the transport is stopped, because @block - the only other caller -
+// does not run then, and the mute ramp that would release it advances only in @sample. Same
+// condition @block uses for an immediate commit; the ramp is pointless with no audio in flight.
+mt_pend && play_state == 0 ? ( topo_commit(); );
+
 // Rebuild signature per engine: slope, freq, resonance (placement is routing, not magnitude).
 hp_sig = slider131 + slider132 * 100003 + slider133 * 1009;
 hp_sig != hp_sig_prev ? ( hp_sig_prev = hp_sig; hp_dirty = 1; );
@@ -1731,35 +1777,7 @@ pdc_dirty ? ( topo_pdc(); pdc_dirty = 0; );
 // ---- V0.9 topology commit. Order is pinned: commit -> relayout/clear -> adopt+PDC -> the
 // forced snap builds below -> mt_ready. While mt_ready is 0 the hold does not count down, so no
 // sample is ever processed against a cleared, invalid Hspec.
-mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? (
-  geo_changed = slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]);
-  phase_edge = slider140 != act_phase;
-  geo_changed ? (
-    lp_relayout(sel_bd0, sel_bd1);      // memsets the whole span, so it clears too
-    lp_win_build(0); lp_win_build(1);
-    lp_rt_reset(0);  lp_rt_reset(1);
-  ) : (
-    lp_engine_clear(0); lp_engine_clear(1);
-  );
-  phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
-  act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
-  topo_pdc();
-  // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency lp_geo[2]/[6]
-  // = BD/2+P, and 2 hops because each engine contributes its own. Oracle-measured: at BD+BD+P
-  // the residual vs a continuous engine is -219 dBFS, at +2P it is -282 (float64 noise), and at
-  // the reported latency it is -43 dBFS - audible.
-  mt_hold = act_phase == 1 ? (lp_geo[0] + lp_geo[4] + 2*lpP) : 0;
-  mt_blocks = 2;
-  mt_just_committed = 1;   // this pass PUBLISHES pdc_delay; it does not count as an epoch
-  mt_pos = 0;
-  mt_pend = 0;
-  mt_ready = 0;
-  mt_state = 2;
-  gc_meta[GCM_GACT] = gc_meta[GCM_GACT] + 1;   // the graph must follow COMMITTED topology:
-                                                // act_* changes HERE, in @block, and @slider is
-                                                // not guaranteed to run again afterwards
-  hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
-);
+mt_pend && (play_state == 0 || (mt_state == 2 && mt_g == 0)) ? ( topo_commit(); );
 
 // Coalesced, rate-limited kernel rebuilds. A BD=32768 build is ~4x a BD=8192 one, so a fast
 // knob sweep must not rebuild every block. The dirty flag persists, so the final knob

@@ -2857,6 +2857,9 @@ SEEDED_DEFECTS = [
      "engine 0 has no stalled-fade unlatch"),
     (lambda t: t.replace("hp_fpos_prev = -1; lp_fpos_prev = -1;", "hp_fpos_prev = 0; lp_fpos_prev = 0;"),
      "hp_fpos_prev must start at -1"),
+    # a topology change queued while stopped must not wait for a caller that never runs
+    (lambda t: t.replace("mt_pend && play_state == 0 ? ( topo_commit(); );\n", ""),
+     "topo_commit has 1 call sites"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",

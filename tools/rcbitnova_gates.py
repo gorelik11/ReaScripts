@@ -488,6 +488,28 @@ def check_fade_cannot_latch(text, path):
             f"come first and remember last, or a fade is judged before it can advance")
 
 
+def check_topology_commit_has_two_callers(text, path):
+    """A queued topology change must not wait for a caller that never runs.
+
+    @block does not run while the transport is stopped and no audio flows, and the mute ramp that
+    would otherwise release the change advances only in @sample. A Phase switch made while stopped
+    therefore stayed queued indefinitely: the button read Linear while act_phase was still Min,
+    FIR Brick remained an identity, and reloading the plugin appeared to fix it because @init
+    adopts act_phase directly. Reported live 2026-09-13.
+    """
+    body = _function_body(text, "topo_commit")
+    assert body, f"{path}: topo_commit not found - the commit must be a FUNCTION, not inline in " \
+                 f"@block, or it can only ever have one caller"
+    for must in ("act_phase = slider140;", "topo_pdc();", "mt_pend = 0;"):
+        assert must in body, f"{path}: topo_commit does not do {must!r}"
+    calls = re.findall(r"^(.*)topo_commit\(\);", text, re.M)
+    assert len(calls) == 2, f"{path}: topo_commit has {len(calls)} call sites, expected 2"
+    assert any("mt_pend && play_state == 0 ?" in c for c in calls), \
+        f"{path}: nothing commits a pending topology while the transport is stopped"
+    assert any("mt_state == 2 && mt_g == 0" in c for c in calls), \
+        f"{path}: the @block caller that releases the mute ramp is gone"
+
+
 def check_source(path=V14, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
@@ -502,6 +524,7 @@ def check_source(path=V14, project=False):
     check_band_list_rebuild(text, path)
     check_desc_names_the_file(text, path)
     check_fade_cannot_latch(text, path)
+    check_topology_commit_has_two_callers(text, path)
 
 
 # --------------------------------------------------------------------------------------------
