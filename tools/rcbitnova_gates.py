@@ -438,6 +438,27 @@ def check_band_list_rebuild(text, path):
         f"{path}: dsp_dirty must start RAISED, or the first block rebuilds nothing"
 
 
+def check_desc_names_the_file(text, path):
+    """The `desc:` line must carry the same version as the FILENAME.
+
+    REAPER identifies a JSFX by its desc, not by its path. A new version copied from the previous
+    one and left with the old desc is INVISIBLE: the FX browser shows nothing new, and
+    TrackFX_AddByName("JS: RCBitNova V1.3") finds no such name and fuzzy-matches to V1.2 - which
+    is exactly what happened on 2026-09-12. No amount of rescanning helps, because nothing is
+    missing; the file is there under the previous version's name.
+    """
+    # The seeded-defect harness writes its mutants to a temp file with no version in the name.
+    # Those are mutations OF the file under test, so fall back to its version rather than skipping
+    # the check - a check that quietly does nothing on a mutant is not a check.
+    want = re.search(r"V(\d+\.\d+)$", path) or re.search(r"V(\d+\.\d+)$", V13)
+    assert want, f"{path}: cannot read a version off the filename"
+    m = re.search(r"^desc: RCBitNova V(\d+\.\d+) ", text, re.M)
+    assert m, f"{path}: no `desc: RCBitNova V<x.y> ` line"
+    assert m.group(1) == want.group(1), (
+        f"{path}: desc says V{m.group(1)} but the file is V{want.group(1)} - REAPER would show "
+        f"and match this build under the OTHER version's name")
+
+
 def check_source(path=V13, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
@@ -450,6 +471,7 @@ def check_source(path=V13, project=False):
     check_addresses(text, path)
     check_panel_geometry(text, path)
     check_band_list_rebuild(text, path)
+    check_desc_names_the_file(text, path)
 
 
 # --------------------------------------------------------------------------------------------

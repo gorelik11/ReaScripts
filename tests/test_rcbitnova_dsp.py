@@ -2849,6 +2849,9 @@ SEEDED_DEFECTS = [
      "@block must rebuild when dsp_dirty"),
     (lambda t: t.replace("dsp_dirty = 1;\n", "dsp_dirty = 0;\n"),
      "dsp_dirty must start RAISED"),
+    # a new version left carrying the previous one's desc is INVISIBLE to REAPER
+    (lambda t: t.replace("desc: RCBitNova V1.3 - ", "desc: RCBitNova V1.2 - "),
+     "desc says V1.2 but the file is V1.3"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
