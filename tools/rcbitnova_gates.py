@@ -289,8 +289,28 @@ def _function_body(text, name):
         elif text[i] == ")":
             depth -= 1
             if depth == 0:
-                # the parameter list closed; the body opens at the next '('
-                body_open = text.find("(", i)
+                # The parameter list closed. The body does NOT necessarily open at the next '(' -
+                # EEL2 allows `function f(a) local(x, y) instance(z) ( body )`, and taking the next
+                # '(' returns the LOCAL LIST. Every check built on this would then inspect a list
+                # of variable names, fail on correct source, and see none of a real defect.
+                # check_writers survived only because no writer declares locals.
+                j = i + 1
+                while True:
+                    kw = re.match(r"\s*(?:local|instance|globals|static)\s*\(", text[j:], re.S)
+                    if not kw:
+                        break
+                    d2 = 0
+                    for q in range(j + kw.end() - 1, len(text)):
+                        if text[q] == "(":
+                            d2 += 1
+                        elif text[q] == ")":
+                            d2 -= 1
+                            if d2 == 0:
+                                j = q + 1
+                                break
+                    else:
+                        return None
+                body_open = text.find("(", j)
                 depth2 = 0
                 for j in range(body_open, len(text)):
                     if text[j] == "(":

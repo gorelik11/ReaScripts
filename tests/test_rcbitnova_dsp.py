@@ -2918,6 +2918,26 @@ def test_fine_ceiling_indices_are_pinned_against_the_measured_manifest():
         "all eight bands must be represented, twice each"
 
 
+def test_function_body_skips_the_local_clause():
+    """EEL2 is `function f(a) local(x, y) ( body )`. Taking the next '(' after the parameter list
+    returns the LOCAL LIST, so every check built on it would inspect a list of variable names and
+    find none of what it was looking for - failing on correct source, and blind to a real defect.
+
+    check_writers survived only by accident: not one of the twenty writers declares locals.
+    """
+    text = open(gates.V12, encoding="utf-8", errors="replace").read()
+    for fn, must_contain in (("gc_build_grid", "dst[i] ="),
+                             ("gc_hplp_bits", "gc_svf_mag"),
+                             ("gc_field_commit", "gc_w_softceil"),
+                             ("apply_band_dyn_global", "pdc_dirty")):
+        body = gates._function_body(text, fn)
+        assert body, f"{fn} not found"
+        assert must_contain in body, \
+            f"{fn}: got {body[:60]!r}, which is the local() list, not the body"
+    # a function WITHOUT a local clause must still work
+    assert "slider51 = v;" in gates._function_body(text, "gc_w_dyn")
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V12).read()
