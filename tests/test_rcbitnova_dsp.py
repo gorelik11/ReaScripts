@@ -2799,7 +2799,7 @@ def _needs_projection(text=None):
     """The gate has two phases and this suite has to be right in both. Before Task 5 the source is
     still four-band and the contract is checked against a projection; after it, against the real
     text. Hard-coding project=True made sixteen tests fail the moment the count was raised."""
-    text = open(gates.V13).read() if text is None else text
+    text = open(gates.V14).read() if text is None else text
     return "N_BANDS = 4;" in text
 
 
@@ -2808,11 +2808,11 @@ def test_v11_gate_passes_on_the_clean_source():
     by the very source they were written for - a row that matched nothing, a line-anchored regex
     against four entries per line, an evaluator that read `st` as a loop counter. Mutants prove
     rejection; only this proves the contract is satisfiable at all."""
-    gates.check_source(gates.V13, project=_needs_projection())
+    gates.check_source(gates.V14, project=_needs_projection())
 
 
 def test_v11_gate_pieces_agree_on_the_table_block():
-    text = open(gates.V13).read()
+    text = open(gates.V14).read()
     assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
     assert gates.eval_init(text, ["st"])["st"] == 64, "the address block must beat the loop counter"
     gates.check_tables(text, "clean")
@@ -2850,8 +2850,13 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("dsp_dirty = 1;\n", "dsp_dirty = 0;\n"),
      "dsp_dirty must start RAISED"),
     # a new version left carrying the previous one's desc is INVISIBLE to REAPER
-    (lambda t: t.replace("desc: RCBitNova V1.3 - ", "desc: RCBitNova V1.2 - "),
-     "desc says V1.2 but the file is V1.3"),
+    (lambda t: t.replace("desc: RCBitNova V1.4 - ", "desc: RCBitNova V1.2 - "),
+     "desc says V1.2 but the file is V1.4"),
+    # a queued crossfade that no audio advances must not latch the engine
+    (lambda t: t.replace("lp_fs[0] && lp_fs[1] == hp_fpos_prev ? ( lpk_commit(0); );\n", ""),
+     "engine 0 has no stalled-fade unlatch"),
+    (lambda t: t.replace("hp_fpos_prev = -1; lp_fpos_prev = -1;", "hp_fpos_prev = 0; lp_fpos_prev = 0;"),
+     "hp_fpos_prev must start at -1"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
@@ -2934,7 +2939,7 @@ def test_function_body_skips_the_local_clause():
 
     check_writers survived only by accident: not one of the twenty writers declares locals.
     """
-    text = open(gates.V13, encoding="utf-8", errors="replace").read()
+    text = open(gates.V14, encoding="utf-8", errors="replace").read()
     for fn, must_contain in (("gc_build_grid", "dst[i] ="),
                              ("gc_hplp_bits", "gc_svf_mag"),
                              ("gc_field_commit", "gc_w_softceil"),
@@ -2949,7 +2954,7 @@ def test_function_body_skips_the_local_clause():
 
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
-    clean = open(gates.V13).read()
+    clean = open(gates.V14).read()
     mutated = mutate(clean)
     assert mutated != clean, f"the seeding lambda for {expect!r} changed nothing"
     src = tmp_path / "mutant"

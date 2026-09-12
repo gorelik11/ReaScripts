@@ -31,7 +31,8 @@ V10 = "JSFX/RCBitNova V1.0"
 V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, in the owner's
                                      # projects. Never edited again.
 V12 = "JSFX/RCBitNova V1.2"          # FROZEN: tagged rcbitnova-v1.2, the null baseline
-V13 = "JSFX/RCBitNova V1.3"          # the working file - every source check below targets this
+V13 = "JSFX/RCBitNova V1.3"          # FROZEN: tagged rcbitnova-v1.3, the null baseline
+V14 = "JSFX/RCBitNova V1.4"          # the working file - every source check below targets this
 N_DECLARED_V11 = 175                 # frozen forever
 N_DECLARED_V12 = 176                 # 175 inherited + the panel-state slider, last
 
@@ -450,7 +451,7 @@ def check_desc_names_the_file(text, path):
     # The seeded-defect harness writes its mutants to a temp file with no version in the name.
     # Those are mutations OF the file under test, so fall back to its version rather than skipping
     # the check - a check that quietly does nothing on a mutant is not a check.
-    want = re.search(r"V(\d+\.\d+)$", path) or re.search(r"V(\d+\.\d+)$", V13)
+    want = re.search(r"V(\d+\.\d+)$", path) or re.search(r"V(\d+\.\d+)$", V14)
     assert want, f"{path}: cannot read a version off the filename"
     m = re.search(r"^desc: RCBitNova V(\d+\.\d+) ", text, re.M)
     assert m, f"{path}: no `desc: RCBitNova V<x.y> ` line"
@@ -459,7 +460,35 @@ def check_desc_names_the_file(text, path):
         f"and match this build under the OTHER version's name")
 
 
-def check_source(path=V13, project=False):
+def check_fade_cannot_latch(text, path):
+    """A queued kernel crossfade that no audio advances must not latch the engine.
+
+    lp_fs[eng*4] is cleared ONLY by lpk_commit, and the fade advances ONLY inside lpk_run, once
+    per hop. Any stretch where the engine processes no samples leaves it raised - and while it is
+    raised `hp_dirty && lp_fs[0] == 0` is false, so every further rebuild of that engine is
+    refused. Reported live 2026-09-13: a slope change that did nothing until the plugin was
+    reloaded, @init being the only other thing that clears the flag.
+
+    Three parts, and all three must be present: the unlatch, the remembered positions, and the
+    ORDER - unlatch before the rebuilds, remember after them, so a fade always gets a full block
+    of audio to advance in before it is judged stalled.
+    """
+    for eng, fading, fpos, prev in ((0, "lp_fs[0]", "lp_fs[1]", "hp_fpos_prev"),
+                                    (1, "lp_fs[4]", "lp_fs[5]", "lp_fpos_prev")):
+        unlatch = f"{fading} && {fpos} == {prev} ? ( lpk_commit({eng}); );"
+        assert unlatch in text, f"{path}: engine {eng} has no stalled-fade unlatch"
+        assert re.search(rf"^{prev} = -1;|{prev} = -1;", text, re.M), \
+            f"{path}: {prev} must start at -1, or the first check can snap a fade that has not " \
+            f"had a block yet"
+        i_unlatch = text.index(unlatch)
+        i_rebuild = text.index(f"lp_fs[{eng*4}] == 0 ? (")
+        i_remember = text.index(f"{prev} = lp_fs[{eng*4+1}];")
+        assert i_unlatch < i_rebuild < i_remember, (
+            f"{path}: engine {eng}'s unlatch/rebuild/remember are out of order - unlatch must "
+            f"come first and remember last, or a fade is judged before it can advance")
+
+
+def check_source(path=V14, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
         text, n = re.subn(r"^N_BANDS = 4;", "N_BANDS = 8;", text, count=1, flags=re.M)
@@ -472,6 +501,7 @@ def check_source(path=V13, project=False):
     check_panel_geometry(text, path)
     check_band_list_rebuild(text, path)
     check_desc_names_the_file(text, path)
+    check_fade_cannot_latch(text, path)
 
 
 # --------------------------------------------------------------------------------------------
@@ -521,7 +551,7 @@ def _fine_ceiling_indices():
     which walks all 176, is what would have woken it up. A gate that exists to guard the
     parameter-order contract had the parameter-order bug inside it.
     """
-    text = open(V13, encoding="utf-8", errors="replace").read()
+    text = open(V14, encoding="utf-8", errors="replace").read()
     order = sorted(int(n) for n in re.findall(r"^slider(\d+):", text, re.M))
     t = layout.base_tables(8)
     targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
@@ -566,7 +596,7 @@ def check_live(track_index=0):
             return n, recs[:n_declared], recs[n_declared:]
 
         n10, dec10, host10 = manifest("RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("RCBitNova V1.3", N_DECLARED_V12)
+        n11, dec11, host11 = manifest("RCBitNova V1.4", N_DECLARED_V12)
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
@@ -628,7 +658,7 @@ def main(argv):
               f"the 95 declared records are identical and the host tail matches by position")
         return 0
     try:
-        check_source(V13, project=(mode == "--preflip"))
+        check_source(V14, project=(mode == "--preflip"))
     except AssertionError as exc:
         print(f"FAIL {mode}: {exc}")
         return 1
