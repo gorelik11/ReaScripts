@@ -1,4 +1,4 @@
-"""Does JSFX/RCBitNova V1.1 actually COMPILE?
+"""Does JSFX/RCBitNova V1.3 actually COMPILE?
 
 `n_params == 179` does not answer that. A JSFX with a syntax error in @gfx still loads and still
 reports every declared slider - which is exactly how `gc_fd = 1e18` (EEL2 has no such literal)
@@ -43,7 +43,7 @@ def check(track_index=0):
             pr = reapy.Project()
         tr = pr.tracks[track_index]
         before = [f.name for f in tr.fxs]
-        fx = tr.add_fx("JS: RCBitNova V1.2")
+        fx = tr.add_fx("JS: RCBitNova V1.3")
         i = fx.index
         n = fx.n_params
         RPR.TrackFX_Show(tr.id, i, 3)          # float the window so its text exists to be read
@@ -53,7 +53,7 @@ def check(track_index=0):
         pr = reapy.Project()
         tr = pr.tracks[track_index]
         RPR.TrackFX_Show(tr.id, i, 2)
-        [f for f in tr.fxs if "RCBitNova V1.2" in f.name][-1].delete()
+        [f for f in tr.fxs if "RCBitNova V1.3" in f.name][-1].delete()
         assert [f.name for f in tr.fxs] == before, "the scratch instance was not removed"
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)

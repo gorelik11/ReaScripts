@@ -30,7 +30,8 @@ DECLARED_FIXTURE = os.path.join("tests", "fixtures", "v11_declared_175.json")
 V10 = "JSFX/RCBitNova V1.0"
 V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, in the owner's
                                      # projects. Never edited again.
-V12 = "JSFX/RCBitNova V1.2"          # the working file - every source check below targets this
+V12 = "JSFX/RCBitNova V1.2"          # FROZEN: tagged rcbitnova-v1.2, the null baseline
+V13 = "JSFX/RCBitNova V1.3"          # the working file - every source check below targets this
 N_DECLARED_V11 = 175                 # frozen forever
 N_DECLARED_V12 = 176                 # 175 inherited + the panel-state slider, last
 
@@ -113,12 +114,15 @@ SITES = {
     # --- runtime loops ---
     "helper-gc_domain_bits": (r"function gc_domain_bits[\s\S]*?loop\((\w+),", "N_BANDS"),
     "helper-gc_dom_used":    (r"function gc_dom_used[\s\S]*?loop\((\w+),", "N_BANDS"),
-    "slider-setup":          (r"^loop\((\w+), setup_band\(b\); setup_band_dyn\(b\); b \+= 1;\);",
+    # V1.3: these two loops moved INSIDE dsp_rebuild - @slider is no longer the only caller,
+    # because an @init without a following @slider left @sample walking an empty band list. They
+    # are indented there, so the anchor allows leading whitespace; the shape is still pinned.
+    "rebuild-setup":         (r"^\s*loop\((\w+), setup_band\(b\); setup_band_dyn\(b\); b \+= 1;\);",
                               "N_BANDS"),
     # The scan became a helper so GUI writers can call the same code. Two rows now: the loop that
     # drives it, and the helper itself - which must rebuild and must NOT publish.
-    "slider-dyn-global-loop": (r"^loop\((\w+), apply_band_dyn_global\(b\); b \+= 1;\);",
-                               "N_BANDS"),
+    "rebuild-dyn-global-loop": (r"^\s*loop\((\w+), apply_band_dyn_global\(b\); b \+= 1;\);",
+                                "N_BANDS"),
     "dyn-global-helper":      (r"function apply_band_dyn_global\(b\)[\s\S]*?"
                                r"mbmode\[b\] = slider\(dynb\[(b)\] \+ 7\);", "b"),
     "dyn-global-sets-flag":   (r"function apply_band_dyn_global\(b\)[\s\S]*?"
@@ -412,7 +416,29 @@ def check_panel_geometry(text, path):
             f"window size while gc_sc is height-driven")
 
 
-def check_source(path=V12, project=False):
+def check_band_list_rebuild(text, path):
+    """@sample walks nb_list, and @init assigns nb_n = 0 while only @slider ever filled it.
+
+    An @init WITHOUT a following @slider therefore left @sample's `loop(nb_n, ...)` processing NOT
+    ONE BAND: audio through, no EQ, no dynamics, until any parameter was touched. Reported live
+    2026-09-12 on V1.2, and V1.1 does it too. V1.0 is immune because its @sample loops N_BANDS
+    unconditionally - it never had a cache to lose. @init destroys nothing else: cf, det, dp, dm
+    and bp are never memset there.
+    """
+    assert text.count("nb_list[nb_n] = b;") == 1, \
+        f"{path}: the enabled-band scan must live in exactly ONE place"
+    body = _function_body(text, "dsp_rebuild")
+    assert body, f"{path}: dsp_rebuild not found"
+    assert "nb_list[nb_n] = b;" in body, f"{path}: the enabled-band scan is not inside dsp_rebuild"
+    for call in ("setup_band(b)", "setup_band_dyn(b)", "apply_band_dyn_global(b)"):
+        assert call in body, f"{path}: dsp_rebuild does not call {call}"
+    assert re.search(r"^dsp_dirty \? \( dsp_rebuild\(\); \);", text, re.M), \
+        f"{path}: @block must rebuild when dsp_dirty - @init can run without a following @slider"
+    assert re.search(r"^dsp_dirty = 1;", text, re.M), \
+        f"{path}: dsp_dirty must start RAISED, or the first block rebuilds nothing"
+
+
+def check_source(path=V13, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
         text, n = re.subn(r"^N_BANDS = 4;", "N_BANDS = 8;", text, count=1, flags=re.M)
@@ -423,6 +449,7 @@ def check_source(path=V12, project=False):
     check_writers(text, path)
     check_addresses(text, path)
     check_panel_geometry(text, path)
+    check_band_list_rebuild(text, path)
 
 
 # --------------------------------------------------------------------------------------------
@@ -472,7 +499,7 @@ def _fine_ceiling_indices():
     which walks all 176, is what would have woken it up. A gate that exists to guard the
     parameter-order contract had the parameter-order bug inside it.
     """
-    text = open(V12, encoding="utf-8", errors="replace").read()
+    text = open(V13, encoding="utf-8", errors="replace").read()
     order = sorted(int(n) for n in re.findall(r"^slider(\d+):", text, re.M))
     t = layout.base_tables(8)
     targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
@@ -511,13 +538,13 @@ def check_live(track_index=0):
             return n, recs[:n_declared], recs[n_declared:]
 
         n10, dec10, host10 = manifest("JS: RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("JS: RCBitNova V1.2", N_DECLARED_V12)
+        n11, dec11, host11 = manifest("JS: RCBitNova V1.3", N_DECLARED_V12)
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
     assert n10 == N_DECLARED_V10 + 3, f"V1.0 reports {n10} parameters, expected 98"
     assert n11 == N_DECLARED_V12 + 3, \
-        f"V1.2 reports {n11} parameters, expected {N_DECLARED_V12} declared + 3 host"
+        f"V1.3 reports {n11} parameters, expected {N_DECLARED_V12} declared + 3 host"
     assert [r[1] for r in host10] == HOST_TAIL, f"V1.0 host tail is {[r[1] for r in host10]}"
     assert [r[1] for r in host11] == HOST_TAIL, f"V1.1 host tail is {[r[1] for r in host11]}"
     # The ONE documented deviation from "the 95 declared records are identical": the ceiling Macro
@@ -573,7 +600,7 @@ def main(argv):
               f"the 95 declared records are identical and the host tail matches by position")
         return 0
     try:
-        check_source(V12, project=(mode == "--preflip"))
+        check_source(V13, project=(mode == "--preflip"))
     except AssertionError as exc:
         print(f"FAIL {mode}: {exc}")
         return 1
