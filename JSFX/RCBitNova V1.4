@@ -989,7 +989,7 @@ function topo_pdc() (
 //
 // The condition is unchanged - play_state == 0 is what @block already trusted for an immediate
 // commit - so this adds a caller, not a new risk.
-function topo_commit() local(geo_changed, phase_edge) (
+function topo_commit_state() local(geo_changed, phase_edge) (
   geo_changed = slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]);
   phase_edge = slider140 != act_phase;
   geo_changed ? (
@@ -1001,7 +1001,11 @@ function topo_commit() local(geo_changed, phase_edge) (
   );
   phase_edge ? memset(hplp_state, 0, 72);   // do not resume a previous Min session's state
   act_phase = slider140; act_hp_pl = slider134; act_lp_pl = slider138;
-  topo_pdc();
+  // NOT topo_pdc() here. This function has a @gfx caller, and topo_pdc writes the variables
+  // REAPER itself reads - the standing rule since V1.2 is that @gfx never calls it. @block
+  // publishes from pdc_dirty on the first block, which is exactly when a reported latency starts
+  // to matter: there is nothing to delay until audio flows.
+  pdc_dirty = 1;
   // FULL KERNEL SUPPORT (lp_geo[0]/[4] = BD per engine), NOT the reported latency lp_geo[2]/[6]
   // = BD/2+P, and 2 hops because each engine contributes its own. Oracle-measured: at BD+BD+P
   // the residual vs a continuous engine is -219 dBFS, at +2P it is -282 (float64 noise), and at
@@ -1017,6 +1021,27 @@ function topo_commit() local(geo_changed, phase_edge) (
                                                 // act_* changes HERE, in @block, and @slider is
                                                 // not guaranteed to run again afterwards
   hp_dirty = 1; lp_dirty = 1; lp_fs[3] = 0; lp_fs[7] = 0;   // force snap rebuilds below
+);
+
+// The full commit, for the callers that are allowed to publish: @slider and @block.
+function topo_commit() ( topo_commit_state(); topo_pdc(); pdc_dirty = 0; );
+
+// V1.4: the three global buttons write parameters that change TOPOLOGY, and @slider is NOT
+// guaranteed to run after slider_automate - V1.0 established that live, which is why every other
+// GUI writer rebuilds inline instead of hoping. These three never did, so a Phase switch made from
+// the plugin's own window sat queued until audio flowed or the plugin was reloaded: the button
+// read "Phase: Linear" while act_phase was still Min, and FIR Brick, which exists only in the
+// linear engine, stayed an identity. Reported live 2026-09-13, twice.
+//
+// Only while the transport is stopped, the same condition @block trusts for an immediate commit.
+// STATE only - the PDC publication is left to @block through pdc_dirty.
+function gc_w_topo() (
+  sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
+  sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
+  play_state == 0 && (slider140 != act_phase
+                      || (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]))
+                      || (slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)))
+    ? ( mt_pend = 1; topo_commit_state(); );
 );
 
 
@@ -2688,9 +2713,9 @@ gc_hb2 = gc_button(gc_px + gc_pw - gc_bw, gc_by, gc_bw,
                    slider142 == 1 ? "LP res: High" : "LP res: Norm", slider142 == 1);
 
 gc_click ? (
-  gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); ) :
-  gc_hb1 ? ( slider141 = 1 - slider141; slider_automate(slider141); ) :
-  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); );
+  gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); gc_w_topo(); ) :
+  gc_hb1 ? ( slider141 = 1 - slider141; slider_automate(slider141); gc_w_topo(); ) :
+  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); gc_w_topo(); );
 );
 
 // ---- readout strip: five FIELDS, each named for the slider it edits.

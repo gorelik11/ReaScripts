@@ -2860,6 +2860,16 @@ SEEDED_DEFECTS = [
     # a topology change queued while stopped must not wait for a caller that never runs
     (lambda t: t.replace("mt_pend && play_state == 0 ? ( topo_commit(); );\n", ""),
      "topo_commit has 1 call sites"),
+    # the GUI path: @slider is not guaranteed after slider_automate, so the topology buttons
+    # must commit for themselves
+    (lambda t: t.replace("slider_automate(slider140); gc_w_topo();",
+                         "slider_automate(slider140);"),
+     "of the three topology buttons call gc_w_topo"),
+    # ADDS the forbidden call rather than swapping it in, so the `must` loop above still passes
+    # and this is rejected by the assertion it is meant to exercise
+    (lambda t: t.replace("  pdc_dirty = 1;\n  // FULL KERNEL SUPPORT",
+                         "  pdc_dirty = 1;\n  topo_pdc();\n  // FULL KERNEL SUPPORT"),
+     "topo_commit_state calls topo_pdc"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",

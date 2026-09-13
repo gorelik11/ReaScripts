@@ -497,17 +497,26 @@ def check_topology_commit_has_two_callers(text, path):
     FIR Brick remained an identity, and reloading the plugin appeared to fix it because @init
     adopts act_phase directly. Reported live 2026-09-13.
     """
-    body = _function_body(text, "topo_commit")
-    assert body, f"{path}: topo_commit not found - the commit must be a FUNCTION, not inline in " \
+    body = _function_body(text, "topo_commit_state")
+    assert body, f"{path}: topo_commit_state not found - the commit must be a FUNCTION, not inline in " \
                  f"@block, or it can only ever have one caller"
-    for must in ("act_phase = slider140;", "topo_pdc();", "mt_pend = 0;"):
-        assert must in body, f"{path}: topo_commit does not do {must!r}"
-    calls = re.findall(r"^(.*)topo_commit\(\);", text, re.M)
+    for must in ("act_phase = slider140;", "pdc_dirty = 1;", "mt_pend = 0;"):
+        assert must in body, f"{path}: topo_commit_state does not do {must!r}"
+    code = "\n".join(l.split("//")[0] for l in body.splitlines())
+    assert "topo_pdc()" not in code, \
+        f"{path}: topo_commit_state calls topo_pdc - it has a @gfx caller, and topo_pdc writes " \
+        f"the variables REAPER reads"
+    calls = re.findall(r"^(.*)\btopo_commit\(\);", text, re.M)
     assert len(calls) == 2, f"{path}: topo_commit has {len(calls)} call sites, expected 2"
     assert any("mt_pend && play_state == 0 ?" in c for c in calls), \
         f"{path}: nothing commits a pending topology while the transport is stopped"
     assert any("mt_state == 2 && mt_g == 0" in c for c in calls), \
         f"{path}: the @block caller that releases the mute ramp is gone"
+    # and the GUI path, which is the one that actually broke: @slider is not guaranteed to run
+    # after slider_automate, so the three topology buttons must commit for themselves
+    assert _function_body(text, "gc_w_topo"), f"{path}: gc_w_topo not found"
+    assert text.count("gc_w_topo();") == 3, \
+        f"{path}: {text.count('gc_w_topo();')} of the three topology buttons call gc_w_topo"
 
 
 def check_source(path=V14, project=False):
