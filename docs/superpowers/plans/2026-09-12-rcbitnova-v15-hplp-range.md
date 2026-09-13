@@ -1,18 +1,21 @@
-# RCBitNova V1.4 — HP/LP Range Implementation Plan
+# RCBitNova V1.5 — HP/LP Range Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this task-by-task. Steps use checkbox
 > (`- [ ]`) syntax for tracking.
 
-**Revision 2, 2026-09-12.** Renumbered V1.3 -> **V1.4**: the V1.3 slot was taken by an urgent live
-fix (the plugin processed nothing until a parameter was touched). Revised against **three**
-weaknesses reviews — 22 findings, every one verified in source before acceptance, none rejected.
-Section 10 records the dispositions.
+**Revision 3, 2026-09-13.** Renumbered twice. The HP/LP range was going to be V1.3, then V1.4, and
+is now **V1.5**: both slots went to urgent live fixes found while this plan was being reviewed.
+V1.3 - the plugin processed nothing until a parameter was touched. V1.4 - a kernel crossfade could
+latch the engine, and a topology change made from the plugin's own window never reached it. The
+base for this work is **V1.4**, tagged and live-confirmed. Revised against **three** weaknesses
+reviews - 22 findings, every one verified in source before acceptance, none rejected. Section 10
+records the dispositions.
 
 **Goal:** Let the HP/LP corner reach 24 kHz, so the plugin's FIR Brick can band-limit at ~21.5 kHz
 before a sample-rate conversion — the job the owner currently does in ReaFIR.
 
-**Architecture:** `JSFX/RCBitNova V1.4` starts as an exact copy of **V1.3** and changes two slider
+**Architecture:** `JSFX/RCBitNova V1.5` starts as an exact copy of **V1.4** and changes two slider
 declarations. The graph has FOUR frequency coordinate sites, not two, and they become one named
 contract. The grid reduction that feeds the curve is replaced, because at the new top it
 misreports the brickwall by 26 dB. Two numeric fields appear in the top bar, and the top bar must
@@ -23,23 +26,23 @@ does so BEFORE the declarations move.
 **Tech Stack:** JSFX (EEL2); Python 3.11 stdlib-only tooling; `pytest`; `reapy` against live REAPER.
 
 **Spec:** `docs/superpowers/specs/2026-09-10-rcbitnova-v13-hplp-range-design.md` (**revision 3**).
-Section numbers below are that document's. The spec still says "V1.3" throughout; read it as V1.4.
+Section numbers below are that document's. The spec still says "V1.4" throughout; read it as V1.5.
 
 ## Global Constraints
 
-- **`JSFX/RCBitNova V1.3` is read-only for the whole of this plan**, as are V1.1 and V1.2. Every
-  plugin edit lands in `V1.4`. If a task's diff touches an older version, the task is wrong.
-- **No DSP change.** The null test compares V1.4 against **V1.3**, same Hz on both sides, sample
+- **`JSFX/RCBitNova V1.4` is read-only for the whole of this plan**, as are V1.1 and V1.2. Every
+  plugin edit lands in `V1.5`. If a task's diff touches an older version, the task is wrong.
+- **No DSP change.** The null test compares V1.5 against **V1.4**, same Hz on both sides, sample
   for sample, zero tolerance, 6 of 6.
 - **`tests/fixtures/v11_declared_175.json` and `tools/migrate_v10_to_v11.py` are historical
   evidence and are never edited.**
 - **REAPER orders declared parameters by SLIDER NUMBER, not by declaration order.** Measured
   2026-09-04; confirmed three times against the frozen manifest (0 mismatches by number, 68 by
   text). Any derivation of an index from the source must sort numerically.
-- **`TrackFX_AddByName` FUZZY-MATCHES.** Measured live 2026-09-12: `add_fx("JS: RCBitNova V1.3")`
+- **`TrackFX_AddByName` FUZZY-MATCHES.** Measured live 2026-09-12: `add_fx("JS: RCBitNova V1.4")`
   returned a **V1.2** instance reporting 179 parameters and no error text, because REAPER had not
   scanned the new file. Every version-targeted tool now asserts the loaded `fx.name` — that guard
-  is already committed. **Before any live check of V1.4, REAPER must rescan** (Preferences ->
+  is already committed. **Before any live check of V1.5, REAPER must rescan** (Preferences ->
   Plug-ins) or be restarted. A live green light on an unscanned file means nothing.
 - **Band frequency sliders keep `<20,20000,1>`.** Only records **85** (`HP Freq (Hz)`) and **89**
   (`LP Freq (Hz)`) change range. Both indices are MEASURED, from the frozen manifest.
@@ -67,29 +70,29 @@ These came out of the reviews and are committed:
 
 | File | Responsibility |
 |---|---|
-| `JSFX/RCBitNova V1.4` | create — the plugin. Copy of V1.3 plus this plan's changes. |
-| `tests/fixtures/v13_declared_176.json` | create — V1.3's 176 declared records, frozen from the installed build. The baseline V1.4 is compared against. |
-| `tools/rcbitnova_gates.py` | modify — V1.4 target, the range-change table, the graph-frequency check, the filter-writer check, the two comparison owners. |
+| `JSFX/RCBitNova V1.5` | create — the plugin. Copy of V1.4 plus this plan's changes. |
+| `tests/fixtures/v14_declared_176.json` | create — V1.4's 176 declared records, frozen from the installed build. The baseline V1.5 is compared against. |
+| `tools/rcbitnova_gates.py` | modify — V1.5 target, the range-change table, the graph-frequency check, the filter-writer check, the two comparison owners. |
 | `tools/rcbitnova_curve.py` | modify — `FMAX` to 24000, and the grid reduction that currently loses the knee. |
 | `tools/rcbitnova_layout.py` | modify — `GC_FMETA` grows to eight rows. |
-| `tools/rcbitnova_nulltest.py` | modify — index-wise copy BY VALUE, `BASE` V1.3 / `UNDER_TEST` V1.4. |
-| `tools/rcbitnova_compile.py` | modify — loads V1.4. |
-| `tools/migrate_v13_to_v14.py` | create — the migration. Mirrors the V1.0→V1.1 script's shape, shares none of its constants. |
-| `tests/_reaper_fx_fake.py` | modify — declared range/step, the REAL host API shape, a V1.4 branch. |
+| `tools/rcbitnova_nulltest.py` | modify — index-wise copy BY VALUE, `BASE` V1.4 / `UNDER_TEST` V1.5. |
+| `tools/rcbitnova_compile.py` | modify — loads V1.5. |
+| `tools/migrate_v14_to_v15.py` | create — the migration. Mirrors the V1.0→V1.1 script's shape, shares none of its constants. |
+| `tests/_reaper_fx_fake.py` | modify — declared range/step, the REAL host API shape, a V1.5 branch. |
 | `tests/test_rcbitnova_dsp.py` | modify — oracle tests at the knee, migrator tests, seeded defects. |
 
 ---
 
-### Task 1: Freeze V1.3's 176 declared records, before V1.4 exists
+### Task 1: Freeze V1.4's 176 declared records, before V1.5 exists
 
-§5.1. The comparison baseline must be captured while V1.3 is still the only new build installed.
+§5.1. The comparison baseline must be captured while V1.4 is still the only new build installed.
 
-**Files:** create `tests/fixtures/v13_declared_176.json`; modify `tools/rcbitnova_gates.py`,
+**Files:** create `tests/fixtures/v14_declared_176.json`; modify `tools/rcbitnova_gates.py`,
 `tests/test_rcbitnova_dsp.py`
 
-**Interfaces:** produces `gates.DECLARED_FIXTURE_V13`, `gates.load_declared_v13()`.
+**Interfaces:** produces `gates.DECLARED_FIXTURE_V14`, `gates.load_declared_v14()`.
 
-- [ ] **Step 1: Confirm REAPER has actually scanned V1.3**
+- [ ] **Step 1: Confirm REAPER has actually scanned V1.4**
 
 ```bash
 python3 -c "
@@ -97,23 +100,23 @@ import reapy
 from reapy import reascript_api as RPR
 with reapy.inside_reaper():
     pr = reapy.Project(); RPR.InsertTrackAtIndex(0, False)
-    tr = reapy.Project().tracks[0]; fx = tr.add_fx('JS: RCBitNova V1.3')
+    tr = reapy.Project().tracks[0]; fx = tr.add_fx('JS: RCBitNova V1.4')
     print(repr(fx.name.split(' - ')[0]), fx.n_params)
     fx.delete(); RPR.DeleteTrack(reapy.Project().tracks[0].id)"
 ```
-Expected: `'JS: RCBitNova V1.3' 179`. **If it says V1.2, STOP** — REAPER has not scanned the file
+Expected: `'JS: RCBitNova V1.4' 179`. **If it says V1.2, STOP** — REAPER has not scanned the file
 and everything below would freeze the wrong plugin. Rescan in Preferences > Plug-ins, or restart.
 
 - [ ] **Step 2: Add the constants and the loader**
 
 ```python
-# V1.3's full declared block, frozen from the installed build. v11_declared_175.json stays exactly
+# V1.4's full declared block, frozen from the installed build. v11_declared_175.json stays exactly
 # as it is - it is evidence of what V1.1 declared. This one is one record longer (slider246, the
-# panel-card state) and is the baseline V1.4 is measured against.
-DECLARED_FIXTURE_V13 = os.path.join("tests", "fixtures", "v13_declared_176.json")
+# panel-card state) and is the baseline V1.5 is measured against.
+DECLARED_FIXTURE_V14 = os.path.join("tests", "fixtures", "v14_declared_176.json")
 
 
-def load_declared_v13(path=DECLARED_FIXTURE_V13):
+def load_declared_v14(path=DECLARED_FIXTURE_V14):
     with open(path) as f:
         return [tuple(r) for r in json.load(f)]
 ```
@@ -124,7 +127,7 @@ def load_declared_v13(path=DECLARED_FIXTURE_V13):
 python3 -c "
 import sys; sys.path.insert(0,'.')
 from tools import rcbitnova_gates as g
-g.freeze_declared(path=g.DECLARED_FIXTURE_V13, n_declared=176, effect='JS: RCBitNova V1.3')
+g.freeze_declared(path=g.DECLARED_FIXTURE_V14, n_declared=176, effect='JS: RCBitNova V1.4')
 print('frozen')"
 ```
 
@@ -132,7 +135,7 @@ print('frozen')"
 
 ```python
 def test_v13_manifest_is_176_records_and_ends_with_the_panel_state():
-    recs = gates.load_declared_v13()
+    recs = gates.load_declared_v14()
     assert len(recs) == 176
     assert recs[175][1] == "Panel: open dynamics card (0 none, 1..8 band)", recs[175]
     assert (recs[175][2], recs[175][3], recs[175][4]) == (0.0, 8.0, 1.0)
@@ -141,7 +144,7 @@ def test_v13_manifest_is_176_records_and_ends_with_the_panel_state():
 
 
 def test_v13_manifest_holds_the_two_records_this_feature_changes():
-    recs = gates.load_declared_v13()
+    recs = gates.load_declared_v14()
     assert recs[85][1] == "HP Freq (Hz)" and (recs[85][2], recs[85][3]) == (20.0, 20000.0)
     assert recs[89][1] == "LP Freq (Hz)" and (recs[89][2], recs[89][3]) == (20.0, 20000.0)
 ```
@@ -150,41 +153,41 @@ def test_v13_manifest_holds_the_two_records_this_feature_changes():
 
 ```bash
 python3 -m pytest tests/test_rcbitnova_dsp.py -q -k v13_manifest > /tmp/t.txt 2>&1; echo $?
-git add tests/fixtures/v13_declared_176.json tools/rcbitnova_gates.py tests/test_rcbitnova_dsp.py
-git commit -m "test(rcbitnova): freeze V1.3's 176 declared records before V1.4 exists"
+git add tests/fixtures/v14_declared_176.json tools/rcbitnova_gates.py tests/test_rcbitnova_dsp.py
+git commit -m "test(rcbitnova): freeze V1.4's 176 declared records before V1.5 exists"
 ```
 
 ---
 
-### Task 2: V1.4 as an exact copy, and every version consumer retargeted
+### Task 2: V1.5 as an exact copy, and every version consumer retargeted
 
-§6. Otherwise a plan passes every unit test against V1.3 and never compiles V1.4 at all.
+§6. Otherwise a plan passes every unit test against V1.4 and never compiles V1.5 at all.
 
-**Files:** create `JSFX/RCBitNova V1.4`; modify `tools/rcbitnova_gates.py`,
+**Files:** create `JSFX/RCBitNova V1.5`; modify `tools/rcbitnova_gates.py`,
 `tools/rcbitnova_compile.py`, `tools/rcbitnova_nulltest.py`, `tests/_reaper_fx_fake.py`,
 `tests/test_rcbitnova_dsp.py`
 
 - [ ] **Step 1: Copy and install**
 
 ```bash
-cp "JSFX/RCBitNova V1.3" "JSFX/RCBitNova V1.4"
-cp "JSFX/RCBitNova V1.4" ~/Library/Application\ Support/REAPER/Effects/
+cp "JSFX/RCBitNova V1.4" "JSFX/RCBitNova V1.5"
+cp "JSFX/RCBitNova V1.5" ~/Library/Application\ Support/REAPER/Effects/
 ```
 
 - [ ] **Step 2: Retarget — BOTH the defaults and the explicit callers**
 
-`tools/rcbitnova_gates.py`: add `V14 = "JSFX/RCBitNova V1.4"`. Change **all four**:
+`tools/rcbitnova_gates.py`: add `V15 = "JSFX/RCBitNova V1.5"`. Change **all four**:
 `check_source`'s default, `_fine_ceiling_indices`'s `open(...)`, `check_live`'s
-`manifest("JS: RCBitNova V1.4", ...)`, and **`main`'s explicit `check_source(V13, ...)` call** —
+`manifest("JS: RCBitNova V1.5", ...)`, and **`main`'s explicit `check_source(V13, ...)` call** —
 a default-only change leaves the CLI silently checking the old file.
 
-`tools/rcbitnova_compile.py`: `add_fx("JS: RCBitNova V1.4")`, the delete filter, the version
+`tools/rcbitnova_compile.py`: `add_fx("JS: RCBitNova V1.5")`, the delete filter, the version
 assertion's message, and the docstring.
 
-`tools/rcbitnova_nulltest.py`: `BASE = "JS: RCBitNova V1.3"`, `UNDER_TEST = "JS: RCBitNova V1.4"`.
+`tools/rcbitnova_nulltest.py`: `BASE = "JS: RCBitNova V1.4"`, `UNDER_TEST = "JS: RCBitNova V1.5"`.
 Both are explicit assignments; neither is a default.
 
-`tests/_reaper_fx_fake.py`: `N_DECLARED_V14 = 176` and a `"V1.4" in name` branch first.
+`tests/_reaper_fx_fake.py`: `N_DECLARED_V15 = 176` and a `"V1.5" in name` branch first.
 
 `tests/test_rcbitnova_dsp.py`: every `gates.V13` — the file opens **and**
 `gates.check_source(gates.V13, project=...)` in the clean-source test, which is a call, not an open.
@@ -193,22 +196,22 @@ Both are explicit assignments; neither is a default.
 
 ```python
 def test_v14_starts_as_an_exact_copy_of_v13():
-    """Deleted by Task 5, the commit that first changes V1.4. Its job is to make the starting
+    """Deleted by Task 5, the commit that first changes V1.5. Its job is to make the starting
     point explicit, not to be permanent."""
     a = open(gates.V13, encoding="utf-8", errors="replace").read()
-    b = open(gates.V14, encoding="utf-8", errors="replace").read()
-    assert a == b, "V1.4 must begin life identical to V1.3"
+    b = open(gates.V15, encoding="utf-8", errors="replace").read()
+    assert a == b, "V1.5 must begin life identical to V1.4"
 ```
 
-- [ ] **Step 4: Prove the CLI really targets V1.4**
+- [ ] **Step 4: Prove the CLI really targets V1.5**
 
 ```python
 def test_the_cli_checks_the_file_under_test_not_the_frozen_one():
     """A default-only retarget leaves `main` passing the OLD constant explicitly."""
     seen = []
-    with mock.patch.object(gates, "check_source", lambda p=gates.V14, **k: seen.append(p)):
+    with mock.patch.object(gates, "check_source", lambda p=gates.V15, **k: seen.append(p)):
         gates.main(["gate", "--source-only"])
-    assert seen == [gates.V14], f"the CLI checked {seen}"
+    assert seen == [gates.V15], f"the CLI checked {seen}"
 ```
 
 - [ ] **Step 5: Run everything, then commit**
@@ -217,12 +220,12 @@ def test_the_cli_checks_the_file_under_test_not_the_frozen_one():
 python3 -m pytest tests/test_rcbitnova_dsp.py -q > /tmp/t.txt 2>&1; echo $?
 python3 tools/rcbitnova_gates.py --source-only > /tmp/g.txt 2>&1; echo $?; cat /tmp/g.txt
 python3 tools/rcbitnova_compile.py > /tmp/c.txt 2>&1; echo $?; cat /tmp/c.txt
-git add "JSFX/RCBitNova V1.4" tools/ tests/
-git commit -m "feat(rcbitnova): V1.4 as an exact copy, every version consumer retargeted"
+git add "JSFX/RCBitNova V1.5" tools/ tests/
+git commit -m "feat(rcbitnova): V1.5 as an exact copy, every version consumer retargeted"
 ```
 
 The compile line must name **179 parameters** and the tool must not have refused on the version
-assertion. If it refuses, REAPER has not scanned V1.4 — rescan and rerun.
+assertion. If it refuses, REAPER has not scanned V1.5 — rescan and rerun.
 
 ---
 
@@ -262,7 +265,7 @@ def test_fake_param_exposes_range_and_NOT_lo_hi_like_real_reapy():
 
 def test_fake_rpr_get_param_returns_the_reapy_tuple_shape():
     """value at [0], lo at [4], hi at [5] - the positions migrate_v10_to_v11 already reads."""
-    tr, rpr = fake.chain("A", "JS: RCBitNova V1.3", "B")
+    tr, rpr = fake.chain("A", "JS: RCBitNova V1.4", "B")
     tr.fxs[1].params[89].value = 12000.0
     r = rpr.TrackFX_GetParam(tr.id, 1, 89, 0, 0)
     assert abs(r[0] - 12000.0) < 0.5 and (r[4], r[5]) == (20.0, 20000.0)
@@ -322,14 +325,14 @@ In `FakeRPR` — note the existing `_fx` takes ONE argument, `_fx(self, idx)`:
         return True
 ```
 
-- [ ] **Step 4: Give the V1.3/V1.4 fakes the two real records**
+- [ ] **Step 4: Give the V1.4/V1.5 fakes the two real records**
 
 `FakeFX.__init__` names every declared parameter `P{i}`:
 
 ```python
         self.params = [FakeParam(f"P{i}") for i in range(n_declared)]
         if n_declared >= 176:
-            hi = 24000.0 if "V1.4" in name else 20000.0
+            hi = 24000.0 if "V1.5" in name else 20000.0
             self.params[85] = FakeParam("HP Freq (Hz)", lo=20.0, hi=hi, step=1.0)
             self.params[89] = FakeParam("LP Freq (Hz)", lo=20.0, hi=hi, step=1.0)
             self.params[175] = FakeParam("Panel: open dynamics card (0 none, 1..8 band)",
@@ -438,7 +441,7 @@ git commit -m "test(rcbitnova): the null harness copies state by VALUE, and comp
 §3.2, §3.3. This task can ship a smooth, believable, wrong curve. It has already been measured
 doing so.
 
-**Files:** modify `JSFX/RCBitNova V1.4`, `tools/rcbitnova_curve.py`, `tools/rcbitnova_gates.py`,
+**Files:** modify `JSFX/RCBitNova V1.5`, `tools/rcbitnova_curve.py`, `tools/rcbitnova_gates.py`,
 `tests/test_rcbitnova_dsp.py`
 
 - [ ] **Step 1: Write the failing gate check first**
@@ -494,7 +497,7 @@ sequential**, so the constants must go with `gc_fmeta`, not with the functions. 
 immediately above `gc_fmeta = 304;`:
 
 ```eel2
-// ---- V1.4: ONE graph-frequency contract. Four sites read it: the axis producer and reader, and
+// ---- V1.5: ONE graph-frequency contract. Four sites read it: the axis producer and reader, and
 // the realized linear-phase GRID's producer and reader. Declared HERE, above gc_fmeta, because
 // @init runs top to bottom and the panel metadata rows below read GC_FMIN/GC_FMAX - placed down
 // beside the functions they would both read as ZERO and store a 0..0 range.
@@ -627,7 +630,7 @@ grep -n "f_to_x\|x_to_f\|realized_bits_grid\|FMAX" tests/test_rcbitnova_dsp.py
      "band-freq-clamp"),
 ```
 
-**Before adding each, confirm its target string exists in V1.4 as this task leaves it.** A seed
+**Before adding each, confirm its target string exists in V1.5 as this task leaves it.** A seed
 that changes nothing fails the harness's own `assert mutated != clean`; a seed caught by the wrong
 assertion is worse than one not caught.
 
@@ -636,10 +639,10 @@ assertion is worse than one not caught.
 ```bash
 python3 -m pytest tests/test_rcbitnova_dsp.py -q > /tmp/t.txt 2>&1; echo $?
 python3 tools/rcbitnova_gates.py --source-only > /tmp/g.txt 2>&1; echo $?; cat /tmp/g.txt
-cp "JSFX/RCBitNova V1.4" ~/Library/Application\ Support/REAPER/Effects/
+cp "JSFX/RCBitNova V1.5" ~/Library/Application\ Support/REAPER/Effects/
 python3 tools/rcbitnova_compile.py > /tmp/c.txt 2>&1; echo $?; cat /tmp/c.txt
 python3 -u tools/rcbitnova_nulltest.py > /tmp/n.txt 2>&1; echo $?; tail -3 /tmp/n.txt
-git add "JSFX/RCBitNova V1.4" tools/ tests/
+git add "JSFX/RCBitNova V1.5" tools/ tests/
 git commit -m "feat(rcbitnova): one graph-frequency contract, and a reduction that keeps the knee"
 ```
 
@@ -651,32 +654,32 @@ Null is still 6 of 6 here: the declarations have not moved, and none of this tou
 
 §3.1, §5.1.
 
-**Files:** modify `JSFX/RCBitNova V1.4`, `tools/rcbitnova_gates.py`, `tests/test_rcbitnova_dsp.py`
+**Files:** modify `JSFX/RCBitNova V1.5`, `tools/rcbitnova_gates.py`, `tests/test_rcbitnova_dsp.py`
 
 **Interfaces:** produces `gates.RANGE_CHANGES` — read here, by the migrator in Task 8.
 
 - [ ] **Step 1: The table and the derived manifest**
 
 ```python
-# The ONLY records whose declared range differs between V1.3 and V1.4. Data, not two special
+# The ONLY records whose declared range differs between V1.4 and V1.5. Data, not two special
 # cases in code, because the migrator must agree with exactly this. Indices are MEASURED:
-# tests/fixtures/v13_declared_176.json records 85 and 89.
+# tests/fixtures/v14_declared_176.json records 85 and 89.
 RANGE_CHANGES = {
     85: ((20.0, 20000.0), (20.0, 24000.0)),   # HP Freq (Hz)
     89: ((20.0, 20000.0), (20.0, 24000.0)),   # LP Freq (Hz)
 }
 
 
-def expected_v14_manifest():
-    """DERIVED from the V1.3 fixture plus the table - never regenerated from source. --freeze
+def expected_v15_manifest():
+    """DERIVED from the V1.4 fixture plus the table - never regenerated from source. --freeze
     agrees with whatever the source happens to say, which is the one thing a baseline must not do.
     """
     out = []
-    for i, name, lo, hi, step, default in load_declared_v13():
+    for i, name, lo, hi, step, default in load_declared_v14():
         if i in RANGE_CHANGES:
             (was_lo, was_hi), (now_lo, now_hi) = RANGE_CHANGES[i]
             assert (lo, hi) == (was_lo, was_hi), \
-                f"record {i} ({name}) is {(lo, hi)} in the V1.3 fixture, table says {(was_lo, was_hi)}"
+                f"record {i} ({name}) is {(lo, hi)} in the V1.4 fixture, table says {(was_lo, was_hi)}"
             lo, hi = now_lo, now_hi
         out.append((i, name, lo, hi, step, default))
     return out
@@ -697,20 +700,20 @@ ceiling one — permitted to differ in `hi` and in nothing else. **Pick one and 
 commit message**; leaving both unowned is how the gate ends up unable to pass on correct source.
 
 ```python
-    expected = expected_v14_manifest()
+    expected = expected_v15_manifest()
     got = [(r[0], r[1], r[2], r[3], r[4], r[6]) for r in dec14]
-    assert len(got) == len(expected), f"V1.4 declares {len(got)}, expected {len(expected)}"
+    assert len(got) == len(expected), f"V1.5 declares {len(got)}, expected {len(expected)}"
     assert got == expected, next(
-        (f"record {i} differs: expected {a}, V1.4 {b}"
+        (f"record {i} differs: expected {a}, V1.5 {b}"
          for i, (a, b) in enumerate(zip(expected, got)) if a != b),
-        "the derived manifest and V1.4 disagree")
+        "the derived manifest and V1.5 disagree")
 ```
 
 - [ ] **Step 3: Offline tests for the table**
 
 ```python
-def test_expected_v14_manifest_differs_from_v13_in_exactly_two_upper_bounds():
-    v13, v14 = gates.load_declared_v13(), gates.expected_v14_manifest()
+def test_expected_v15_manifest_differs_from_v13_in_exactly_two_upper_bounds():
+    v13, v14 = gates.load_declared_v14(), gates.expected_v15_manifest()
     assert len(v13) == len(v14) == 176
     diffs = [(a, b) for a, b in zip(v13, v14) if a != b]
     assert [a[0] for a, _ in diffs] == [85, 89], f"changed: {[a[0] for a, _ in diffs]}"
@@ -720,23 +723,23 @@ def test_expected_v14_manifest_differs_from_v13_in_exactly_two_upper_bounds():
             "only the upper bound may move: not the name, the step or the default"
 
 
-def test_expected_v14_manifest_refuses_a_baseline_that_does_not_match_the_table():
+def test_expected_v15_manifest_refuses_a_baseline_that_does_not_match_the_table():
     import copy
-    tampered = copy.deepcopy(gates.load_declared_v13())
+    tampered = copy.deepcopy(gates.load_declared_v14())
     tampered[85] = (85, "HP Freq (Hz)", 20.0, 22000.0, 1.0, 20.0)
-    with mock.patch.object(gates, "load_declared_v13", lambda *a, **k: tampered):
+    with mock.patch.object(gates, "load_declared_v14", lambda *a, **k: tampered):
         with pytest.raises(AssertionError, match="table says"):
-            gates.expected_v14_manifest()
+            gates.expected_v15_manifest()
 ```
 
 - [ ] **Step 4: A RED checkpoint that is actually red**
 
-The old plan's red step ran only offline tests that never read V1.4's declarations, so it was green
+The old plan's red step ran only offline tests that never read V1.5's declarations, so it was green
 before the change. Parse the source instead:
 
 ```python
 def test_the_source_declares_what_the_range_table_says():
-    text = open(gates.V14, encoding="utf-8", errors="replace").read()
+    text = open(gates.V15, encoding="utf-8", errors="replace").read()
     for slider, idx in (("slider132", 85), ("slider136", 89)):
         m = re.search(rf"^{slider}:\d+<20,(\d+),1>", text, re.M)
         assert m, f"{slider} declaration not found"
@@ -765,7 +768,7 @@ Defaults untouched. Site rows:
 ```bash
 python3 -m pytest tests/test_rcbitnova_dsp.py -q > /tmp/t.txt 2>&1; echo $?
 python3 tools/rcbitnova_gates.py --source-only > /tmp/g.txt 2>&1; echo $?; cat /tmp/g.txt
-cp "JSFX/RCBitNova V1.4" ~/Library/Application\ Support/REAPER/Effects/
+cp "JSFX/RCBitNova V1.5" ~/Library/Application\ Support/REAPER/Effects/
 python3 tools/rcbitnova_compile.py > /tmp/c.txt 2>&1; echo $?; cat /tmp/c.txt
 python3 tools/rcbitnova_gates.py --live > /tmp/gl.txt 2>&1; echo $?; cat /tmp/gl.txt
 python3 -u tools/rcbitnova_nulltest.py > /tmp/n.txt 2>&1; echo $?; tail -3 /tmp/n.txt
@@ -777,7 +780,7 @@ harness copy by value. That ordering is the whole point of putting Task 4 first.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add "JSFX/RCBitNova V1.4" tools/ tests/
+git add "JSFX/RCBitNova V1.5" tools/ tests/
 git commit -m "feat(rcbitnova): HP/LP reach 24 kHz, with both live comparisons given an owner"
 ```
 
@@ -788,7 +791,7 @@ git commit -m "feat(rcbitnova): HP/LP reach 24 kHz, with both live comparisons g
 §3.4. Three separate defects live here, and the order matters: ownership first, or the fields
 work while the band underneath them silently moves.
 
-**Files:** modify `JSFX/RCBitNova V1.4`, `tools/rcbitnova_layout.py`, `tools/rcbitnova_gates.py`,
+**Files:** modify `JSFX/RCBitNova V1.5`, `tools/rcbitnova_layout.py`, `tools/rcbitnova_gates.py`,
 `tests/test_rcbitnova_dsp.py`
 
 - [ ] **Step 1: The top bar must own its clicks BEFORE node arbitration**
@@ -807,7 +810,7 @@ same strip and have the same exposure. Fix it for the strip, not for the two new
 In the layout block, beside `gc_strip_hot` and `gc_panel_hot`:
 
 ```eel2
-// V1.4: the top bar owns its own pointer. gc_in_plot does not exclude it, so until now a click on
+// V1.5: the top bar owns its own pointer. gc_in_plot does not exclude it, so until now a click on
 // a global button could also enable and start dragging whatever band node sat under it. The two
 // new frequency fields made that reachable in ordinary use; the three buttons always had it.
 gc_topbar_hot = mouse_y >= gc_by && mouse_y < gc_by + gc_fh &&
@@ -854,7 +857,7 @@ These read `GC_FMIN`/`GC_FMAX`, which Task 5 assigned **above** this block. Prov
 def test_the_frequency_metadata_rows_hold_the_real_range_not_zero():
     """EEL2's @init is sequential. Declared below gc_fmeta, GC_FMIN/GC_FMAX read as 0 and both
     rows would store a 0..0 range - clamping every typed value to zero, silently."""
-    text = open(gates.V14, encoding="utf-8", errors="replace").read()
+    text = open(gates.V15, encoding="utf-8", errors="replace").read()
     env = gates.eval_init(text, ["GC_FMIN", "GC_FMAX"])
     assert (env["GC_FMIN"], env["GC_FMAX"]) == (20, 24000)
     for row, slider in ((6, 132), (7, 136)):
@@ -866,7 +869,7 @@ def test_the_frequency_metadata_rows_hold_the_real_range_not_zero():
 - [ ] **Step 4: One id resolver, used by every part of the controller**
 
 ```eel2
-// ---- V1.4: ONE id resolver. Capture, metadata lookup, current-value read, drag and commit all
+// ---- V1.5: ONE id resolver. Capture, metadata lookup, current-value read, drag and commit all
 // go through these. Ids 200/201 are NOT 100 + band*10 + slot: left to the panel arithmetic, id
 // 200 resolves to band 10 and slot 0 - the Soft-ceiling row, and gc_slot_slider reading dynb[10],
 // four words past an eight-entry table. A branch in the commit alone would have made typing work
@@ -910,7 +913,7 @@ test rather than eyeballing it.
 - [ ] **Step 6: The two named writers, and commit**
 
 ```eel2
-// V1.4: the HP/LP frequency, written in ONE place per engine. Write, automate, THEN rebuild -
+// V1.5: the HP/LP frequency, written in ONE place per engine. Write, automate, THEN rebuild -
 // @slider is not guaranteed to run after slider_automate, established live in V1.0. No clamp of
 // their own: their declared range widened with the axis, unlike the bands'.
 function gc_w_hpfreq(v) ( slider132 = floor(v + 0.5); slider_automate(slider132); gc_apply_hplp(0); );
@@ -950,26 +953,26 @@ An earlier draft asserted `gc_slot_slider not in gc_field_commit`. **That assert
 ```bash
 python3 -m pytest tests/test_rcbitnova_dsp.py -q > /tmp/t.txt 2>&1; echo $?
 python3 tools/rcbitnova_gates.py --source-only > /tmp/g.txt 2>&1; echo $?; cat /tmp/g.txt
-cp "JSFX/RCBitNova V1.4" ~/Library/Application\ Support/REAPER/Effects/
+cp "JSFX/RCBitNova V1.5" ~/Library/Application\ Support/REAPER/Effects/
 python3 tools/rcbitnova_compile.py > /tmp/c.txt 2>&1; echo $?; cat /tmp/c.txt
 python3 -u tools/rcbitnova_nulltest.py > /tmp/n.txt 2>&1; echo $?; tail -3 /tmp/n.txt
-git add "JSFX/RCBitNova V1.4" tools/ tests/
+git add "JSFX/RCBitNova V1.5" tools/ tests/
 git commit -m "feat(rcbitnova): top-bar pointer ownership, HP/LP fields, resolver and writers"
 ```
 
 ---
 
-### Task 8: `migrate_v13_to_v14.py`
+### Task 8: `migrate_v14_to_v15.py`
 
 §4.1. A separate tool. `migrate_v10_to_v11.py` and its thirteen tests are not touched.
 
-**Files:** create `tools/migrate_v13_to_v14.py`; modify `tests/test_rcbitnova_dsp.py`
+**Files:** create `tools/migrate_v14_to_v15.py`; modify `tests/test_rcbitnova_dsp.py`
 
 - [ ] **Step 1: Write the failing tests, both records, and a sabotage that is not self-consistent**
 
 ```python
 def _v13_chain():
-    tr, rpr = fake.chain("A", "JS: RCBitNova V1.3", "B")
+    tr, rpr = fake.chain("A", "JS: RCBitNova V1.4", "B")
     return tr, rpr, fake.FakeProject(tr)
 
 
@@ -978,7 +981,7 @@ def test_v14_migration_carries_the_frequencies_in_HZ(idx, hz):
     """Both changed records, and both bounds - a swapped index escapes a single-record test."""
     tr, rpr, pr = _v13_chain()
     tr.fxs[1].params[idx].value = hz
-    out = migrate_chain_v14(tr, rpr, pr, dry_run=False)
+    out = migrate_chain_v15(tr, rpr, pr, dry_run=False)
     assert out.startswith("migrated"), out
     assert abs(tr.fxs[1].params[idx].value - hz) < 0.5, \
         f"record {idx} landed at {tr.fxs[1].params[idx].value}, not {hz}"
@@ -989,7 +992,7 @@ def test_v14_migration_copies_every_other_record_by_normalised_number():
     for i in range(176):
         if i not in gates.RANGE_CHANGES:
             tr.fxs[1].params[i].normalized = (i % 17) / 17.0
-    migrate_chain_v14(tr, rpr, pr, dry_run=False)
+    migrate_chain_v15(tr, rpr, pr, dry_run=False)
     for i in range(176):
         if i not in gates.RANGE_CHANGES:
             assert tr.fxs[1].params[i].normalized == pytest.approx((i % 17) / 17.0), i
@@ -1007,18 +1010,18 @@ def test_v14_migration_refuses_and_removes_the_new_instance_when_a_value_does_no
         return real_set(track_id, fx_index, i, v * 0.5 if i == 89 else v)
 
     rpr.TrackFX_SetParamNormalized = sabotage
-    out = migrate_chain_v14(tr, rpr, pr, dry_run=False)
+    out = migrate_chain_v15(tr, rpr, pr, dry_run=False)
     assert out.startswith("REFUSED"), out
     assert "did not read back" in out
-    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.3", "B"], \
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.4", "B"], \
         "a refusal must leave NO new instance behind"
 ```
 
 - [ ] **Step 2: Run to verify they fail, then write the migrator**
 
-Copy `tools/migrate_v10_to_v11.py` to `tools/migrate_v13_to_v14.py` and change, in this order:
+Copy `tools/migrate_v10_to_v11.py` to `tools/migrate_v14_to_v15.py` and change, in this order:
 
-1. `N_DECLARED = 176`; source `"RCBitNova V1.3"`, destination `"JS: RCBitNova V1.4"`.
+1. `N_DECLARED = 176`; source `"RCBitNova V1.4"`, destination `"JS: RCBitNova V1.5"`.
 2. Keep every refusal verbatim, and `UNDETECTED` about parameter aliases. **Automation is refused,
    so rescaling envelopes is out of scope** — the precedent is already set.
 3. Keep the positional host tail and the GUID-STRING identity.
@@ -1048,7 +1051,7 @@ def _param(rpr, track, idx, i):
 ```
 
 **`return` from inside `try` would skip the cleanup.** The inherited migrator deletes the new
-instance only in its `except` branch; a bare return leaves the chain as `A, V1.3, B, V1.4` while
+instance only in its `except` branch; a bare return leaves the chain as `A, V1.4, B, V1.5` while
 reporting "source untouched". Raising routes through the existing GUID-based rollback, which is
 what the test above asserts.
 
@@ -1057,8 +1060,8 @@ what the test above asserts.
 ```bash
 git diff --stat tools/migrate_v10_to_v11.py | wc -l          # must be 0
 python3 -m pytest tests/test_rcbitnova_dsp.py -q > /tmp/t.txt 2>&1; echo $?
-git add tools/migrate_v13_to_v14.py tests/
-git commit -m "feat(rcbitnova): migrate_v13_to_v14 carries the two frequencies in Hz"
+git add tools/migrate_v14_to_v15.py tests/
+git commit -m "feat(rcbitnova): migrate_v14_to_v15 carries the two frequencies in Hz"
 ```
 
 ---
@@ -1084,7 +1087,7 @@ python3 -u tools/rcbitnova_nulltest.py > /tmp/n.txt 2>&1; echo $?; tail -3 /tmp/
 ```
 
 Every `echo $?` prints `0`; compile names 179; null says **6 cases identical**. If any live tool
-refuses on its version assertion, REAPER has not scanned V1.4 — rescan and rerun. **A live green
+refuses on its version assertion, REAPER has not scanned V1.5 — rescan and rerun. **A live green
 light on an unscanned file means nothing**: measured, `add_fx` returns the previous version and
 everything passes.
 
@@ -1093,7 +1096,7 @@ everything passes.
 In a **96 kHz** project, on material with known energy above 22 kHz:
 
 1. **`Phase: Linear`.** FIR Brick exists only in the linear-phase engine — under Min the slope maps
-   to zero sections and no filter runs at all. The handle label says so since V1.3. And the phase
+   to zero sections and no filter runs at all. The handle label says so since V1.4. And the phase
    change is **deferred until the transport stops**, so switch it stopped.
 2. **`LP res: High`.** A FIR's transition band is roughly constant in Hz, so its steepness in
    octaves depends entirely on the kernel length. Measured: an HP brick at 43 Hz spans 1.65 octaves
@@ -1113,14 +1116,14 @@ In a **96 kHz** project, on material with known energy above 22 kHz:
 
 - [ ] **Step 4: The migration, live**
 
-A V1.3 instance with `LP Freq` at 12000 Hz; run `migrate_v13_to_v14`; read the V1.4 instance's
+A V1.4 instance with `LP Freq` at 12000 Hz; run `migrate_v14_to_v15`; read the V1.5 instance's
 `LP Freq` from the Param list. It must say **12000**, not 14398.
 
 - [ ] **Step 5: Commit, then tag**
 
 ```bash
 git add tools/ tests/
-git commit -m "test(rcbitnova): V1.4 gates, seeded defects and the live matrix"
+git commit -m "test(rcbitnova): V1.5 gates, seeded defects and the live matrix"
 ```
 
 Tag only after the owner has actually run the live matrix, and record in the tag message what was
