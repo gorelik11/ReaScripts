@@ -99,13 +99,20 @@ python3 -c "
 import reapy
 from reapy import reascript_api as RPR
 with reapy.inside_reaper():
-    pr = reapy.Project(); RPR.InsertTrackAtIndex(0, False)
-    tr = reapy.Project().tracks[0]; fx = tr.add_fx('JS: RCBitNova V1.4')
-    print(repr(fx.name.split(' - ')[0]), fx.n_params)
-    fx.delete(); RPR.DeleteTrack(reapy.Project().tracks[0].id)"
+    n = len(reapy.Project().tracks); RPR.InsertTrackAtIndex(n, False)
+with reapy.inside_reaper():
+    tr = reapy.Project().tracks[n]; fx = tr.add_fx('RCBitNova V1.4')
+    print(RPR.TrackFX_GetNamedConfigParm(tr.id, fx.index, 'fx_ident', '', 512)[4], fx.n_params)
+    tr.fxs[fx.index].delete(); RPR.DeleteTrack(reapy.Project().tracks[n].id)"
 ```
-Expected: `'JS: RCBitNova V1.4' 179`. **If it says V1.2, STOP** — REAPER has not scanned the file
-and everything below would freeze the wrong plugin. Rescan in Preferences > Plug-ins, or restart.
+Expected: `RCBitNova V1.4 179`. **If it names another version, STOP** — everything below would
+freeze the wrong plugin.
+
+**`fx_ident`, not `fx.name`.** Measured 2026-09-13: `fx.name` is REAPER's cached DISPLAY string and
+goes stale the moment a `desc:` line changes, so it reported "RCBitNova V1.2" for a correctly
+loaded V1.3 file and a name-based guard rejected a good build for two rounds of diagnosis. And add
+by FILENAME, not by `"JS: <desc prefix>"` — `TrackFX_AddByName` fuzzy-matches an unknown name to
+the nearest one it knows and silently returns the previous version.
 
 - [ ] **Step 2: Add the constants and the loader**
 
