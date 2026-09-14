@@ -2965,6 +2965,25 @@ def test_function_body_skips_the_local_clause():
     assert "slider51 = v;" in gates._function_body(text, "gc_w_dyn")
 
 
+def test_v14_manifest_is_176_records_and_ends_with_the_panel_state():
+    """V1.4's declared block, frozen from the installed build, is what V1.5 will be measured
+    against. Its first 175 records must still BE V1.1's - that is what has made every version
+    since a drop-in - and record 175 is the panel-card state, which the V1.1 fixture is one record
+    too short to cover."""
+    recs = gates.load_declared_v14()
+    assert len(recs) == 176
+    assert recs[175][1] == "Panel: open dynamics card (0 none, 1..8 band)", recs[175]
+    assert (recs[175][2], recs[175][3], recs[175][4]) == (0.0, 8.0, 1.0)
+    assert [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in recs[:175]] == gates.load_declared()
+
+
+def test_v14_manifest_holds_the_two_records_v15_will_change():
+    """MEASURED indices, not derived from slider numbers: the fixture is the authority."""
+    recs = gates.load_declared_v14()
+    assert recs[85][1] == "HP Freq (Hz)" and (recs[85][2], recs[85][3]) == (20.0, 20000.0)
+    assert recs[89][1] == "LP Freq (Hz)" and (recs[89][2], recs[89][3]) == (20.0, 20000.0)
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V14).read()

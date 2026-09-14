@@ -27,6 +27,18 @@ except ImportError:                      # also runnable from inside tools/
 
 DECLARED_FIXTURE = os.path.join("tests", "fixtures", "v11_declared_175.json")
 
+# V1.4's full declared block, frozen from the installed build. v11_declared_175.json stays exactly
+# as it is: it is evidence of what V1.1 declared, and it still proves the first 175 records of
+# every build since. This one is one record longer - slider246, the panel-card state, which the
+# V1.1 fixture cannot cover - and it is the baseline V1.5 is measured against.
+DECLARED_FIXTURE_V14 = os.path.join("tests", "fixtures", "v14_declared_176.json")
+
+
+def load_declared_v14(path=DECLARED_FIXTURE_V14):
+    with open(path) as f:
+        return [tuple(r) for r in json.load(f)]
+
+
 V10 = "JSFX/RCBitNova V1.0"
 V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, in the owner's
                                      # projects. Never edited again.
@@ -233,6 +245,11 @@ def freeze_declared(path=DECLARED_FIXTURE, track_index=0, n_declared=175,
         assert not [f for f in tr.fxs if "RCBitNova" in f.name], \
             f"track {track_index} already holds an RCBitNova; use an empty scratch track"
         fx = tr.add_fx(effect)
+        # The fixture this writes is a BASELINE: everything later is measured against it, so the
+        # one thing it must never do is freeze the wrong plugin. fx_ident names the FILE;
+        # fx.name is a cached display string that goes stale when a desc line changes.
+        ident = RPR.TrackFX_GetNamedConfigParm(tr.id, fx.index, "fx_ident", "", 512)[4]
+        assert ident == effect, f"asked for the {effect!r} file and REAPER loaded {ident!r}"
         assert fx.n_params == n_declared + 3, \
             f"{effect} reports {fx.n_params} parameters, expected {n_declared} declared + 3 host"
         recs = _declared_records(RPR, tr, fx, n_declared)
