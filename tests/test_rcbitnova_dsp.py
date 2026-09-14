@@ -3004,6 +3004,37 @@ def test_the_cli_checks_the_file_under_test_not_the_frozen_one():
     assert seen == [gates.V15], f"the CLI checked {seen}"
 
 
+def test_fake_param_converts_between_normalised_and_value_over_its_own_range():
+    """The whole point: the same normalised number means a DIFFERENT frequency in a different
+    range, and surviving that is what the V1.4 -> V1.5 migration has to do."""
+    old = fake.FakeParam("LP Freq (Hz)", lo=20.0, hi=20000.0, step=1.0)
+    old.value = 12000.0
+    assert abs(old.normalized - (12000 - 20) / (20000 - 20)) < 1e-12
+    new = fake.FakeParam("LP Freq (Hz)", lo=20.0, hi=24000.0, step=1.0)
+    new.normalized = old.normalized            # the WRONG migration, expressed
+    assert abs(new.value - 14398.4) < 0.1
+    new.value = old.value                      # the RIGHT one
+    assert abs(new.value - 12000.0) < 1e-9
+
+
+def test_fake_param_exposes_range_and_NOT_lo_hi_like_real_reapy():
+    """reapy.FXParam has .range and no .lo/.hi - measured. A fake with the friendlier API is how
+    production code that cannot work live passes offline, which is the opposite of a fake's job."""
+    p = fake.FakeParam("HP Freq (Hz)", lo=20.0, hi=24000.0, step=1.0)
+    assert p.range == (20.0, 24000.0)
+    assert not hasattr(p, "lo") and not hasattr(p, "hi")
+
+
+def test_fake_rpr_get_param_returns_the_reapy_tuple_shape():
+    """Value at [0], lo at [4], hi at [5] - the positions the existing migrator already reads."""
+    tr, rpr = fake.chain("A", "JS: RCBitNova V1.4", "B")
+    tr.fxs[1].params[89].value = 12000.0
+    r = rpr.TrackFX_GetParam(tr.id, 1, 89, 0, 0)
+    assert abs(r[0] - 12000.0) < 0.5 and (r[4], r[5]) == (20.0, 20000.0)
+    rpr.TrackFX_SetParamNormalized(tr.id, 1, 89, 1.0)
+    assert abs(rpr.TrackFX_GetParam(tr.id, 1, 89, 0, 0)[0] - 20000.0) < 0.5
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V15).read()

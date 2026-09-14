@@ -23,10 +23,38 @@ HOST_TAIL = ("Bypass", "Wet", "Delta")
 
 
 class FakeParam:
-    def __init__(self, name, value=0.0, envelope=None):
-        self.name = name
-        self.normalized = value
-        self.envelope = envelope
+    """A declared parameter. `normalized` is what the host stores; `value` is what the user sees.
+
+    Keeping BOTH, over an explicit range, is the only way an offline test can tell a correct
+    migration from a raw normalised copy - and telling those apart is the whole reason the
+    V1.4 -> V1.5 migration needs a fake at all.
+
+    `range` and NOT `lo`/`hi`, because that is exactly what reapy.FXParam exposes (measured: name,
+    normalized, range, envelope, formatted, format_value, add_envelope). A fake with a friendlier
+    API is how production code that cannot work live passes offline. __slots__ makes the absence
+    real rather than a convention.
+    """
+
+    __slots__ = ("name", "normalized", "envelope", "_lo", "_hi", "step")
+
+    def __init__(self, name, value=0.0, envelope=None, lo=0.0, hi=1.0, step=0.0):
+        self.name, self.normalized, self.envelope = name, value, envelope
+        self._lo, self._hi, self.step = lo, hi, step
+
+    @property
+    def range(self):
+        return (self._lo, self._hi)
+
+    @property
+    def value(self):
+        return self._lo + self.normalized * (self._hi - self._lo)
+
+    @value.setter
+    def value(self, v):
+        v = min(max(v, self._lo), self._hi)
+        if self.step:
+            v = round(v / self.step) * self.step
+        self.normalized = 0.0 if self._hi == self._lo else (v - self._lo) / (self._hi - self._lo)
 
 
 class FakeFX:
@@ -38,6 +66,14 @@ class FakeFX:
         FakeFX._next_guid[0] += 1
         self.guid = "{%08X-0000-0000-0000-000000000000}" % FakeFX._next_guid[0]
         self.params = [FakeParam(f"P{i}") for i in range(n_declared)]
+        # The three records the V1.4 -> V1.5 work addresses, with their real names and ranges.
+        # Indices are MEASURED, from tests/fixtures/v14_declared_176.json.
+        if n_declared >= 176:
+            hi = 24000.0 if "V1.5" in name else 20000.0
+            self.params[85] = FakeParam("HP Freq (Hz)", lo=20.0, hi=hi, step=1.0)
+            self.params[89] = FakeParam("LP Freq (Hz)", lo=20.0, hi=hi, step=1.0)
+            self.params[175] = FakeParam("Panel: open dynamics card (0 none, 1..8 band)",
+                                         lo=0.0, hi=8.0, step=1.0)
         for k, nm in enumerate(HOST_TAIL):
             self.params.append(FakeParam(nm))
         self.enabled = 1
@@ -102,6 +138,17 @@ class FakeRPR:
 
     def _fx(self, idx):
         return self.track.fxs[idx]
+
+    # The reapy tuple shape, positions and all: value at [0], lo at [4], hi at [5]. Production
+    # code reads the range through THIS boundary and never off the param object, because the
+    # param object it meets live has no .lo and no .hi.
+    def TrackFX_GetParam(self, track_id, fx_index, i, _lo, _hi):
+        p = self._fx(fx_index).params[i]
+        return (p.value, 0, 0, 0) + p.range
+
+    def TrackFX_SetParamNormalized(self, track_id, fx_index, i, v):
+        self._fx(fx_index).params[i].normalized = v
+        return True
 
     def TrackFX_GetFXGUID(self, tr, idx):
         return f"(GUID*){id(self._fx(idx)):#x}"          # a POINTER, like the real one
