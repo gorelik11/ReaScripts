@@ -99,6 +99,12 @@ def monitor_route(*, listen_band: int, mono_check: bool) -> str:
     return "stereo"
 
 
+def side_gain(macro: float, micro: float, ratio: float) -> float:
+    """RCBitRangeGain's bit-accurate gain: 2 ^ ((Macro + Micro%) * Bit Ratio)."""
+
+    return 2.0 ** ((macro + micro * 0.01) * ratio)
+
+
 def phase_factor(degrees: float) -> complex:
     """Return the unit complex factor for a phase rotation in degrees."""
 
@@ -202,8 +208,14 @@ def transfer_at(
     cuts: tuple[float, float, float, float],
     slope_db_oct: float,
     settings: list[BandSetting],
+    fold_bits: float = 0.0,
 ) -> tuple[complex, float]:
-    """Return combined Mid-injection and Side-removal responses."""
+    """Return combined Mid-injection and Side-removal responses.
+
+    ``fold_bits`` is the global Width fold: a broadband (weight 1.0) transfer of
+    Side into Mid rotated by a fixed +90 degrees, so the injected copy reaches L
+    and R equally instead of steering the image toward one channel.
+    """
 
     injection = 0j
     removal = 0.0
@@ -214,6 +226,12 @@ def transfer_at(
         injection += weight * amount * phase_factor(setting.phase_deg)
         if setting.move:
             removal += weight * amount
+    fold = amount_from_bits(fold_bits)
+    injection += fold * 1j
+    removal += fold
+    # Fold and the per-band Move draw on the same Side: removing more than all
+    # of it would invert Side rather than silence it.
+    removal = min(removal, 1.0)
     return injection, removal
 
 
@@ -223,6 +241,7 @@ def build_transfer_spectra(
     cuts: tuple[float, float, float, float],
     slope_db_oct: float,
     settings: list[BandSetting],
+    fold_bits: float = 0.0,
 ) -> tuple[list[complex], list[complex]]:
     """Build conjugate-symmetric injection and removal responses."""
 
@@ -233,7 +252,9 @@ def build_transfer_spectra(
     half = size // 2
     for k in range(half + 1):
         freq = sample_rate * k / size
-        inject, remove = transfer_at(freq, cuts, slope_db_oct, settings)
+        inject, remove = transfer_at(
+            freq, cuts, slope_db_oct, settings, fold_bits=fold_bits
+        )
         if k in (0, half):
             inject = complex(inject.real, 0.0)
         injection[k] = inject
@@ -426,3 +447,115 @@ def partitioned_convolve(
             pending.extend(frame[i].real for i in range(partition_size, runtime_size))
             fdl_write = (fdl_write + 1) % partitions
     return output
+
+
+def _bessel_i0(x: float) -> float:
+    """40-term series, matching the plugin's fp_i0 exactly."""
+
+    total = 1.0
+    term = 1.0
+    half = x * 0.5
+    for k in range(1, 40):
+        term *= (half / k) * (half / k)
+        total += term
+    return total
+
+
+def kaiser_window(size: int, beta: float = 14.0) -> list[float]:
+    norm = 1.0 / _bessel_i0(beta)
+    return [
+        _bessel_i0(beta * math.sqrt(max(1.0 - (2.0 * i / (size - 1) - 1.0) ** 2, 0.0)))
+        * norm
+        for i in range(size)
+    ]
+
+
+def realize_kernel(spectrum: list[complex], beta: float = 14.0) -> list[complex]:
+    """Return the response of the FIR the plugin actually builds.
+
+    The design spectrum is only an intention: the plugin inverse-transforms it,
+    shifts it by BD/2, Kaiser-windows it and truncates.  This mirrors those steps
+    and removes the BD/2 linear phase that PDC compensates, so the result is
+    directly comparable with the designed response.
+    """
+
+    size = len(spectrum)
+    half = size // 2
+    window = kaiser_window(size, beta)
+    time_domain = ifft(spectrum)
+    tapped = [
+        complex(time_domain[(i + half) % size].real * window[i], 0.0)
+        for i in range(size)
+    ]
+    realized = fft(tapped)
+    # Undo the BD/2 group delay: bin k gains exp(i*pi*k) = (-1)**k.
+    return [value * (1.0 if k % 2 == 0 else -1.0) for k, value in enumerate(realized)]
+
+
+def simulate_engine(
+    side: list[float],
+    injection_spectrum: list[complex],
+    partition_size: int = 2048,
+    beta: float = 14.0,
+) -> list[float]:
+    """Mirror the plugin's runtime: windowed FIR + partitioned overlap-save.
+
+    The design spectrum and the oracle agree by construction; this models what
+    the audio thread actually emits, including the out-ring's one-hop offset.
+    """
+
+    design_size = len(injection_spectrum)
+    runtime_size = 2 * partition_size
+    partitions = design_size // partition_size
+    window = kaiser_window(design_size, beta)
+    half = design_size // 2
+    time_domain = ifft(injection_spectrum)
+    taps = [
+        time_domain[(i + half) % design_size].real * window[i]
+        for i in range(design_size)
+    ]
+    banks = [
+        fft(
+            [
+                complex(taps[k * partition_size + i], 0.0) if i < partition_size else 0j
+                for i in range(runtime_size)
+            ]
+        )
+        for k in range(partitions)
+    ]
+
+    ring_size = 16384
+    history = [0.0] * runtime_size
+    history_pos = 0
+    hop = 0
+    fdl = [[0j] * runtime_size for _ in range(partitions)]
+    fdl_write = 0
+    out = [0.0] * ring_size
+    out_read = 0
+    out_write = partition_size  # the plugin's fp_out_write starts one hop ahead
+    result: list[float] = []
+    for sample in side:
+        history[history_pos] = sample
+        history_pos = (history_pos + 1) % runtime_size
+        hop += 1
+        result.append(out[out_read])
+        out_read = (out_read + 1) % ring_size
+        if hop >= partition_size:
+            hop = 0
+            block = [
+                complex(history[(history_pos + i) % runtime_size], 0.0)
+                for i in range(runtime_size)
+            ]
+            fdl[fdl_write] = fft(block)
+            acc = [0j] * runtime_size
+            for k in range(partitions):
+                delayed = fdl[(fdl_write - k) % partitions]
+                response = banks[k]
+                for i in range(runtime_size):
+                    acc[i] += delayed[i] * response[i]
+            frame = ifft(acc)
+            for i in range(partition_size):
+                out[(out_write + i) % ring_size] = frame[partition_size + i].real
+            out_write = (out_write + partition_size) % ring_size
+            fdl_write = (fdl_write + 1) % partitions
+    return result

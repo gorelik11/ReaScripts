@@ -113,8 +113,12 @@ def assert_transition_structure(source: str) -> None:
 
 
 def assert_gui_structure(source: str) -> None:
+    window = re.search(r"^@gfx (\d+) (\d+)$", source, re.MULTILINE)
+    assert window is not None, "no @gfx size line"
+    assert int(window.group(1)) == 900, window.group(0)
+    assert int(window.group(2)) >= 620, window.group(0)
+
     for token in (
-        "@gfx 900 620",
         "gfx_ext_retina",
         "function fp_freq_to_x",
         "function fp_x_to_freq",
@@ -194,3 +198,84 @@ def assert_realtime_safety(source: str) -> None:
     # EEL2 identifiers are case-insensitive.  A GUI counter named fp_b therefore
     # overwrites the DSP constant FP_B and silently changes the FFT size.
     assert re.search(r"\bfp_b\b", executable) is None
+
+
+_EXPECTED_WIDTH_SLIDERS = {
+    61: ("0", "0,1,0.05", "-Width Fold (bit)"),
+    62: ("0", "-16,16,1", "-Side Macro Shift (bit)"),
+    63: ("0", "-100,100,0.000001", "-Side Micro Shift (% of a bit)"),
+    64: ("1", "0,3,0.25", "-Side Bit Ratio"),
+}
+
+
+def assert_distinct_desc(source: str) -> None:
+    """REAPER identifies a JSFX by its desc line, NOT by its filename.
+
+    A new version left with the old desc is invisible: the FX browser shows
+    nothing new and TrackFX_AddByName fuzzy-matches back to the old plugin,
+    reporting the right parameter count and no error.
+    """
+
+    desc = next(
+        line for line in source.splitlines() if line.startswith("desc:")
+    )
+    assert "1.1" in desc, desc
+    assert "Freqphaser 1.0 -" not in desc, desc
+
+
+def assert_width_manifest(source: str) -> None:
+    records = _slider_records(source)
+
+    # Every band slider keeps its exact declaration.
+    for number, expected in _EXPECTED_SLIDERS.items():
+        assert records[number] == expected, (number, records.get(number), expected)
+
+    for number, expected in _EXPECTED_WIDTH_SLIDERS.items():
+        assert records[number] == expected, (number, records.get(number), expected)
+
+    # REAPER orders FX parameters by slider NUMBER, not by position in the file.
+    # A new parameter numbered among the existing ones shifts every higher
+    # parameter down by one, silently breaking saved projects that address
+    # parameters by position.
+    assert min(_EXPECTED_WIDTH_SLIDERS) > max(_EXPECTED_SLIDERS), (
+        min(_EXPECTED_WIDTH_SLIDERS),
+        max(_EXPECTED_SLIDERS),
+    )
+    assert set(records) == set(_EXPECTED_SLIDERS) | set(_EXPECTED_WIDTH_SLIDERS)
+    assert "Output Trim" not in source
+
+    # The fold rides the existing combined kernel: +90 degrees means it adds to
+    # the imaginary part only, and it shares the Side budget with per-band Move.
+    transfer = source.split("function fp_transfer", 1)[1].split(
+        "function fp_partition_kernel", 1
+    )[0]
+    assert "fp_ti += fp_fold_amount;" in transfer
+    assert "fp_rr += fp_fold_amount;" in transfer
+    assert "fp_rr > 1 ? fp_rr = 1;" in transfer
+
+    # The Side Gain is a plain M/S gain and must never reach the kernel builder.
+    build = source.split("function fp_build_kernels", 1)[1].split(
+        "function fp_convolve_bank", 1
+    )[0]
+    for token in ("fp_side_gain", "fp_side_macro", "fp_side_micro", "fp_side_ratio"):
+        assert token not in build, token
+    assert "(fp_side_delayed - fp_removal) * fp_side_gain_current" in source
+
+    # Width is reachable from the custom GUI, not only the generic parameter list.
+    for token in (
+        "function fp_gui_write_fold",
+        "function fp_gui_write_side_macro",
+        "function fp_gui_write_side_micro",
+        "function fp_gui_write_side_ratio",
+        "slider_automate(slider61)",
+        "slider_automate(slider62)",
+        "slider_automate(slider63)",
+        "slider_automate(slider64)",
+    ):
+        assert token in source, token
+
+    # EEL2 rejects C-style scientific numeric literals.
+    executable = "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+    assert re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?[eE][+-]?\d+").search(
+        executable
+    ) is None
