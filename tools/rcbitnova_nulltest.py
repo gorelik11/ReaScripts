@@ -29,8 +29,8 @@ TRACK = "RCBN NULL TEMP"
 
 # The panel's contract is "no DSP change from V1.1", so V1.1 is the baseline. Comparing against
 # V1.0 would still be true and would answer a question nobody is asking about this feature.
-BASE = "RCBitNova V1.3"
-UNDER_TEST = "RCBitNova V1.4"
+BASE = "RCBitNova V1.4"
+UNDER_TEST = "RCBitNova V1.5"
 
 # case -> {declared parameter name: value in ITS OWN units}
 CASES = {

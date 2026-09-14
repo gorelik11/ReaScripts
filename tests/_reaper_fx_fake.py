@@ -18,6 +18,7 @@ What it models, because that is what the migration's correctness is made of:
 N_DECLARED_V10 = 95
 N_DECLARED_V11 = 175          # frozen: the shipped V1.1
 N_DECLARED_V12 = 176          # V1.1's 175 plus the panel-state slider
+N_DECLARED_V15 = 176          # V1.5 inherits the same declared block; only two RANGES widen
 HOST_TAIL = ("Bypass", "Wet", "Delta")
 
 
@@ -74,7 +75,9 @@ class FakeTrack:
             result = self._add_hook(name)
             if result is not None:
                 return result                # None means "carry on and really add it"
-        n = N_DECLARED_V12 if "V1.2" in name else N_DECLARED_V11 if "V1.1" in name else N_DECLARED_V10
+        n = (N_DECLARED_V15 if ("V1.5" in name or "V1.4" in name or "V1.3" in name)
+             else N_DECLARED_V12 if "V1.2" in name
+             else N_DECLARED_V11 if "V1.1" in name else N_DECLARED_V10)
         fx = FakeFX(name.replace("JS: ", ""), n, self)
         self.fxs.append(fx)
         return fx

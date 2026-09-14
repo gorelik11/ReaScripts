@@ -44,7 +44,8 @@ V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, i
                                      # projects. Never edited again.
 V12 = "JSFX/RCBitNova V1.2"          # FROZEN: tagged rcbitnova-v1.2, the null baseline
 V13 = "JSFX/RCBitNova V1.3"          # FROZEN: tagged rcbitnova-v1.3, the null baseline
-V14 = "JSFX/RCBitNova V1.4"          # the working file - every source check below targets this
+V14 = "JSFX/RCBitNova V1.4"          # FROZEN: tagged rcbitnova-v1.4, the null baseline
+V15 = "JSFX/RCBitNova V1.5"          # the working file - every source check below targets this
 N_DECLARED_V11 = 175                 # frozen forever
 N_DECLARED_V12 = 176                 # 175 inherited + the panel-state slider, last
 
@@ -468,7 +469,7 @@ def check_desc_names_the_file(text, path):
     # The seeded-defect harness writes its mutants to a temp file with no version in the name.
     # Those are mutations OF the file under test, so fall back to its version rather than skipping
     # the check - a check that quietly does nothing on a mutant is not a check.
-    want = re.search(r"V(\d+\.\d+)$", path) or re.search(r"V(\d+\.\d+)$", V14)
+    want = re.search(r"V(\d+\.\d+)$", path) or re.search(r"V(\d+\.\d+)$", V15)
     assert want, f"{path}: cannot read a version off the filename"
     m = re.search(r"^desc: RCBitNova V(\d+\.\d+) ", text, re.M)
     assert m, f"{path}: no `desc: RCBitNova V<x.y> ` line"
@@ -536,7 +537,7 @@ def check_topology_commit_has_two_callers(text, path):
         f"{path}: {text.count('gc_w_topo();')} of the three topology buttons call gc_w_topo"
 
 
-def check_source(path=V14, project=False):
+def check_source(path=V15, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
         text, n = re.subn(r"^N_BANDS = 4;", "N_BANDS = 8;", text, count=1, flags=re.M)
@@ -600,7 +601,7 @@ def _fine_ceiling_indices():
     which walks all 176, is what would have woken it up. A gate that exists to guard the
     parameter-order contract had the parameter-order bug inside it.
     """
-    text = open(V14, encoding="utf-8", errors="replace").read()
+    text = open(V15, encoding="utf-8", errors="replace").read()
     order = sorted(int(n) for n in re.findall(r"^slider(\d+):", text, re.M))
     t = layout.base_tables(8)
     targets = {t["dynb"][b] + 3 for b in range(8)} | {t["ceb"][b] + 2 for b in range(8)}
@@ -645,7 +646,7 @@ def check_live(track_index=0):
             return n, recs[:n_declared], recs[n_declared:]
 
         n10, dec10, host10 = manifest("RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("RCBitNova V1.4", N_DECLARED_V12)
+        n11, dec11, host11 = manifest("RCBitNova V1.5", N_DECLARED_V12)
         if made_track:
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
@@ -707,7 +708,7 @@ def main(argv):
               f"the 95 declared records are identical and the host tail matches by position")
         return 0
     try:
-        check_source(V14, project=(mode == "--preflip"))
+        check_source(V15, project=(mode == "--preflip"))
     except AssertionError as exc:
         print(f"FAIL {mode}: {exc}")
         return 1

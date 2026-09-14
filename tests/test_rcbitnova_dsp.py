@@ -1,6 +1,7 @@
 import math
 import cmath
 import pytest
+from unittest import mock
 from tools import rcbitnova_dsp as dsp
 
 
@@ -2799,7 +2800,7 @@ def _needs_projection(text=None):
     """The gate has two phases and this suite has to be right in both. Before Task 5 the source is
     still four-band and the contract is checked against a projection; after it, against the real
     text. Hard-coding project=True made sixteen tests fail the moment the count was raised."""
-    text = open(gates.V14).read() if text is None else text
+    text = open(gates.V15).read() if text is None else text
     return "N_BANDS = 4;" in text
 
 
@@ -2808,11 +2809,11 @@ def test_v11_gate_passes_on_the_clean_source():
     by the very source they were written for - a row that matched nothing, a line-anchored regex
     against four entries per line, an evaluator that read `st` as a loop counter. Mutants prove
     rejection; only this proves the contract is satisfiable at all."""
-    gates.check_source(gates.V14, project=_needs_projection())
+    gates.check_source(gates.V15, project=_needs_projection())
 
 
 def test_v11_gate_pieces_agree_on_the_table_block():
-    text = open(gates.V14).read()
+    text = open(gates.V15).read()
     assert gates.eval_init(text, ["stb", "dynb", "ceb"]) == {"stb": 272, "dynb": 280, "ceb": 288}
     assert gates.eval_init(text, ["st"])["st"] == 64, "the address block must beat the loop counter"
     gates.check_tables(text, "clean")
@@ -2850,8 +2851,8 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("dsp_dirty = 1;\n", "dsp_dirty = 0;\n"),
      "dsp_dirty must start RAISED"),
     # a new version left carrying the previous one's desc is INVISIBLE to REAPER
-    (lambda t: t.replace("desc: RCBitNova V1.4 - ", "desc: RCBitNova V1.2 - "),
-     "desc says V1.2 but the file is V1.4"),
+    (lambda t: t.replace("desc: RCBitNova V1.5 - ", "desc: RCBitNova V1.2 - "),
+     "desc says V1.2 but the file is V1.5"),
     # a queued crossfade that no audio advances must not latch the engine
     (lambda t: t.replace("lp_fs[0] && lp_fs[1] == hp_fpos_prev ? ( lpk_commit(0); );\n", ""),
      "engine 0 has no stalled-fade unlatch"),
@@ -2952,7 +2953,7 @@ def test_function_body_skips_the_local_clause():
 
     check_writers survived only by accident: not one of the twenty writers declares locals.
     """
-    text = open(gates.V14, encoding="utf-8", errors="replace").read()
+    text = open(gates.V15, encoding="utf-8", errors="replace").read()
     for fn, must_contain in (("gc_build_grid", "dst[i] ="),
                              ("gc_hplp_bits", "gc_svf_mag"),
                              ("gc_field_commit", "gc_w_softceil"),
@@ -2984,9 +2985,28 @@ def test_v14_manifest_holds_the_two_records_v15_will_change():
     assert recs[89][1] == "LP Freq (Hz)" and (recs[89][2], recs[89][3]) == (20.0, 20000.0)
 
 
+def test_v15_starts_as_an_exact_copy_of_v14():
+    """Deleted by the task that first changes V1.5. Its job is to make the starting point
+    explicit: the project's rule since V0.1 is that a new version is a new FILE, and the only
+    safe beginning is byte equality with the one it replaces - desc line aside, which must name
+    the new file or REAPER shows and matches the build under the OLD version's name."""
+    a = open(gates.V14, encoding="utf-8", errors="replace").read()
+    b = open(gates.V15, encoding="utf-8", errors="replace").read()
+    assert a.replace("desc: RCBitNova V1.4 ", "desc: RCBitNova V1.5 ") == b
+
+
+def test_the_cli_checks_the_file_under_test_not_the_frozen_one():
+    """A default-only retarget leaves `main` passing the OLD constant explicitly - the review
+    caught exactly that, and a green CLI would then be describing the frozen source."""
+    seen = []
+    with mock.patch.object(gates, "check_source", lambda p=gates.V15, **k: seen.append(p)):
+        gates.main(["gate", "--source-only"])
+    assert seen == [gates.V15], f"the CLI checked {seen}"
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
-    clean = open(gates.V14).read()
+    clean = open(gates.V15).read()
     mutated = mutate(clean)
     assert mutated != clean, f"the seeding lambda for {expect!r} changed nothing"
     src = tmp_path / "mutant"
