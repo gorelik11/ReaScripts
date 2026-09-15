@@ -2871,6 +2871,20 @@ SEEDED_DEFECTS = [
     (lambda t: t.replace("  pdc_dirty = 1;\n  // FULL KERNEL SUPPORT",
                          "  pdc_dirty = 1;\n  topo_pdc();\n  // FULL KERNEL SUPPORT"),
      "topo_commit_state calls topo_pdc"),
+    # the four graph-frequency coordinate sites: seed BOTH halves of each pair, so changing one
+    # is never enough. Every target string is confirmed present in V1.5 as this task leaves it.
+    (lambda t: t.replace("    f = min(GC_FMIN * pow(GC_FSPAN, t), srate * 0.5);",
+                         "    f = min(20 * pow(1000, t), srate * 0.5);"),
+     "gc_build_grid still carries the literal 1000"),
+    (lambda t: t.replace("      t = log(min(max(f,GC_FMIN),GC_FMAX) / GC_FMIN) / GC_FLOG * (GC_LIN_N - 1);",
+                         "      t = log(min(max(f,20),20000) / 20) / log(1000) * (GC_LIN_N - 1);"),
+     "gc_hplp_bits still carries the literal 20000"),
+    (lambda t: t.replace("function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,GC_FMIN),GC_FMAX) / GC_FMIN) / GC_FLOG); );",
+                         "function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );"),
+     "gc_x_of_f still carries the literal 20000"),
+    # the clamp the widened axis silently removes from the band-node drag
+    (lambda t: t.replace("  v = min(max(v, 20), 20000);                         // the BAND range", ""),
+     "band-freq-clamp"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
@@ -2985,16 +2999,6 @@ def test_v14_manifest_holds_the_two_records_v15_will_change():
     assert recs[89][1] == "LP Freq (Hz)" and (recs[89][2], recs[89][3]) == (20.0, 20000.0)
 
 
-def test_v15_starts_as_an_exact_copy_of_v14():
-    """Deleted by the task that first changes V1.5. Its job is to make the starting point
-    explicit: the project's rule since V0.1 is that a new version is a new FILE, and the only
-    safe beginning is byte equality with the one it replaces - desc line aside, which must name
-    the new file or REAPER shows and matches the build under the OLD version's name."""
-    a = open(gates.V14, encoding="utf-8", errors="replace").read()
-    b = open(gates.V15, encoding="utf-8", errors="replace").read()
-    assert a.replace("desc: RCBitNova V1.4 ", "desc: RCBitNova V1.5 ") == b
-
-
 def test_the_cli_checks_the_file_under_test_not_the_frozen_one():
     """A default-only retarget leaves `main` passing the OLD constant explicitly - the review
     caught exactly that, and a green CLI would then be describing the frozen source."""
@@ -3058,6 +3062,63 @@ def test_the_null_harness_copies_every_declared_record_by_value():
     assert "def render(fx_name, values=None, state=None):" in src
     # the replay must convert through the DESTINATION instance's own range
     assert "lo, hi = r[4], r[5]" in src
+
+
+def _reader_bits(grid, f, fmin=20.0, fmax=24000.0):
+    """Exactly what gc_hplp_bits does: log-interpolate between the two bracketing grid entries."""
+    tt = math.log(min(max(f, fmin), fmax) / fmin) / math.log(fmax / fmin) * (len(grid) - 1)
+    i = int(tt)
+    if i >= len(grid) - 1:
+        return grid[-1][1]
+    b0, b1 = grid[i][1], grid[i + 1][1]
+    return b0 + (b1 - b0) * (tt - i)
+
+
+def test_the_grid_top_is_the_contract_top():
+    """The oracle's grid must end where GC_FMAX does, or it is describing a different axis from
+    the one the plugin draws."""
+    grid = curve.realized_bits_grid(dsp.fir_brick_kernel(32768, "lp", 21500.0, 14, 96000.0),
+                                    96000.0, n_out=2048)
+    assert abs(grid[-1][0] - 24000.0) < 1e-6, grid[-1]
+    assert abs(grid[0][0] - 20.0) < 1e-9, grid[0]
+
+
+@pytest.mark.parametrize("f", [1000.0, 10000.0, 20000.0, 21000.0, 22000.0, 23500.0])
+@pytest.mark.parametrize("kind", ["lp", "hp"])
+def test_the_reader_never_overstates_the_response(kind, f):
+    """AT the requested frequency, not at the nearest stored point - the old test chose the
+    nearest entry and compared the DTFT there, so it never exercised the interpolation at all and
+    passed at 0.05 bits while the reader was 4.4 bits out.
+
+    The bound is one-sided on purpose. Drawing MORE passband than exists is the defect; the
+    min-over-spanned-bins reduction can read low at a corner by less than one output step, which
+    is the honest direction for a magnitude display.
+    """
+    sr, fc = 96000.0, 21500.0
+    ker = dsp.fir_brick_kernel(32768, kind, fc, 14, sr)
+    grid = curve.realized_bits_grid(ker, sr, n_out=2048)
+    got, want = _reader_bits(grid, f), _dtft_bits(ker, sr, f)
+    assert got <= want + 0.05, f"{kind} at {f} Hz: reader {got:.3f} > DTFT {want:.3f} bits"
+
+
+def test_the_residual_knee_error_is_smaller_than_one_pixel():
+    """MEASURED, and recorded so nobody re-engineers it away.
+
+    A review found the reader 4.44 bits - 26.7 dB - from the DTFT at 21500 Hz, which is true, and
+    asked for a denser grid or cutoff-aware sampling. Both would cost real memory. The entire
+    interval in which that error lives is the gap between two adjacent log-spaced grid entries at
+    the top of the axis, and on the plot that gap is under half a pixel: the display's own vertex
+    spacing there is four times wider. The knee is drawn as a vertical line either way.
+    """
+    span = math.log(1200.0)
+    x = lambda f, w=860.0: w * math.log(f / 20.0) / span
+    sr = 96000.0
+    grid = curve.realized_bits_grid(dsp.fir_brick_kernel(32768, "lp", 21500.0, 14, sr), sr, 2048)
+    i = next(k for k, (f, _) in enumerate(grid) if f > 21500.0)
+    lo, hi = grid[i - 1][0], grid[i][0]
+    assert lo < 21500.0 < hi, (lo, hi)
+    assert x(hi) - x(lo) < 0.5, f"the disputed interval is {x(hi) - x(lo):.3f} px wide"
+    assert 860.0 / (512 - 1) > 3 * (x(hi) - x(lo)), "a display vertex must be far wider than it"
 
 
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)

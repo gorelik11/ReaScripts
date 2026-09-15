@@ -167,7 +167,7 @@ def sample_grid_bits(grid, f):
 
 # --------------------------------------------------------------------------- axis mapping
 
-FMIN, FMAX = 20.0, 20000.0
+FMIN, FMAX = 20.0, 24000.0  # V1.5: matches GC_FMIN/GC_FMAX in the plugin
 BITS_SPAN = 4.0                          # +-4 bits = +-24 dB viewport
 DRAG_THRESHOLD = 4.0                     # logical units before a click becomes a drag
 UNITS_PER_MACRO = 24.0
@@ -282,7 +282,20 @@ def realized_bits_grid(kernel, sr, n_out=2048, fmin=FMIN, fmax=FMAX):
     half = N // 2
     mags = [abs(X[k]) for k in range(half + 1)]
     nyq = sr * 0.5
+    # MINIMUM over the bins each output point spans, not a point sample of one.
+    #
+    # Point-sampling a spectrum hides anything narrower than the output spacing, and at the top of
+    # this range that is everything that matters: a FIR brickwall's transition is a few bins wide
+    # in Hz, while adjacent log-spaced output points near 21.5 kHz are ~74 Hz apart. Measured on
+    # the production geometry - fir_brick_kernel(32768, "lp", 21500, 14, 96000) - the entries
+    # bracketing the knee were 21482 Hz at 0 bits and 21557 Hz at -23.25, with the whole wall in
+    # between and nothing to sample.
+    #
+    # A magnitude display must never OVERSTATE the response. Taking the deepest bin in each span
+    # can read low at a corner by less than one output step; the alternative reads a passband that
+    # is not there.
     out = []
+    f_prev = fmin
     for i in range(n_out):
         t = i / (n_out - 1)
         f = min(fmin * (fmax / fmin) ** t, nyq)
@@ -290,10 +303,15 @@ def realized_bits_grid(kernel, sr, n_out=2048, fmin=FMIN, fmax=FMAX):
         k0 = int(b)
         if k0 >= half:
             out.append((f, mag_to_bits(mags[half])))
+            f_prev = f
             continue
         frac = b - k0
         m = mags[k0] * (1.0 - frac) + mags[k0 + 1] * frac
+        k_lo = max(0, int(min(f_prev, f) * N / sr))
+        if k0 > k_lo:
+            m = min(m, min(mags[k] for k in range(k_lo, k0 + 1)))
         out.append((f, mag_to_bits(m)))
+        f_prev = f
     return out
 
 

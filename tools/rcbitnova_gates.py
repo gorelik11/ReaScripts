@@ -107,6 +107,9 @@ SITES = {
                               "N_BANDS"),
     "panel-enum-clamp":      (r"gc_open = min\(max\(floor\(slider246 \+ 0\.5\), 0\), (\w+)\);",
                               "N_BANDS"),
+    # the clamp that only ever existed implicitly: gc_f_of_x could not return more than the band
+    # sliders' own maximum until the axis widened to GC_FMAX.
+    "band-freq-clamp":       (r"^  v = min\(max\(v, 20\), (\d+)\);", "20000"),
     "table-decl-stb":        (r"^stb\s+= (\d+);", "272"),
     "table-decl-dynb":       (r"^dynb\s+= (\d+);", "280"),
     "table-decl-ceb":        (r"^ceb\s+= (\d+);", "288"),
@@ -537,6 +540,42 @@ def check_topology_commit_has_two_callers(text, path):
         f"{path}: {text.count('gc_w_topo();')} of the three topology buttons call gc_w_topo"
 
 
+GRAPH_F_SITES = ("gc_x_of_f", "gc_f_of_x", "gc_build_grid", "gc_hplp_bits")
+
+
+def check_graph_frequency(text, path):
+    """ONE frequency contract, read by all four sites.
+
+    The visible axis and the realized linear-phase GRID are SEPARATE coordinate systems, each with
+    its own hard-coded 20000 and its own log(1000). Widen one and Min phase follows while Linear
+    and FIR Brick read a grid built to the old top; widen the other and a 24 kHz index addresses a
+    producer whose last sample is 20 kHz. Either way the curve comes out smooth, believable and
+    wrong, which is this plugin's established failure mode.
+
+    The check is for the ABSENCE of literals, not the presence of 24000: four copies of the right
+    number pass until someone edits three of them.
+    """
+    for name, want in (("GC_FMIN", "20"), ("GC_FMAX", "24000")):
+        m = re.search(rf"^{name} = (\d+);", text, re.M)
+        assert m and m.group(1) == want, f"{path}: {name} is not {want}"
+    assert re.search(r"^GC_FSPAN = GC_FMAX / GC_FMIN;", text, re.M), \
+        f"{path}: GC_FSPAN must be derived, not written out"
+    assert re.search(r"^GC_FLOG\s+= log\(GC_FSPAN\);", text, re.M), f"{path}: GC_FLOG missing"
+    for fn in GRAPH_F_SITES:
+        body = _function_body(text, fn)
+        assert body, f"{path}: {fn} not found"
+        code = "\n".join(l.split("//")[0] for l in body.splitlines())
+        for bad in ("20000", "24000", "1000"):
+            assert bad not in code, \
+                f"{path}: {fn} still carries the literal {bad} - every frequency coordinate must " \
+                f"come from GC_FMIN/GC_FMAX/GC_FSPAN/GC_FLOG"
+        assert "GC_F" in code, f"{path}: {fn} does not read the frequency contract"
+    # @init runs top to bottom: the contract must be ASSIGNED before gc_fmeta reads it, or those
+    # rows store a 0..0 range and every typed value is clamped to zero.
+    assert text.index("GC_FMAX = ") < text.index("gc_fmeta = "), \
+        f"{path}: the frequency contract is assigned AFTER gc_fmeta reads it"
+
+
 def check_source(path=V15, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
@@ -552,6 +591,7 @@ def check_source(path=V15, project=False):
     check_desc_names_the_file(text, path)
     check_fade_cannot_latch(text, path)
     check_topology_commit_has_two_callers(text, path)
+    check_graph_frequency(text, path)
 
 
 # --------------------------------------------------------------------------------------------

@@ -306,6 +306,21 @@ ceb[5]  = 234;
 ceb[6]  = 238;
 ceb[7]  = 242;   // stride 4, not 10: the block is three sliders wide and at 10 B8 would need 261
 
+// ---- V1.5: ONE graph-frequency contract. FOUR sites read it - the visible axis's producer and
+// reader, and the realized linear-phase GRID's producer and reader. V1.4 wrote the top and the log
+// base out four times across two unrelated coordinate systems, so widening one pair would have
+// left Linear and FIR Brick reading a grid built to a different top: a smooth, believable, wrong
+// curve, which is this plugin's established failure mode.
+//
+// Declared HERE, above gc_fmeta, and not beside the functions. EEL2's @init runs top to bottom,
+// and the panel metadata rows below read GC_FMIN/GC_FMAX - placed lower they would both read as
+// ZERO and store a 0..0 range, clamping every typed value to nothing.
+GC_FMIN = 20;
+GC_FMAX = 24000;                  // REQUESTED, not effective: the engine still clamps to
+                                  // srate * 0.49, so 44.1 kHz applies at most 21609 Hz
+GC_FSPAN = GC_FMAX / GC_FMIN;     // 1200
+GC_FLOG  = log(GC_FSPAN);
+
 // ---- V1.2: panel field metadata. One row per EDITABLE panel slot, read by the field controller
 // so no range, step or writer is spelled out twice.
 //
@@ -643,7 +658,7 @@ function gc_svf_mag(cdst, f)
 // The kernel's fftshift needs no correction: a half-period circular shift multiplies the
 // spectrum by (-1)^k, which |X[k]| removes.
 function gc_build_grid(eng)
-  local(ob, BD, desbuf, ktime, half, i, k, b, frac, dst, f, t, m0, m1, m, idx) (
+  local(ob, BD, desbuf, ktime, half, i, k, b, frac, dst, f, t, m0, m1, m, idx, kp, kk, mk) (
   ob = lp_off + eng*16; BD = lp_geo[eng*4];
   desbuf = ob[0]; ktime = ob[1];
   i = 0; loop(BD, desbuf[i*2] = ktime[i]; desbuf[i*2+1] = 0; i += 1;);
@@ -651,16 +666,33 @@ function gc_build_grid(eng)
   half = BD * 0.5;
   idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
   dst = gc_lin + (1 - idx) * (2*GC_LIN_N) + eng * GC_LIN_N;   // this engine's INACTIVE buffer
-  i = 0;
+  i = 0; kp = 0;
   loop(GC_LIN_N,
     t = i / (GC_LIN_N - 1);
-    f = min(20 * pow(1000, t), srate * 0.5);
+    f = min(GC_FMIN * pow(GC_FSPAN, t), srate * 0.5);
     b = f * BD / srate;
     k = floor(b); frac = b - k;
     k >= half ? ( k = half - 1; frac = 1; );
     m0 = sqrt(desbuf[k*2]*desbuf[k*2] + desbuf[k*2+1]*desbuf[k*2+1]);
     m1 = sqrt(desbuf[(k+1)*2]*desbuf[(k+1)*2] + desbuf[(k+1)*2+1]*desbuf[(k+1)*2+1]);
     m = m0 * (1 - frac) + m1 * frac;
+    // V1.5: and the DEEPEST bin this output point spans, when it spans more than one.
+    //
+    // Point-sampling a spectrum hides anything narrower than the output spacing. Log-spaced
+    // points are dense in Hz low down - there the span is under a bin and the interpolation above
+    // is what runs - but near the top of the range one point covers dozens of bins, and a
+    // magnitude display must never OVERSTATE the response it draws. Taking the deepest bin in the
+    // span can read low at a corner by less than one output step; the alternative draws a
+    // passband that is not there.
+    kp < k ? (
+      kk = kp;
+      loop(k - kp,
+        mk = sqrt(desbuf[kk*2]*desbuf[kk*2] + desbuf[kk*2+1]*desbuf[kk*2+1]);
+        mk < m ? m = mk;
+        kk += 1;
+      );
+    );
+    kp = k;
     // store BITS: the graph composes by SUMMING bits, and the axis is in bits, so nothing
     // converts between computing and plotting
     dst[i] = log(max(m, 0.0000001)) / log(2);
@@ -1186,6 +1218,11 @@ function dsp_rebuild() local(b) (
 function gc_q_step(v, st) ( floor(v / st + 0.5) * st; );
 
 function gc_w_freq(b, v, qz) (
+  v = min(max(v, 20), 20000);                         // the BAND range, which does NOT widen.
+  // There was never a clamp here and none was needed: gc_f_of_x could not return more than 20000,
+  // which is exactly these sliders' maximum. Widening the axis to GC_FMAX removes that guarantee
+  // silently, and the band-node drag writes straight from the axis. In the WRITER, not at the
+  // call site, so it covers the drag, the graph and anything added later.
   qz ? ( v = gc_q_step(v, 1); );                      // slider step: 1 Hz
   b == 0 ? ( slider13 = v; slider_automate(slider13); ) :
   b == 1 ? ( slider23 = v; slider_automate(slider23); ) :
@@ -1493,8 +1530,8 @@ function gc_apply_hplp(eng) local(kk) (
 
 // ---- V1.0 GUI helpers. Defined in @init, not inside @gfx: JSFX expects function
 // definitions at file scope, and a definition inside a section is not reliable.
-function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,20),20000) / 20) / log(1000)); );
-function gc_f_of_x(x)    ( 20 * pow(1000, min(max((x - gc_px) / gc_pw, 0), 1)); );
+function gc_x_of_f(f)    ( gc_px + gc_pw * (log(min(max(f,GC_FMIN),GC_FMAX) / GC_FMIN) / GC_FLOG); );
+function gc_f_of_x(x)    ( GC_FMIN * pow(GC_FSPAN, min(max((x - gc_px) / gc_pw, 0), 1)); );
 function gc_y_of_bits(b) ( gc_py + gc_ph * (0.5 - min(max(b,-4),4) / 8); );
 function gc_bits_of_y(y) ( (0.5 - (y - gc_py) / gc_ph) * 8; );
 
@@ -1531,7 +1568,7 @@ function gc_hplp_bits(eng, f) local(nsec, base, k, acc, sl, idx, src, t, i, f0, 
       // interpolated in LOG frequency on values already in bits
       idx = gc_meta[eng == 0 ? GCM_IDX_HP : GCM_IDX_LP];
       src = gc_lin + idx * (2*GC_LIN_N) + eng * GC_LIN_N;
-      t = log(min(max(f,20),20000) / 20) / log(1000) * (GC_LIN_N - 1);
+      t = log(min(max(f,GC_FMIN),GC_FMAX) / GC_FMIN) / GC_FLOG * (GC_LIN_N - 1);
       i = floor(t);
       i >= GC_LIN_N - 1 ? ( src[GC_LIN_N - 1]; ) : (
         b0 = src[i]; b1 = src[i+1];
