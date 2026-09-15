@@ -27,6 +27,11 @@ from tools.make_null_fixture import write_wav   # noqa: E402
 FIXTURE = os.path.abspath(os.path.join("tests", "fixtures", "null_30s.wav"))
 TRACK = "RCBN NULL TEMP"
 
+# Every DECLARED record, not the historical 95. The state copy has to span every record the
+# migrator also touches, slider246 included, or the two instances can differ in one the check
+# never looks at.
+N_DECLARED = 176
+
 # The panel's contract is "no DSP change from V1.1", so V1.1 is the baseline. Comparing against
 # V1.0 would still be true and would answer a question nobody is asking about this feature.
 BASE = "RCBitNova V1.4"
@@ -167,9 +172,21 @@ def main():
             while tr.fxs:
                 tr.fxs[-1].delete()
 
-        def render(fx_name, values=None, norms=None):
+        def render(fx_name, values=None, state=None):
             """One pass: fresh item, fresh instance, set state, bake, return the file it wrote
-            and the 95 declared normalised values it was actually holding."""
+            and the N_DECLARED ACTUAL VALUES it was holding.
+
+            `state` is a list of actual values BY INDEX, replayed through THIS instance's own
+            declared range. It used to be a list of raw NORMALISED numbers copied straight across,
+            which is equality by construction only while both versions declare the same ranges -
+            and the assertion below could not see the difference, because it compared normalised
+            against normalised and those always agree. Two cases set LP Freq to 12000 Hz; copied
+            as a number into a wider range that is 14398.4 Hz, and the suite would have gone half
+            green, half red, with the red reading as a DSP regression.
+
+            By INDEX, and all N_DECLARED of them - not the handful of names a CASES entry happens
+            to mention. Converting only those would leave every other record on the raw normalised
+            path and defeat the fix while passing its own assertion."""
             clear()
             for t in reapy.Project().tracks:
                 RPR.SetMediaTrackInfo_Value(t.id, "I_SELECTED", 1 if t.index == idx else 0)
@@ -193,10 +210,12 @@ def main():
                     r = RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)
                     lo, hi = r[4], r[5]
                     RPR.TrackFX_SetParamNormalized(tr.id, i, k, (value - lo) / (hi - lo))
-            if norms:
-                for k, v in enumerate(norms):
-                    RPR.TrackFX_SetParamNormalized(tr.id, i, k, v)
-            got = [RPR.TrackFX_GetParamNormalized(tr.id, i, k) for k in range(95)]
+            if state:
+                for k, v in enumerate(state):
+                    r = RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)
+                    lo, hi = r[4], r[5]
+                    RPR.TrackFX_SetParamNormalized(tr.id, i, k, (v - lo) / (hi - lo))
+            got = [RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)[0] for k in range(N_DECLARED)]
             it = tr.items[0]
             RPR.Main_OnCommand(40289, 0)                 # unselect all items
             RPR.SetMediaItemSelected(it.id, True)
@@ -211,12 +230,15 @@ def main():
         for case, values in {**CASES, **DIVERGENT}.items():
             if only and case != only:
                 continue
-            a, norms10 = render(BASE, values=values)
+            a, state_base = render(BASE, values=values)
             keep = a + ".base.wav"
             os.rename(a, keep)
-            b, norms11 = render(UNDER_TEST, norms=norms10)
-            assert norms10 == norms11, \
-                f"{case}: the two instances do not hold the same 95 declared values"
+            b, state_test = render(UNDER_TEST, state=state_base)
+            worst = max(range(len(state_base)),
+                        key=lambda k: abs(state_base[k] - state_test[k]))
+            assert abs(state_base[worst] - state_test[worst]) <= 1e-6, (
+                f"{case}: the two instances do not hold the same VALUE at declared record "
+                f"{worst}: {BASE} {state_base[worst]}, {UNDER_TEST} {state_test[worst]}")
             if case in DIVERGENT:
                 try:
                     compare(keep, b, case)

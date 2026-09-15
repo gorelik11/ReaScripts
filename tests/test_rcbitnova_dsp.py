@@ -3035,6 +3035,31 @@ def test_fake_rpr_get_param_returns_the_reapy_tuple_shape():
     assert abs(rpr.TrackFX_GetParam(tr.id, 1, 89, 0, 0)[0] - 20000.0) < 0.5
 
 
+def test_replaying_a_value_through_a_wider_range_preserves_the_value_not_the_number():
+    """The whole of the null harness's fix, in one assertion. The harness itself needs REAPER;
+    this arithmetic does not."""
+    src = fake.FakeParam("LP Freq (Hz)", lo=20.0, hi=20000.0, step=1.0)
+    src.value = 12000.0
+    dst = fake.FakeParam("LP Freq (Hz)", lo=20.0, hi=24000.0, step=1.0)
+    lo, hi = dst.range
+    dst.normalized = (src.value - lo) / (hi - lo)      # what render(state=) does now
+    assert abs(dst.value - 12000.0) < 0.5
+    dst.normalized = src.normalized                    # what it used to do
+    assert abs(dst.value - 14398.4) < 0.1
+
+
+def test_the_null_harness_copies_every_declared_record_by_value():
+    """Two ways to get this wrong, and the cheap one passes its own assertion: converting only the
+    names a CASES entry mentions, leaving every other record on the raw normalised path."""
+    src = open("tools/rcbitnova_nulltest.py", encoding="utf-8").read()
+    assert "N_DECLARED = 176" in src, "the copy must span every declared record, not the old 95"
+    assert "range(N_DECLARED)" in src and "range(95)" not in src
+    assert "norms=" not in src, "the raw normalised pass-through must be gone, not merely unused"
+    assert "def render(fx_name, values=None, state=None):" in src
+    # the replay must convert through the DESTINATION instance's own range
+    assert "lo, hi = r[4], r[5]" in src
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V15).read()
