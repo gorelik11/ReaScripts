@@ -1,4 +1,5 @@
 import math
+import re
 import cmath
 import pytest
 from unittest import mock
@@ -3119,6 +3120,42 @@ def test_the_residual_knee_error_is_smaller_than_one_pixel():
     assert lo < 21500.0 < hi, (lo, hi)
     assert x(hi) - x(lo) < 0.5, f"the disputed interval is {x(hi) - x(lo):.3f} px wide"
     assert 860.0 / (512 - 1) > 3 * (x(hi) - x(lo)), "a display vertex must be far wider than it"
+
+
+def test_expected_v15_manifest_differs_from_v14_in_exactly_two_upper_bounds():
+    v14, v15 = gates.load_declared_v14(), gates.expected_v15_manifest()
+    assert len(v14) == len(v15) == 176
+    diffs = [(a, b) for a, b in zip(v14, v15) if a != b]
+    assert [a[0] for a, _ in diffs] == [85, 89], f"changed records: {[a[0] for a, _ in diffs]}"
+    for a, b in diffs:
+        assert a[3] == 20000.0 and b[3] == 24000.0, (a, b)
+        assert (a[0], a[1], a[2], a[4], a[5]) == (b[0], b[1], b[2], b[4], b[5]), \
+            "only the upper bound may move: not the name, the step or the default"
+
+
+def test_expected_v15_manifest_refuses_a_baseline_that_does_not_match_the_table():
+    """The table names what it is changing FROM. If the baseline ever stops saying that, the
+    derivation is built on something it was not written for and must refuse, not adapt."""
+    import copy
+    tampered = copy.deepcopy(gates.load_declared_v14())
+    tampered[85] = (85, "HP Freq (Hz)", 20.0, 22000.0, 1.0, 20.0)
+    with mock.patch.object(gates, "load_declared_v14", lambda *a, **k: tampered):
+        with pytest.raises(AssertionError, match="the table says"):
+            gates.expected_v15_manifest()
+
+
+def test_the_source_declares_what_the_range_table_says():
+    """The RED checkpoint for the declaration change, and it reads the SOURCE.
+
+    An earlier draft put offline fixture tests here instead. Neither of them looks at V1.5's
+    declarations, so both were green before the change they were supposed to be red for.
+    """
+    text = open(gates.V15, encoding="utf-8", errors="replace").read()
+    for slider, idx in (("slider132", 85), ("slider136", 89)):
+        m = re.search(rf"^{slider}:\d+<20,(\d+),1>", text, re.M)
+        assert m, f"{slider} declaration not found"
+        assert float(m.group(1)) == gates.RANGE_CHANGES[idx][1][1], \
+            f"{slider} declares {m.group(1)}, the table says {gates.RANGE_CHANGES[idx][1][1]}"
 
 
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)

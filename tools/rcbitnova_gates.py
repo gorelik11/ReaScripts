@@ -109,6 +109,10 @@ SITES = {
                               "N_BANDS"),
     # the clamp that only ever existed implicitly: gc_f_of_x could not return more than the band
     # sliders' own maximum until the axis widened to GC_FMAX.
+    # The two records V1.5 widens. Defaults are NOT touched, so each differs in its upper bound
+    # alone - which is what lets the migration be a copy for the other 174.
+    "hp-freq-range":         (r"^slider132:20<20,(\d+),1>-HP Freq", "24000"),
+    "lp-freq-range":         (r"^slider136:20000<20,(\d+),1>-LP Freq", "24000"),
     "band-freq-clamp":       (r"^  v = min\(max\(v, 20\), (\d+)\);", "20000"),
     "table-decl-stb":        (r"^stb\s+= (\d+);", "272"),
     "table-decl-dynb":       (r"^dynb\s+= (\d+);", "280"),
@@ -206,6 +210,35 @@ WRITERS = {
     "gc_w_hardceil":  ("ceb",  2, 0.05, ("apply_band_dyn_global(b)",), False),
     "gc_w_hardmicro": ("ceb",  3, 0.1,  ("apply_band_dyn_global(b)",), False),
 }
+
+# The ONLY records whose declared range differs between V1.4 and V1.5. DATA, not two special
+# cases in code, because the migrator and the null harness must agree with exactly this. Indices
+# are MEASURED: tests/fixtures/v14_declared_176.json records 85 and 89.
+RANGE_CHANGES = {
+    85: ((20.0, 20000.0), (20.0, 24000.0)),   # HP Freq (Hz)
+    89: ((20.0, 20000.0), (20.0, 24000.0)),   # LP Freq (Hz)
+}
+
+
+def expected_v15_manifest():
+    """DERIVED from the V1.4 fixture plus the table - never regenerated from source.
+
+    `--freeze` agrees with whatever the source happens to say, which is the one thing a baseline
+    must not do. If the fixture ever stops matching what the table says it is changing FROM, this
+    refuses rather than adapting: the derivation would be built on something it was not written
+    for.
+    """
+    out = []
+    for i, name, lo, hi, step, default in load_declared_v14():
+        if i in RANGE_CHANGES:
+            (was_lo, was_hi), (now_lo, now_hi) = RANGE_CHANGES[i]
+            assert (lo, hi) == (was_lo, was_hi), (
+                f"record {i} ({name}) is {(lo, hi)} in the V1.4 fixture, the table says "
+                f"{(was_lo, was_hi)}")
+            lo, hi = now_lo, now_hi
+        out.append((i, name, lo, hi, step, default))
+    return out
+
 
 AUDIO = [n for n, _, _ in layout.AUDIO_CHAIN]
 GUI = ["gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc", "gc_ebuf", "gc_hits"]
@@ -707,23 +740,36 @@ def check_live(track_index=0):
                 f"ceiling parameter {a[0]} differs beyond its step:\n  V1.0 {a}\n  V1.1 {b}"
             assert a[4] == 1.0 and b[4] == 0.05, \
                 f"ceiling parameter {a[0]} step went {a[4]} -> {b[4]}, expected 1 -> 0.05"
+        elif a[0] in RANGE_CHANGES:
+            # V1.5's second documented deviation, and it is OWNED HERE on purpose. This loop
+            # re-proves that V1.0's 95 records survive into whatever build is current, which is
+            # worth keeping - so it learns the range table rather than being pinned to an older
+            # version and quietly checking nothing about the one under test. Permitted to differ
+            # in `hi` and in nothing else, exactly like the ceiling exemption above.
+            (was_lo, was_hi), (now_lo, now_hi) = RANGE_CHANGES[a[0]]
+            assert a[:3] == b[:3] and a[4:] == b[4:], \
+                f"parameter {a[0]} differs beyond its upper bound:\n  V1.0 {a}\n  under test {b}"
+            assert (a[3], b[3]) == (was_hi, now_hi), \
+                f"parameter {a[0]} upper bound went {a[3]} -> {b[3]}, table says {was_hi} -> {now_hi}"
         else:
             assert a == b, f"declared parameter {a[0]} differs:\n  V1.0 {a}\n  V1.1 {b}"
     assert len(dec11) == N_DECLARED_V12
 
-    # V1.2's first 175 records must BE V1.1's, to the range, step and default. This is what makes a
-    # V1.1 -> V1.2 migration possible: REAPER stores parameters by position, so a record inserted
-    # anywhere but the end silently moves every later one.
-    frozen = load_declared()
-    # the live record is (index, name, lo, hi, step, is_toggle, default, trips); the fixture is
+    # And the second comparison, against ALL 176 of V1.4's records - the first one covers only
+    # V1.0's 95, so record 175, the panel-card state, is checked nowhere else. The expected
+    # manifest is DERIVED in memory from the frozen V1.4 fixture plus the range table; the fixture
+    # itself is never rewritten, because a baseline regenerated from source agrees with whatever
+    # the source says.
+    expected = expected_v15_manifest()
+    # the live record is (index, name, lo, hi, step, is_toggle, default, trips); the manifest is
     # (index, name, lo, hi, step, default) - so pick fields, do not slice.
-    got = [(r[0], r[1], r[2], r[3], r[4], r[6]) for r in dec11[:len(frozen)]]
-    assert len(dec11) >= len(frozen), \
-        f"V1.2 has {len(dec11)} declared records, fewer than the frozen {len(frozen)}"
-    assert got == frozen, next(
-        (f"record {i} differs: frozen {a}, V1.2 {b}"
-         for i, (a, b) in enumerate(zip(frozen, got)) if a != b),
-        "the frozen prefix and V1.2 disagree")
+    got = [(r[0], r[1], r[2], r[3], r[4], r[6]) for r in dec11]
+    assert len(got) == len(expected), \
+        f"the build under test declares {len(got)} records, expected {len(expected)}"
+    assert got == expected, next(
+        (f"record {i} differs: expected {a}, under test {b}"
+         for i, (a, b) in enumerate(zip(expected, got)) if a != b),
+        "the derived manifest and the build under test disagree")
     for rec in dec11:
         i, name, lo, hi, step, is_toggle, default, trips = rec
         assert hi > lo, f"parameter {i} ({name}) has an empty range"
