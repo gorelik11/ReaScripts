@@ -2886,6 +2886,14 @@ SEEDED_DEFECTS = [
     # the clamp the widened axis silently removes from the band-node drag
     (lambda t: t.replace("  v = min(max(v, 20), 20000);                         // the BAND range", ""),
      "band-freq-clamp"),
+    # ids 200/201 down the band path: band 10, slot 0, and dynb[10] past the table
+    (lambda t: t.replace("gc_v != slider(gc_field_slider(gc_cap)) ?",
+                         "gc_v != slider(gc_slot_slider(floor((gc_cap - 100) / 10), gc_row)) ?"),
+     "the DRAG still resolves its slider by band arithmetic"),
+    # the top bar must veto the node hit set, or a click on a field enables the band under it
+    (lambda t: t.replace("gc_strip_hot || gc_panel_hot || gc_topbar_hot ?",
+                         "gc_strip_hot || gc_panel_hot ?"),
+     "the top bar does not veto the node hit set"),
     (lambda t: t.replace("loop(N_BANDS, gc_band_setup(gc_b)", "loop(4, gc_band_setup(gc_b)"),
      "gfx-band-setup"),
     (lambda t: t.replace("gc_hit_n = 0;\ngc_b = 0;\nloop(N_BANDS,",
@@ -2929,7 +2937,7 @@ def test_panel_metadata_sits_above_the_tables_and_below_mb_band():
     assert max(hi for _, hi in m.values()) + 1 == lay.TABLES_FIRST == 272
     assert lay.TABLES_LAST == 295
     assert lay.NB_LIST == (296, 303)
-    assert lay.GC_FMETA == (304, 351)
+    assert lay.GC_FMETA == (304, 367)
     assert lay.GC_FMETA[1] < lay.MB_BAND, "everything still sits below mb_band's literal"
     assert lay.NB_LIST[1] + 1 == lay.GC_FMETA[0], "no gap and no overlap between the two"
 
@@ -3156,6 +3164,32 @@ def test_the_source_declares_what_the_range_table_says():
         assert m, f"{slider} declaration not found"
         assert float(m.group(1)) == gates.RANGE_CHANGES[idx][1][1], \
             f"{slider} declares {m.group(1)}, the table says {gates.RANGE_CHANGES[idx][1][1]}"
+
+
+def test_the_frequency_metadata_rows_hold_the_real_range_not_zero():
+    """EEL2's @init is sequential. Declared below gc_fmeta, GC_FMIN/GC_FMAX read as 0 and both
+    new rows would store a 0..0 range - clamping every typed value to zero, silently."""
+    text = open(gates.V15, encoding="utf-8", errors="replace").read()
+    env = gates.eval_init(text, ["GC_FMIN", "GC_FMAX"])
+    assert (env["GC_FMIN"], env["GC_FMAX"]) == (20, 24000)
+    flat = text.replace(" ", "")
+    for row, slider in ((6, 132), (7, 136)):
+        assert f"gc_fmeta[{row*8+0}]=3;" in flat, "table id 3 = the offset IS the slider number"
+        assert f"gc_fmeta[{row*8+1}]={slider};" in flat
+        assert f"gc_fmeta[{row*8+2}]=GC_FMIN;" in flat
+        assert f"gc_fmeta[{row*8+3}]=GC_FMAX;" in flat
+        assert f"gc_fmeta[{row*8+4}]=1;" in flat, "the declared step is 1 Hz"
+        assert f"gc_fmeta[{row*8+6}]=-120;" in flat, "negative drag_units = px per OCTAVE"
+
+
+def test_the_logarithmic_drag_reaches_21500_in_a_usable_gesture():
+    """The storage step and the drag increment are different things. At the panel's 12 logical
+    pixels per step, a 1 Hz step would take 18,000 pixels to move LP from 20000 to 21500."""
+    px_per_octave = 120.0
+    linear_px = (21500 - 20000) / 1.0 * 12.0
+    assert linear_px == 18000.0, "the law this replaces"
+    log_px = math.log2(21500 / 20000) * px_per_octave
+    assert 10.0 < log_px < 16.0, f"{log_px:.1f} px is not a gesture a hand can make"
 
 
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)

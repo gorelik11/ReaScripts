@@ -32,7 +32,7 @@ TABLES_FIRST, TABLES_LAST = 272, 295      # stb 272..279, dynb 280..287, ceb 288
 # are FIXED addresses in @init, so a band count that grows the low map into them must be reported
 # here rather than discovered as a band reading another band's metadata.
 NB_LIST = (296, 303)                      # 8 words, one per band
-GC_FMETA = (304, 351)                     # 6 panel slots x 8 words. NOT gc_meta - that name is
+GC_FMETA = (304, 367)                     # 8 slots x 8 words: 6 panel + the two HP/LP frequencies. NOT gc_meta - that name is
                                           # the curve buffers' 16 NAMED words at gc_snap + 128.
 FIXED_ABOVE_TABLES = {"nb_list": NB_LIST, "gc_fmeta": GC_FMETA}
 

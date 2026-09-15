@@ -352,6 +352,14 @@ gc_fmeta[24]=1; gc_fmeta[25]=6; gc_fmeta[26]=1;   gc_fmeta[27]=500; gc_fmeta[28]
 gc_fmeta[32]=1; gc_fmeta[33]=4; gc_fmeta[34]=-100; gc_fmeta[35]=100; gc_fmeta[36]=0.1; gc_fmeta[37]=1; gc_fmeta[38]=6; gc_fmeta[39]=W_SOFTMICRO;
 // slot 5 Hard Micro     ceb+3    -100..100 0.1   1 dec   6 px  W_HARDMICRO
 gc_fmeta[40]=2; gc_fmeta[41]=3; gc_fmeta[42]=-100; gc_fmeta[43]=100; gc_fmeta[44]=0.1; gc_fmeta[45]=1; gc_fmeta[46]=6; gc_fmeta[47]=W_HARDMICRO;
+// ---- V1.5: the two filter frequencies. table_base_id 3 means "the offset field IS the slider
+// number": these have no band, so no base table applies. drag_units is NEGATIVE, which the
+// controller reads as logarithmic - its magnitude is logical pixels per OCTAVE.
+W_HPFREQ = 12; W_LPFREQ = 13;
+// row 6 HP Freq  slider132  GC_FMIN..GC_FMAX  1 Hz  0 dec  120 px/octave  W_HPFREQ
+gc_fmeta[48]=3; gc_fmeta[49]=132; gc_fmeta[50]=GC_FMIN; gc_fmeta[51]=GC_FMAX; gc_fmeta[52]=1; gc_fmeta[53]=0; gc_fmeta[54]=-120; gc_fmeta[55]=W_HPFREQ;
+// row 7 LP Freq  slider136
+gc_fmeta[56]=3; gc_fmeta[57]=136; gc_fmeta[58]=GC_FMIN; gc_fmeta[59]=GC_FMAX; gc_fmeta[60]=1; gc_fmeta[61]=0; gc_fmeta[62]=-120; gc_fmeta[63]=W_LPFREQ;
 memset(dst, 0, N_BANDS * 4);
 memset(cst, 0, N_BANDS * 4);
 i = 0; loop(N_BANDS * 2, eg[i] = 1; i += 1;);
@@ -1675,26 +1683,53 @@ function gc_field(i, label, value, dec) (
   gc_field_at(i, gc_px + i * (gc_fw + 8 * gc_sc), gc_fy, gc_fw, label, value, dec);
 );
 
+// ---- V1.5: ONE id resolver, used by capture, metadata lookup, current-value read, drag and
+// commit alike.
+//
+// Ids 200/201 are NOT 100 + band*10 + slot. Left to the panel arithmetic, id 200 resolves to band
+// 10 and slot 0 - the Soft-ceiling metadata row, and gc_slot_slider reading dynb[10], four words
+// past an eight-entry table. A branch in the commit alone would have made typing work while the
+// drag compared against, and then wrote, something else entirely.
+function gc_field_row(id)  ( id >= 200 ? (6 + (id - 200)) : ((id - 100) % 10); );
+function gc_field_band(id) ( id >= 200 ? -1 : floor((id - 100) / 10); );
+
+function gc_field_slider(id) local(r, tb) (
+  r = gc_field_row(id); tb = gc_fmeta[r*8];
+  tb == 3 ? ( gc_fmeta[r*8 + 1]; ) : (
+    (tb == 0 ? stb[gc_field_band(id)] : tb == 1 ? dynb[gc_field_band(id)] : ceb[gc_field_band(id)])
+      + gc_fmeta[r*8 + 1];
+  );
+);
+
 // Which slider a (band, slot) pair edits. READ path only - writes go through a named writer.
 function gc_slot_slider(b, slot) local(tb) (
   tb = gc_fmeta[slot*8];
   (tb == 0 ? stb[b] : tb == 1 ? dynb[b] : ceb[b]) + gc_fmeta[slot*8 + 1];
 );
 
+// V1.5: the HP/LP frequency, written in ONE place per engine. Write, automate, THEN rebuild -
+// @slider is not guaranteed to run after slider_automate, established live in V1.0 and confirmed
+// again in V1.4. No clamp of their own: their declared range widened with the axis, unlike the
+// bands'.
+function gc_w_hpfreq(v) ( slider132 = floor(v + 0.5); slider_automate(slider132); gc_apply_hplp(0); );
+function gc_w_lpfreq(v) ( slider136 = floor(v + 0.5); slider_automate(slider136); gc_apply_hplp(1); );
+
 // The one dispatcher. Clamp AND quantise before dispatching: off-grid GUI writes are what left
 // -62 dB of null residue in V1.0, found live 2026-08-18.
-function gc_field_commit(id, v) local(b, slot, w, lo, hi, st) (
-  b = floor((id - 100) / 10); slot = (id - 100) % 10;
-  lo = gc_fmeta[slot*8 + 2]; hi = gc_fmeta[slot*8 + 3]; st = gc_fmeta[slot*8 + 4];
+function gc_field_commit(id, v) local(b, r, w, lo, hi, st) (
+  r = gc_field_row(id); b = gc_field_band(id);
+  lo = gc_fmeta[r*8 + 2]; hi = gc_fmeta[r*8 + 3]; st = gc_fmeta[r*8 + 4];
   v = min(max(v, lo), hi);
   v = floor(v / st + 0.5) * st;
-  w = gc_fmeta[slot*8 + 7];
+  w = gc_fmeta[r*8 + 7];
   w == W_SOFTCEIL  ? ( gc_w_softceil(b, v);  ) :
   w == W_HARDCEIL  ? ( gc_w_hardceil(b, v);  ) :
   w == W_ATK       ? ( gc_w_atk(b, v);       ) :
   w == W_REL       ? ( gc_w_rel(b, v);       ) :
   w == W_SOFTMICRO ? ( gc_w_softmicro(b, v); ) :
-  w == W_HARDMICRO ? ( gc_w_hardmicro(b, v); );
+  w == W_HARDMICRO ? ( gc_w_hardmicro(b, v); ) :
+  w == W_HPFREQ    ? ( gc_w_hpfreq(v);         ) :
+  w == W_LPFREQ    ? ( gc_w_lpfreq(v);         );
 );
 
 @slider
@@ -2319,6 +2354,23 @@ gc_card_h = 90 * gc_sc;
 // The panel owns the pointer over its whole extent, card included.
 gc_panel_hot = gc_panel_on && mouse_y >= gc_rows_y &&
                mouse_y < gc_rows_y + N_BANDS * gc_rh + (gc_card_on ? gc_card_h : 0);
+
+// ---- V1.5: the top bar owns its own pointer, and it is decided HERE - before the node hit set
+// is collected, before a disabled band is enabled by a click, and before a band drag is armed.
+//
+// gc_in_plot does not exclude this strip, and the controls in it are drawn hundreds of lines
+// later, so publishing anything at draw time cannot undo a band write that already happened.
+// Measured at the 900x500 reference: a field at x=308..418, y=14..34 overlaps the node of a
+// legal band at 260 Hz / Macro 4, whose widened-axis position is about (347.5, 10). One click
+// both enabled that band and armed its drag.
+//
+// This is not new to the two frequency fields. The three global buttons have sat in the same
+// strip since V1.0 with the same exposure; the fields only made it reachable in ordinary use.
+// So the fix belongs to the STRIP, not to two rectangles.
+gc_by = gc_py + 4 * gc_sc;          // moved up from the drawing code: geometry, not drawing
+gc_bw = 110 * gc_sc;
+gc_topbar_hot = mouse_y >= gc_by && mouse_y < gc_by + gc_fh &&
+                mouse_x >= gc_px + gc_pw - 5 * gc_bw - 32 * gc_sc && mouse_x < gc_px + gc_pw;
 // Small mode reserves only 24 px below the plot, which the fields alone fill: the strip is hidden
 // there rather than clipped. Nodes and the right-click menu still reach every band.
 gc_strip_on = gc_small ? 0 : 1;
@@ -2447,7 +2499,7 @@ gc_hit_n > 0 ? ( gc_hover = gc_hits[gc_cyc_n % gc_hit_n]; ) : ( gc_hover = -1; g
 // V1.2: and neither the strip nor the panel may leave a node hovered underneath. gc_in_plot
 // already makes this true - both sit below the plot - so this is belt and braces, and it is the
 // FIRST use of gc_strip_hot: V1.1 computed it and never read it.
-gc_strip_hot || gc_panel_hot ? ( gc_hit_n = 0; gc_hover = -1; );
+gc_strip_hot || gc_panel_hot || gc_topbar_hot ? ( gc_hit_n = 0; gc_hover = -1; );
 
 // ---- HP/LP handles, hit-tested EVERY FRAME. Also keep how far each candidate is, because a
 // filter handle sits on the 0-bit line at its cutoff and a band node at unity gain sits on the
@@ -2693,8 +2745,8 @@ gc_fdrag >= 0 ? (
   ) : (
     // plain: cutoff follows the pointer along the log axis
     gc_v = gc_f_of_x(mouse_x);
-    gc_fdrag == 0 ? ( gc_v != slider132 ? ( slider132 = floor(gc_v + 0.5); slider_automate(slider132); gc_apply_hplp(0); ); )
-                  : ( gc_v != slider136 ? ( slider136 = floor(gc_v + 0.5); slider_automate(slider136); gc_apply_hplp(1); ); );
+    gc_fdrag == 0 ? ( gc_v != slider132 ? ( gc_w_hpfreq(gc_v); ); )
+                  : ( gc_v != slider136 ? ( gc_w_lpfreq(gc_v); ); );
   );
 );
 
@@ -2740,14 +2792,25 @@ loop(2,
 
 // ---- global switches: Phase and per-engine Resolution. Click to toggle.
 
-gc_by = gc_py + 4 * gc_sc;
-gc_bw = 110 * gc_sc;
+// gc_by and gc_bw are computed in the layout block now: the top bar has to be
+// hit-testable before node arbitration, which runs long before this.
 gc_hb0 = gc_button(gc_px + gc_pw - 3 * gc_bw - 16 * gc_sc, gc_by, gc_bw,
                    slider140 == 1 ? "Phase: Linear" : "Phase: Min", slider140 == 1);
 gc_hb1 = gc_button(gc_px + gc_pw - 2 * gc_bw - 8 * gc_sc, gc_by, gc_bw,
                    slider141 == 1 ? "HP res: High" : "HP res: Norm", slider141 == 1);
 gc_hb2 = gc_button(gc_px + gc_pw - gc_bw, gc_by, gc_bw,
                    slider142 == 1 ? "LP res: High" : "LP res: Norm", slider142 == 1);
+
+// V1.5: the two frequency fields, left of the three buttons. 21.5 kHz cannot be set by dragging
+// the axis - at the top of a log scale one logical pixel is worth hundreds of Hz - and the top bar
+// is visible at every window size, unlike the panel, and does not depend on hovering, unlike the
+// handle's own label. They publish gc_pfield for the controller, exactly as the panel rows do.
+gc_hf0 = gc_field_at(200, gc_px + gc_pw - 5 * gc_bw - 32 * gc_sc, gc_by, gc_bw,
+                     "HP ", slider132, 0);
+gc_hf0 ? ( gc_pfield = 200; gc_pfield_v = slider132; );
+gc_hf1 = gc_field_at(201, gc_px + gc_pw - 4 * gc_bw - 24 * gc_sc, gc_by, gc_bw,
+                     "LP ", slider136, 0);
+gc_hf1 ? ( gc_pfield = 201; gc_pfield_v = slider136; );
 
 gc_click ? (
   gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); gc_w_topo(); ) :
@@ -2904,11 +2967,21 @@ gc_cap >= 0 && (mouse_cap & 1) ? (
   !gc_dragging && abs(mouse_y - gc_cap_y) / gc_sc >= 4 ? ( gc_dragging = 1; gc_edit = -1;
                                                            gc_elen = 0; );
   gc_dragging ? (
-    gc_slot = (gc_cap - 100) % 10;
-    gc_v = gc_cap_v - floor((mouse_y - gc_cap_y) / gc_sc / gc_fmeta[gc_slot*8 + 6])
-                      * gc_fmeta[gc_slot*8 + 4];
-    gc_v != slider(gc_slot_slider(floor((gc_cap - 100) / 10), gc_slot)) ?
-      ( gc_field_commit(gc_cap, gc_v); );
+    gc_row = gc_field_row(gc_cap);
+    gc_du = gc_fmeta[gc_row*8 + 6];
+    gc_du < 0 ? (
+      // V1.5: a NEGATIVE drag_units means logarithmic, its magnitude logical pixels per OCTAVE.
+      // The storage step and the drag increment are different things. At the panel's 12 pixels
+      // per step, a 1 Hz step would take 18,000 pixels to move LP from 20000 to 21500 - in
+      // fields that exist BECAUSE dragging the axis is too coarse up there. At 120 px per octave
+      // the same move is 12.5 pixels, and the value still lands on the declared 1 Hz grid.
+      gc_v = gc_cap_v * pow(2, -(mouse_y - gc_cap_y) / gc_sc / (-gc_du));
+      gc_v = min(max(gc_v, gc_fmeta[gc_row*8 + 2]), gc_fmeta[gc_row*8 + 3]);
+      gc_v = floor(gc_v / gc_fmeta[gc_row*8 + 4] + 0.5) * gc_fmeta[gc_row*8 + 4];
+    ) : (
+      gc_v = gc_cap_v - floor((mouse_y - gc_cap_y) / gc_sc / gc_du) * gc_fmeta[gc_row*8 + 4];
+    );
+    gc_v != slider(gc_field_slider(gc_cap)) ? ( gc_field_commit(gc_cap, gc_v); );
   );
 );
 !(mouse_cap & 1) && gc_cap >= 0 ? (

@@ -609,6 +609,40 @@ def check_graph_frequency(text, path):
         f"{path}: the frequency contract is assigned AFTER gc_fmeta reads it"
 
 
+FILTER_WRITERS = {"gc_w_hpfreq": ("slider132", "gc_apply_hplp(0)"),
+                  "gc_w_lpfreq": ("slider136", "gc_apply_hplp(1)")}
+
+
+def check_filter_writers(text, path):
+    """The two HP/LP writers, and that the controller resolves ids through the resolver.
+
+    check_writers cannot cover these: it asserts eight branches and a (b, v) signature, and these
+    take (v). They get their own check rather than a loosened shared one.
+    """
+    for fn, (sl, rebuild) in FILTER_WRITERS.items():
+        body = _function_body(text, fn)
+        assert body, f"{path}: {fn} not found"
+        assert f"{sl} = floor(v + 0.5);" in body, f"{path}: {fn} does not write {sl} by name"
+        assert f"slider_automate({sl})" in body, f"{path}: {fn} does not automate {sl}"
+        assert rebuild in body, f"{path}: {fn} does not call {rebuild}"
+        assert body.index(rebuild) > body.index("slider_automate("), \
+            f"{path}: {fn} rebuilds before it writes"
+    # The commit must resolve through the resolver. An earlier draft asserted that
+    # gc_slot_slider is ABSENT from gc_field_commit - which cannot fail, because it was never
+    # there: the band arithmetic that broke on ids 200/201 lives in the drag, not the commit.
+    body = _function_body(text, "gc_field_commit")
+    assert body and "gc_field_row(id)" in body, \
+        f"{path}: gc_field_commit does not use the id resolver"
+    assert "gc_field_slider(gc_cap)" in text, \
+        f"{path}: the DRAG still resolves its slider by band arithmetic - for id 200 that is " \
+        f"band 10, slot 0, and dynb[10] is four words past an eight-entry table"
+    # the top bar must be hit-testable before node arbitration, not at draw time
+    assert text.index("gc_topbar_hot =") < text.index("gc_hit_n = 0;\ngc_b = 0;"), \
+        f"{path}: gc_topbar_hot is computed after the node hit set is collected"
+    assert "gc_strip_hot || gc_panel_hot || gc_topbar_hot ?" in text, \
+        f"{path}: the top bar does not veto the node hit set"
+
+
 def check_source(path=V15, project=False):
     text = open(path, encoding="utf-8", errors="replace").read()
     if project:
@@ -625,6 +659,7 @@ def check_source(path=V15, project=False):
     check_fade_cannot_latch(text, path)
     check_topology_commit_has_two_callers(text, path)
     check_graph_frequency(text, path)
+    check_filter_writers(text, path)
 
 
 # --------------------------------------------------------------------------------------------
