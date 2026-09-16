@@ -3192,6 +3192,66 @@ def test_the_logarithmic_drag_reaches_21500_in_a_usable_gesture():
     assert 10.0 < log_px < 16.0, f"{log_px:.1f} px is not a gesture a hand can make"
 
 
+from tools.migrate_v14_to_v15 import migrate_chain_v15                       # noqa: E402
+
+
+def _v14_chain():
+    tr, rpr = fake.chain("A", "JS: RCBitNova V1.4", "B")
+    return tr, rpr, fake.FakeProject(tr)
+
+
+@pytest.mark.parametrize("idx,hz", [(85, 137.0), (89, 12000.0), (85, 20.0), (89, 20000.0)])
+def test_v15_migration_carries_the_frequencies_in_HZ(idx, hz):
+    """Both changed records, and both bounds. A swapped index escapes a single-record test, and
+    the bounds are where a clamp or a quantisation slip would show."""
+    tr, rpr, pr = _v14_chain()
+    tr.fxs[1].params[idx].value = hz
+    out = migrate_chain_v15(tr, rpr, pr, dry_run=False)
+    assert out.startswith("migrated"), out
+    got = tr.fxs[1].params[idx].value
+    assert abs(got - hz) < 0.5, f"record {idx} landed at {got}, not {hz}"
+
+
+def test_v15_migration_copies_every_other_record_by_normalised_number():
+    tr, rpr, pr = _v14_chain()
+    for i in range(176):
+        if i not in gates.RANGE_CHANGES:
+            tr.fxs[1].params[i].normalized = (i % 17) / 17.0
+    migrate_chain_v15(tr, rpr, pr, dry_run=False)
+    for i in range(176):
+        if i not in gates.RANGE_CHANGES:
+            assert tr.fxs[1].params[i].normalized == pytest.approx((i % 17) / 17.0), i
+
+
+def test_v15_migration_refuses_and_removes_the_new_instance_when_a_value_does_not_read_back():
+    """The sabotage must be INDEPENDENT of the migrator's own arithmetic.
+
+    Changing the destination's declared `hi` is not: the write and the read-back would both use
+    it, they would agree, and the migration would succeed while proving nothing. Perturb the
+    WRITE instead.
+    """
+    tr, rpr, pr = _v14_chain()
+    tr.fxs[1].params[89].value = 12000.0
+    real_set = rpr.TrackFX_SetParamNormalized
+
+    def sabotage(track_id, fx_index, i, v):
+        return real_set(track_id, fx_index, i, v * 0.5 if i == 89 else v)
+
+    rpr.TrackFX_SetParamNormalized = sabotage
+    out = migrate_chain_v15(tr, rpr, pr, dry_run=False)
+    assert out.startswith("REFUSED"), out
+    assert "did not read back" in out, out
+    assert [f.name for f in tr.fxs] == ["A", "RCBitNova V1.4", "B"], \
+        "a refusal must leave NO new instance behind - a bare `return` from inside try would"
+
+
+def test_v15_migration_refuses_automation_like_its_predecessor():
+    tr, rpr, pr = _v14_chain()
+    tr.fxs[1].params[3].envelope = object()
+    out = migrate_chain_v15(tr, rpr, pr, dry_run=False)
+    assert "automation" in out and out.startswith("REFUSED"), out
+
+
 @pytest.mark.parametrize("mutate,expect", SEEDED_DEFECTS)
 def test_v11_gate_rejects_each_seeded_defect(tmp_path, mutate, expect):
     clean = open(gates.V15).read()
