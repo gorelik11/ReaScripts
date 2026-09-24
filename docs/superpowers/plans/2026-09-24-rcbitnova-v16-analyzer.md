@@ -297,7 +297,7 @@ git commit -m "fix(rcbitnova): a Phase switch made under playback now commits"
 **Interfaces:**
 - Produces:
   - `brute_max(peaks, wp, Lk, max_look=2048) -> float` — V1.5's rescan, verbatim.
-  - `class Wedge` with `__init__(self, cap=2049)`, `reset()`, `rebuild(peaks, base, wp, Lk, max_look=2048)`, `push(value, pos)`, `evict(pos)`, `head() -> float`, `count() -> int`.
+  - `class Wedge` with `__init__(self, cap=2049)`, `reset()`, `rebuild(peaks, wp, Lk, max_look=2048)`, `push(value, pos)`, `evict(pos)`, `top() -> float`, `count() -> int`. (No `base`: the Python oracle owns one lane's ring. The EEL2 side adds a queue index and a peak base — Task 6.)
   - `run_reference(samples, lk_at_sample, active_at_sample, max_look=2048) -> list[float]` — the V1.5 semantics including a lane that does not advance.
   - `run_wedge(...)` — same signature, the queue semantics.
 
@@ -336,20 +336,21 @@ def test_strictly_decreasing_at_max_capacity_never_overflows():
             w.evict((n - lk - 1) % MAX_LOOK)
         assert w.count() <= w.cap
 
-def test_skipped_lane_reproduces_the_stale_maximum():
-    # V1.5 writes lane B only while the band is in Both, but the band cursor advances anyway.
-    # After Both -> Mid -> Both the rescan reads STALE ring values. The queue must agree.
-    sig = [9.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 4.0]
-    active = lambda n: n not in (1, 2)          # two samples where the lane is not written
-    assert run_wedge(sig, lambda n: 3, active) == run_reference(sig, lambda n: 3, active)
+# The skipped-lane case MUST use a small ring, or it is decorative: at the production MAX_LOOK
+# of 2048 a short signal never wraps, the "stale" cells are plain zeros, and a hand-written case
+# passes whether the queue rebuilds or not. Verified by seeding. Minimal case, found by search:
+STALE_SIG = [4.0, 9.0, 4.0, 1.0, 9.0, 4.0, 4.0, 1.0, 1.0, 4.0]
+STALE_ML, STALE_LK = 8, 3
+_stale_active = lambda n: n != 8                # one sample where the lane is not written
 
-def test_stale_case_is_not_the_clean_answer():
-    # guards the test above: if both models were "fixed" it would pass vacuously
-    sig = [9.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 4.0]
-    active = lambda n: n not in (1, 2)
-    stale = run_reference(sig, lambda n: 3, active)
-    clean = run_reference(sig, lambda n: 3, lambda n: True)
-    assert stale != clean
+def test_skipped_lane_reproduces_the_stale_maximum():
+    assert run_wedge(STALE_SIG, lambda n: STALE_LK, _stale_active, STALE_ML) == \
+           run_reference(STALE_SIG, lambda n: STALE_LK, _stale_active, STALE_ML)
+
+def test_the_stale_case_would_catch_a_queue_that_never_rebuilt():
+    # a queue that pushes and evicts without ever rebuilding reports 9.0 at index 9 where the
+    # rescan reports 4.0 - the exact divergence the design review predicted
+    ...  # drive a bare Wedge by hand; assert (ref[9], naive[9]) == (4.0, 9.0)
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
