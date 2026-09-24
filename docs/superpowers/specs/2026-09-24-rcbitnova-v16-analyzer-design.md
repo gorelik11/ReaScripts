@@ -1,6 +1,7 @@
 # RCBitNova V1.6 — Spectrum analyser, and the lookahead scan replaced
 
-**Date:** 2026-09-24
+**Date:** 2026-09-24 · **Revision 2** (answers every finding in
+`2026-09-24-rcbitnova-v16-analyzer-weaknesses.md`)
 **Branch:** `rcbitnova`
 **Base:** V1.5 (HP/LP range). **V1.5's live matrix has NOT been run and V1.5 is NOT tagged.**
 **Scope:** one display feature and one CPU fix. Neither changes a single audio sample.
@@ -70,10 +71,14 @@ only real risk in the feature and it is confirmed by four independent plugins.
 never enters the question. (Nova is GPL, so LGPL would have been compatible anyway — the reason
 to prefer the owner's own code is that it shares Nova's conventions and its bit-based aesthetic.)
 
-One thing from it must NOT be carried over: the comment `FFT_N=8192 // limit EEL2: >8192 = cisza`
-is a misdiagnosis. Nova proved in V0.7 that `fft(32768)` works when the buffer is aligned to a
-65536-word page — and `an_sc=65536` in that file is itself such an aligned address, which is why
-8192 worked there. The real rule is alignment, not size.
+Two things from it must NOT be carried over:
+
+1. The comment `FFT_N=8192 // limit EEL2: >8192 = cisza` is a misdiagnosis. Nova proved in V0.7
+   that `fft(32768)` works when the buffer is aligned to a 65536-word page — and `an_sc=65536`
+   in that file is itself such an aligned address, which is why 8192 worked there. The real rule
+   is alignment, not size.
+2. **No absolute address.** Its `PK_KEEP=160000` would land inside this design's `an_mo` span.
+   Every address comes from `tools/rcbitnova_layout.py`.
 
 ## 3. Decisions taken
 
@@ -81,36 +86,121 @@ is a misdiagnosis. Nova proved in V0.7 that `fft(32768)` works when the buffer i
 |---|---|
 | Role | **Working display**, not a measuring instrument. No freeze, no deep vertical range. |
 | Taps | **IN and OUT both**, as in `Fable Eq Mix` — grey IN behind, green OUT in front. |
-| Domain | **A switch: Mid / Side / L+R.** Nova has eight bands with independent placement, so there is no single processed domain to follow. |
-| Source | Port from `Fable Eq Mix`. Nothing from `spectrum.jsfx-inc`. |
+| Domain | **Mid / Side / Left / Right** — four scalar domains (see §4.2). |
+| Source | Port from `Fable Eq Mix`. Nothing from `spectrum.jsfx-inc`, and no address from either. |
 | Quality switch | **Not in this version.** See §1. |
 
-## 4. Architecture
+## 4. The analyser
 
-A self-contained `an_*` section that never writes to the signal.
+### 4.1 Sections, ownership, and generations
+
+`@sample` and `@gfx` run on different threads and Nova already documents that they can touch
+memory at the same time. Ownership is therefore explicit and one-directional:
+
+| Owned by `@sample` | Owned by `@gfx` |
+|---|---|
+| `an_in`, `an_out` (rings) | `an_mi`, `an_mo` (magnitudes) |
+| `an_pos` (single write cursor for both rings) | `an_db` (pixel scratch), `an_pk*` (peaks) |
+| `an_gen_seen` (generation it has acted on) | `an_gen` (generation it requests) |
+
+Neither section writes into the other's column. **`@gfx` never clears a ring and `@sample` never
+clears a peak array** — the literal Fable port does both and would race.
+
+The protocol has exactly three steps:
+
+1. The GUI writes a control (domain, Analyzer Off→On, sample-rate or `FFT_N` change) and
+   **bumps `an_gen`**, then immediately clears its own display state: `an_mi`, `an_mo`, both peak
+   arrays, and a `frame_valid` flag.
+2. `@sample` compares `an_gen` with `an_gen_seen` inline. On a difference it zeroes both rings,
+   sets `an_pos = 0`, starts a `fill_count`, and copies the generation. It does this **from the
+   audio thread only**.
+3. `@gfx` draws nothing until `fill_count >= FFT_N` — no partial frame is ever displayed. It
+   latches `an_pos` and `an_gen_seen` **once** at the top of a frame and uses those two values for
+   both transforms; if `an_gen_seen` changed between latch and end of copy, the frame is discarded
+   rather than drawn.
+
+A torn read inside one copy remains possible in principle — the writer can lap the reader — and is
+accepted: the worst case is one frame containing a splice, replaced 30 ms later. It is a display,
+and no acceptance test depends on frame content being sample-exact.
+
+**Transport stopped:** no `@sample` runs, so a domain change publishes a generation, the display
+clears and stays empty until audio flows. That is correct and must be stated in the live matrix so
+it is not reported as a bug. `an_on` and the domain are read **inline**, never cached in `@slider`
+or `@block` — three bugs of exactly that shape were fixed in V1.1–V1.4.
+
+### 4.2 Taps and domains
 
 ```
-@sample, first line:   iL = spl0; iR = spl1;          // the input, before anything
-@sample, last line:    an_on ? (                       // after out_gain and the V0.9 mute
-  an_in [an_pos] = <iL,iR      in the selected domain>;
-  an_out[an_pos] = <spl0,spl1  in the same domain>;
+@sample, first line:  iL = spl0; iR = spl1;         // the input, before anything
+@sample, last line:   an_on ? (                      // after out_gain and the V0.9 mute
+  an_in [an_pos] = D(iL, iR);
+  an_out[an_pos] = D(spl0, spl1);
   an_pos += 1; an_pos >= FFT_N ? an_pos = 0;
 );
 ```
 
-Both rings are written in one place, at the end, so a single index advances both and the two
-streams can never drift by a sample. The input is merely *captured* at the top into `iL`/`iR`.
+One cursor advances both rings, so IN and OUT can never drift by a sample. The input is only
+*captured* at the top.
 
-Under bypass (`slider1 == 1`) both taps keep feeding, so the two curves coincide — which is the
-honest picture rather than a frozen one.
+`D(l, r)` is the selected domain, and all four are **scalar**, which is what keeps the design at
+one FFT pair:
+
+| Domain | `D(l, r)` |
+|---|---|
+| Mid | `(l + r) * 0.5` |
+| Side | `(l - r) * 0.5` |
+| Left | `l` |
+| Right | `r` |
+
+`L+R` from revision 1 is deleted. With a single scalar ring it is Mid with a +1 bit offset — a
+third name for a second thing. Left and Right replace it: unambiguous, no extra memory, and they
+cover the case Mid hides (anti-phase material). A true stereo magnitude would need both channels
+carried through the transform and is out of scope.
+
+Under bypass (`slider1 == 1`) both taps keep feeding, so the two curves coincide — the honest
+picture rather than a frozen one.
 
 `FFT_N = 8192`, Hann window built in `@init`. At 96 kHz that is 11.7 Hz per bin.
 
-**Read `an_on` and the domain INLINE.** State that lives only in `@slider` or `@block` is dead
-while the transport is stopped; three separate bugs of exactly that shape were fixed in V1.1–V1.4,
-and every one of them was reported as "works only after reloading the plugin".
+### 4.3 From bins to pixels
 
-### Drawing
+`an_px_n` is **one bounded integer**, computed once per frame as `min(gc_pw_physical, 2048)`, and
+used by binning, both smoothing passes, the peak update, the peak draw, the fill and the contour.
+Those `an_px_n` columns are mapped across the **entire** plot width, never its left prefix: a
+window wider than 2048 physical pixels draws a slightly coarser curve, not a blank right side.
+V1.5's `gc_pw` is unbounded and Retina doubles it, so this bound is reached in ordinary use.
+
+For a column spanning bins `b0..b1`, the reference's two cases, stated as inequalities so the
+prose cannot invert them again:
+
+- **`b1 - b0 <= 1`** (a column covers at most one bin — pixels are denser than bins):
+  **interpolate** linearly between the two adjacent bins.
+- **`b1 - b0 > 1`** (several bins fall inside one column): take the **maximum** over them, so a
+  narrow peak survives. A mean here smooths real peaks away, which is exactly the failure a
+  believable-looking display hides.
+
+(Revision 1 stated these the wrong way round.)
+
+Edges:
+
+- **Below bin 1.** Clamp the bin *index* before computing the interpolation fraction, never after.
+  At 192 kHz, 20 Hz is bin 0.853, and fraction-then-clamp interpolates the wrong pair.
+- **At or above Nyquist.** The axis reaches 24 kHz while Nyquist is 22.05 kHz at 44.1 kHz. Those
+  columns render as **floor / no data**. Repeating the last real bin — Fable's terminal clamp —
+  would draw content in a region where none can exist, in the very octave this plugin's FIR Brick
+  is judged by.
+
+Units. The vertical axis is bits, so the internal path converts once, at the source:
+
+```
+mag_bits  = log(mag) / log(2)
+tilt_bits = tilt_db / 6.020599913 * (log(f / 1000) / log(2))
+```
+
+Ballistics `mag = max(new, mag * 0.86)` per frame; a 3-tap smoothing pass run twice in pixel
+space; magnitude scale `4 / FFT_N` — all as in the reference.
+
+### 4.4 Drawing
 
 Two independent vertical scales share the existing plot rectangle — the arrangement
 `Fable Eq Mix` uses, and it works because the two marks are different shapes, not because the
@@ -126,27 +216,34 @@ independently chose the same curve axis.)
 Draw order: spectrum → grid → EQ curve → band nodes. The spectrum is always behind, or eight
 nodes drown in it.
 
-Ported numerics, with attribution in the header: magnitude scale `4/FFT_N`; ballistics
-`mag = max(new, mag * 0.86)` per frame; per-pixel binning — interpolation between bins where they
-are denser than pixels, **maximum** across bins where they are not (a mean loses peaks); tilt
-referenced to 1 kHz; a 3-tap smoothing pass run twice in pixel space; persistent peak hold.
-
-### Controls — four new parameters
+### 4.5 Controls
 
 The highest existing slider is **246** (`Panel: open dynamics card`), not 142. REAPER orders
 parameters by slider NUMBER, not by position in the file, so a new parameter numbered below an
 existing one silently shifts every higher parameter in every saved project.
 
-| # | Parameter | Values |
-|---|---|---|
-| 247 | Analyzer | Off / On |
-| 248 | Analyzer Domain | Mid / Side / L+R |
-| 249 | Analyzer Tilt | 0 / 3 / 4.5 dB per octave |
-| 250 | Analyzer Peak Hold | Off / On (right-click clears) |
+| # | Parameter | Values | Default |
+|---|---|---|---|
+| 247 | Analyzer | Off / On | **Off** |
+| 248 | Analyzer Domain | Mid / Side / Left / Right | **Mid** |
+| 249 | Analyzer Tilt | 0 / 3 / 4.5 dB per octave | **4.5** |
+| 250 | Analyzer Peak Hold | Off / On | **Off** |
 
-Buttons live in the top bar beside `HP res` / `LP res`, in the same style. **A domain change
-clears both rings and both peak arrays** — without it the display mixes two streams for ~85 ms,
-a defect the reference plugin hit on 2026-07-25.
+`Off` by default: a new parameter must not change how an existing project looks or performs on
+load. Off→On follows §4.1 — generation bump, rings refill, nothing drawn until a full frame.
+
+**Geometry is specified before implementation, not during it.** The top bar already holds five
+110-unit slots (two frequency fields, Phase, HP res, LP res) and at the 900×500 reference size
+four more of that width do not fit. The four analyser controls therefore occupy a **second row**,
+which reduces the plot height by one row unit; `gc_panel_on` / `gc_small` thresholds are
+recomputed from that, and in small mode the second row is hidden and the analyser is forced off
+on screen (the parameter is untouched). Rectangles, segmented widths and the right-click target
+for the peak reset are all pinned in the plan.
+
+**Pointer ownership.** V1.5 computes the top bar's hit owner *before* node hit collection, at
+`JSFX/RCBitNova V1.5:2358-2373`, because a top-bar click used to also enable and arm a band node.
+The union of every new rectangle joins that early calculation. A control drawn without extending
+`gc_topbar_hot` reopens a defect that changes audio from a click on a label.
 
 ## 5. Memory
 
@@ -158,38 +255,76 @@ than needed.
 | Hann window `an_w` | 8192 |
 | rings `an_in` + `an_out` | 16384 |
 | magnitudes `an_mi` + `an_mo` | 8192 |
-| peaks `an_pkI` + `an_pkO` | 4096 |
+| peaks `an_pkI` + `an_pkO` (2048 columns each) | 4096 |
 | pixel scratch `an_db` | 2048 |
-| *(the three pixel-indexed arrays are sized 2048 = max plot width in PHYSICAL pixels; on a retina display `gfx_w` is already doubled, so the draw loop clamps its pixel count to that bound)* | |
 | FFT scratch `an_sc` | 16384 |
-| **analyser** | **55296** |
-| wedge queues: 16 × 2048 × (value + position) | 65536 |
-| **new total** | **120832** (≈ 944 KB) |
+| analyser metadata: `an_pos`, `an_gen`, `an_gen_seen`, `fill_count`, `frame_valid`, first-load marker | 16 |
+| **analyser** | **55312** |
+| wedge queues: 16 × `DQ_CAP` 2049 × (value + position) | 65568 |
+| queue metadata: 16 × (head, tail, count, lane-valid, pending-`Lk`) | 80 |
+| **new total** | **120960** (≈ 945 KB) |
 
 The new block starts at the 131072 page boundary and `lp_base` moves two pages up, to 262144.
 Every engine address therefore changes. `tools/rcbitnova_layout.py` stays the single source of
-truth and the source gate compares the file against it.
+truth; **every span above, metadata included, is declared there** — the gate cannot protect an
+object it does not know exists.
 
-Two hard invariants: **`an_sc` (16384 words) must not cross a 65536-word page**, and the engine
-block stays page-aligned. A misaligned FFT in this plugin corrupts **silently** — that is the
-V0.7 lesson and it is not worth learning twice.
+Gated invariants: all spans pairwise disjoint; **`an_sc` (16384 words) does not cross a
+65536-word page**; the whole new block lies below `lp_base`; the engine block begins at exactly
+262144 and stays page-aligned; every clear operation covers exactly its declared span. A
+misaligned FFT in this plugin corrupts **silently** — the V0.7 lesson, not worth learning twice.
 
 ## 6. The lookahead scan, replaced
 
-Ported from `Fable Mix Limiter 2` (in `Fable Eq Mix`, lines 383–402): `dq_push(v, p)` and
-`dq_evict(lp)`, a monotonic queue whose values decrease from head to tail, so the head is the
-window maximum. Exactly one position leaves the window per sample, so one eviction test suffices.
+Ported from `Fable Mix Limiter 2` (in `Fable Eq Mix`, lines 383–402 and 911–925): `dq_push(v, p)`
+and `dq_evict(lp)`, a monotonic queue whose values decrease from head to tail, so the head is the
+window maximum.
 
-Two differences from the reference, both material:
+**The acceptance is bug-for-bug equality with V1.5, not mathematical correctness.** That
+distinction decides the whole design, because of what V1.5 actually does:
 
-1. **One queue there, sixteen here.** Its linked stereo collapses to a single channel; Nova has
-   8 bands × 2 lanes, and even in the `linked` branch each lane's maximum is computed separately
-   before they are combined. So the queue state becomes arrays indexed by (band, lane) and the
-   functions take a queue index. `DQ_CAP = 2048 = MAX_LOOK`; the window can never hold more.
-2. **A change of `Lk` REBUILDS the queue from the ring's existing history — it does not clear
-   it.** Clearing would run a shortened window for several hundred samples after the knob moves,
-   and the null test would stop being an exact zero. This is the one place in the change where
-   bit-exactness is easy to lose.
+`mbwpos[b] = (wp + 1) % MAX_LOOK` at `JSFX/RCBitNova V1.5:2230` sits **outside** the `two ?`
+block, while lane B's `mb_peak[baseB + wp]` is written only **inside** it (lines 2175-2182). In
+Mid, Side, Left or Right the band's cursor keeps advancing while lane B is never written. When the
+band returns to `Both`, V1.5's rescan therefore reads **stale values left in the ring from an
+earlier rotation** and limits on them. The queue must reproduce that, stale reads included.
+
+(That is a latent defect in V1.5 — a band returning to `Both` can briefly limit against a peak up
+to `MAX_LOOK` samples old. It is recorded here and **must not be fixed in V1.6**, because fixing
+it breaks the null that proves everything else. It belongs to its own version, with its own
+before/after listening test.)
+
+Four contracts follow.
+
+**6.1 Validity is per `(band, lane)`, never global.** Each of the sixteen queues carries its own
+valid flag and its own pending-`Lk` flag. A lane that resumes after its cursor advanced without
+queue maintenance is invalid and must rebuild.
+
+**6.2 The rebuild replays the exact positions V1.5 would scan,** oldest to newest, using Fable's
+form at lines 911-920:
+
+```
+head = tail = cnt = 0;
+r = Lk; while (r >= 1) ( p = (wp - r + MAX_LOOK) % MAX_LOOK; dq_push(peak[base + p], p); r -= 1; );
+```
+
+then the current sample is pushed at `wp` exactly once. Reading `mb_peak` at those positions —
+rather than recomputing anything — is what reproduces the stale lane-B values.
+
+**6.3 Eviction order and capacity.** The reference pushes before evicting, so occupancy is
+transiently `Lk + 2`. V1.5's window holds `Lk + 1` values, and at the clamp `Lk = MAX_LOOK - 1 =
+2047` that transient is **2049** — one past a 2048-slot buffer, which would overwrite its own head
+and corrupt the position test. Reached only at 352.8/384 kHz, so every proposed live null could
+pass while the defect sat there.
+
+**Decision: keep the reference's push→evict order and set `DQ_CAP = MAX_LOOK + 1 = 2049.`** The
+wrap is a comparison (`t >= DQ_CAP ? t = 0`), not a mask, so a non-power-of-two capacity costs
+nothing. Every operation asserts `cnt <= DQ_CAP`.
+
+**6.4 A pending `Lk` change stays pending per lane** until that lane next processes a sample.
+Consuming it globally would mark a lane clean that never rebuilt. The same applies across band
+disable/enable, Mode A↔B, and bypass: where V1.5 freezes and retains ring history, the queue
+freezes and retains too; where V1.5 rescans, the queue rebuilds.
 
 Code form follows the reference's `while(run)` loop rather than a compact ternary. An assignment
 inside a nested ternary has already cost this project one silent defect that neither the oracle
@@ -197,34 +332,88 @@ nor a review caught — only the live CPU meter did.
 
 ## 7. Acceptance
 
-**The headline acceptance is an exact zero, not a tolerance.** Both changes must leave the audio
-untouched, and that is directly testable.
+**The headline acceptance is an exact zero, not a tolerance**, and the comparator is 64-bit float
+with zero tolerance, as in the V1.5 harness.
 
-1. **Null V1.6 against V1.5**, four runs: analyser Off and On × lookahead 2 ms and 10 ms. All four
-   bit-identical. An analyser that nulls proves the tap only reads; a wedge that nulls proves it
-   computes the same maximum.
-2. **Python oracle for the queue** — sliding maximum against brute force on random signals, and
-   specifically **across an `Lk` change mid-stream**, which is the risk identified in §6.
-3. **Python oracle for the spectrum** — window, `4/FFT_N` scale, binning, tilt and smoothing
-   reimplemented; on a known tone the peak must land on the expected pixel with the expected value
-   in bits.
-4. **Source gate** — addresses and sizes match the layout tool; no FFT buffer crosses a page; the
-   new sliders are ≥ 247 and above every existing number.
-5. **Seeded defects** — as in V1.5, each rejected by its own assertion.
-6. **CPU table reproduced live**: at 10 ms lookahead ≈ 1.4 %, not 22 %.
+### 7.1 Steady-state nulls (necessary, not sufficient)
 
-**Live matrix** (what no test in this repository can reach):
+V1.6 against V1.5: analyser Off and On × lookahead 2 ms and 10 ms — four runs, bit-identical.
 
-- The analyser **with the transport stopped**. Three bugs of this project lived exactly there.
-- A domain change: buffers must clear, with no ~85 ms of mixed streams.
-- Peak-hold reset, by right-click.
+### 7.2 Transition nulls — the ones that matter
+
+Revision 1 tested only steady states, which is exactly where the §6 risks are invisible. Each of
+these is a JSFX-against-JSFX null, run in REAPER, not a Python comparison:
+
+1. Lookahead **automated mid-stream** (2 ms → 10 ms → 2 ms under playback).
+2. `Both → Mid → Both` on a band in Mode B, with material in both lanes.
+3. A lookahead change **while lane B is inactive**, then a return to `Both`.
+4. Mode B off → on; a band disabled → re-enabled.
+5. Analyzer On with the **FX window closed** during a render, then open — the closed case never
+   runs `@gfx` and is the one a careless harness skips.
+6. Maximum capacity: `Lk = 2047` at 384 kHz with strictly decreasing data, equal runs, random
+   data, and several ring wraps.
+
+**One seeded defect per transition**, so a test that never reaches its transition cannot pass
+decoratively.
+
+### 7.3 Oracles and gates
+
+- **Queue oracle** (Python): sliding maximum against brute force on random signals, equal runs,
+  and across an `Lk` change mid-stream — plus the skipped-lane sequence from §6, asserting the
+  stale maximum V1.5 produces, not the mathematically clean one.
+- **Spectrum oracle** (Python): window, `4/FFT_N`, both binning branches, bit conversion, tilt and
+  both smoothing passes. Tones placed **between** sampled pixel positions; assert peak value as
+  well as peak column. Sample rates 44.1 / 48 / 96 / 192 / 384 kHz, plus a Retina-wide window, to
+  cover the Nyquist and sub-bin-1 edges.
+- **Layout gate**: every span in §5 present and disjoint, `an_sc` page-safe, engines at 262144.
+- **Manifest gate**: the full expected **176-record V1.5 manifest as an exact prefix**, then
+  exactly four records 176..179 with pinned names, defaults, ranges, steps and enum labels. The
+  live build reports 180 declared plus the three host parameters at 180..182. "All new sliders are
+  above 246" is not sufficient — it passes while an old declaration is edited or dropped. No
+  migrator is needed, and the spec says why: the audio-bearing prefix is unchanged and all four
+  appended parameters are display-only.
+- **Round-trips**: save/reload and automation write/read for all four controls.
+
+### 7.4 CPU acceptance
+
+Pinned conditions: 96 kHz, 512-sample block, 8 bands in Mode B Split, `Phase: Min`, Analyzer On,
+peak hold on, FX window **closed** for the audio-thread figure and **open** for the GUI figure,
+REAPER Performance Meter FX CPU column, 60 s average.
+
+The invariant being accepted is **the disappearance of the linear `Lk` term**, not one number:
+measured at 0.1 / 2 / 10 ms, the three readings must agree within ±0.3 % of each other. The 1.4 %
+of §1 is a fit intercept, not a threshold, and machine scheduling moves it.
+
+### 7.5 Live matrix
+
+What no test in this repository can reach:
+
+- The analyser **with the transport stopped** — including a domain change there, which by §4.1
+  clears and then waits. It must be documented as expected, not reported as a hang.
+- Domain switching under playback: no mixed-stream smear.
+- Peak-hold reset by right-click; peak behaviour across transport start, sample-rate change and
+  Analyzer Off→On (the reset matrix of §8).
 - The lookahead knob moved **under playback**: no click.
+- Top-bar clicks at 900×500, default, and Retina sizes: no band is enabled or armed by a click on
+  an analyser control.
 
-## 8. Known risks and what is deliberately left out
+## 8. Lifecycle details
+
+**Peak-hold reset matrix.** Peaks clear on: domain change, right-click, Analyzer Off→On,
+sample-rate change, and plot-width change (`an_px_n` changes meaning). Peaks **survive** an
+ordinary `@init` caused by transport start, which requires the first-load marker of §5 — REAPER
+re-runs `@init` at transport start and resets variables while memory survives. All active peak
+columns initialise to an explicit floor, never zero.
+
+**Magnitudes reset together with peaks.** `an_mi`/`an_mo` decay by 0.86 per frame, so clearing
+peaks alone lets the previous domain repopulate the display within two frames.
+
+## 9. Known risks and what is deliberately left out
 
 - **V1.5 is unverified and untagged.** V1.6 builds on it. The live matrix
   (`docs/superpowers/V15-LIVE-MATRIX.md`) should be run and V1.5 tagged before this work starts,
   or a later defect cannot be attributed to a version.
+- **V1.5's stale lane-B peak is preserved, not fixed** (§6). Recorded as a known latent defect.
 - **Skipping a linear engine whose slope is `Off` is NOT in this version.** In `Phase: Linear`
   both convolution engines run unconditionally and convolve an identity kernel at full cost — but
   measurement put that below 1 %, and it cannot null bit-exactly (the identity kernel carries the
@@ -234,3 +423,5 @@ untouched, and that is directly testable.
   scoped to the gain-modulation path, together with an inter-sample peak detector for Mode B.
 - **FFT stays at 8192.** Higher is legal given the alignment rule, but 11.7 Hz bins at 96 kHz are
   adequate for a working display, and each doubling doubles the per-frame GUI cost.
+- **A torn frame is accepted** (§4.1). The display may show one spliced frame under a lapping
+  writer; no acceptance test depends on frame content.
