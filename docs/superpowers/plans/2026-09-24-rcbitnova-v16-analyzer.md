@@ -142,10 +142,18 @@ Expected: PASS.
 In each of `tools/rcbitnova_gates.py`, `tools/rcbitnova_curve.py`, `tools/rcbitnova_compile.py`, `tools/rcbitnova_nulltest.py`, `tools/rcbitnova_cpu.py`, find every literal `RCBitNova V1.5` that names the *working* file and change it to `V1.6`. Leave the ones that name a frozen baseline. Verify nothing was missed:
 
 ```bash
-grep -rn "RCBitNova V1\.5" tools/ | grep -v "FROZEN\|baseline\|v15_declared"
+grep -rn "RCBitNova V1\.5" tools/ tests/ | grep -v "FROZEN\|baseline\|v15_declared"
+grep -rn "gates\.V15" tests/
 ```
 
-Expected: no output.
+Expected from the first: only `tools/migrate_v14_to_v15.py` (it migrates V1.4 -> V1.5 and must
+keep naming V1.5) and `nulltest.BASE` (V1.5 is now the null BASELINE). Expected from the second:
+no output — `tests/test_rcbitnova_dsp.py` names the working file through `gates.V15` in nine
+places and they all move to `gates.V16`.
+
+One seeded defect moves with them: the lambda at `tests/test_rcbitnova_dsp.py:2855` replaces
+`desc: RCBitNova V1.5 - ` and its expectation reads "the file is V1.5". Left alone it silently
+matches nothing, and the harness's own guard ("the seeding lambda changed nothing") fires.
 
 - [ ] **Step 5: Run the whole suite and the source gate**
 

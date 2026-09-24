@@ -34,8 +34,8 @@ N_DECLARED = 176
 
 # The panel's contract is "no DSP change from V1.1", so V1.1 is the baseline. Comparing against
 # V1.0 would still be true and would answer a question nobody is asking about this feature.
-BASE = "RCBitNova V1.4"
-UNDER_TEST = "RCBitNova V1.5"
+BASE = "RCBitNova V1.5"
+UNDER_TEST = "RCBitNova V1.6"
 
 # case -> {declared parameter name: value in ITS OWN units}
 CASES = {

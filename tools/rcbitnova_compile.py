@@ -1,4 +1,4 @@
-"""Does JSFX/RCBitNova V1.5 actually COMPILE?
+"""Does JSFX/RCBitNova V1.6 actually COMPILE?
 
 `n_params == 179` does not answer that. A JSFX with a syntax error in @gfx still loads and still
 reports every declared slider - which is exactly how `gc_fd = 1e18` (EEL2 has no such literal)
@@ -43,7 +43,7 @@ def check(track_index=0):
             pr = reapy.Project()
         tr = pr.tracks[track_index]
         before = [f.name for f in tr.fxs]
-        fx = tr.add_fx("RCBitNova V1.5")
+        fx = tr.add_fx("RCBitNova V1.6")
         assert fx is not None, "add_fx returned None - REAPER did not add anything"
         i = fx.index
         # PROVE which FILE was loaded, via fx_ident. NOT fx.name: that is REAPER's cached DISPLAY
@@ -52,7 +52,7 @@ def check(track_index=0):
         # read "RCBitNova V1.2", so a name-based guard rejected a correct build. fx_ident names the
         # file, which is the thing we actually care about.
         ident = RPR.TrackFX_GetNamedConfigParm(tr.id, i, "fx_ident", "", 512)[4]
-        assert ident == "RCBitNova V1.5", (
+        assert ident == "RCBitNova V1.6", (
             f"asked for the V1.3 file and REAPER loaded {ident!r}")
         n = fx.n_params
         RPR.TrackFX_Show(tr.id, i, 3)          # float the window so its text exists to be read
