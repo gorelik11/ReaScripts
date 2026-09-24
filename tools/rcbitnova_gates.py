@@ -256,6 +256,8 @@ def expected_v15_manifest():
 
 AUDIO = [n for n, _, _ in layout.AUDIO_CHAIN]
 GUI = ["gc_lin", "gc_snap", "gc_meta", "gc_kc", "gc_fc", "gc_ebuf", "gc_hits"]
+# V1.6's block, in layout order. The names are the model's, so a rename in one place fails here.
+V16_NAMES = [n for n, _ in layout.V16_BLOCK]
 
 
 # --------------------------------------------------------------------------------------------
@@ -447,10 +449,27 @@ def check_addresses(text, path):
     assert v11["gc_fc"] - v11["gc_kc"] == 8 * 8, \
         f"{path}: gc_kc spans {v11['gc_fc'] - v11['gc_kc']} words, expected 64 (8 bands x 8)"
     assert v10["gc_fc"] - v10["gc_kc"] == 32, "V1.0's gc_kc is 32 words - the premise of §2.1"
-    assert v11["lp_base"] == 131072, \
-        f"{path}: lp_base = {v11['lp_base']}, expected 131072 - one page up from V1.0"
-    assert v11["gc_hits"] + 8 <= v11["lp_base"], \
-        f"{path}: the GUI region must end below lp_base"
+    # V1.6: the analyser and the wedge queues sit between the GUI region and the engines, so
+    # lp_base is two pages further up than V1.5's 131072. Every one of those addresses is compared
+    # against tools/rcbitnova_layout.py - a memory map the gate cannot see is a memory map the
+    # gate cannot protect, and three earlier reviews each found an address claim that was wrong
+    # when actually checked.
+    v16 = eval_init(text, ["an_block"] + V16_NAMES)
+    spans = layout.v16_new_spans(8)
+    assert v16["an_block"] == 131072, \
+        f"{path}: the V1.6 block starts at {v16['an_block']}, expected 131072"
+    for name, (start, _) in spans.items():
+        assert v16[name] == start, f"{path}: {name} = {v16[name]}, model says {start}"
+    lo, hi = spans["an_sc"]
+    assert lo // 65536 == (hi - 1) // 65536, \
+        f"{path}: an_sc spans {lo}..{hi - 1} and crosses a 65536-word page - fft() would corrupt " \
+        f"silently, with no error and no noise (V0.7)"
+    assert v11["lp_base"] == layout.v16_lp_base(8) == 262144, \
+        f"{path}: lp_base = {v11['lp_base']}, model says {layout.v16_lp_base(8)}"
+    assert max(e for _, e in spans.values()) <= v11["lp_base"], \
+        f"{path}: the V1.6 block overruns lp_base"
+    assert v11["gc_hits"] + 8 <= v16["an_block"], \
+        f"{path}: the GUI region must end below the V1.6 block"
 
 
 # The reference height gc_sc is defined against: gc_sc = min(gfx_w/900, gfx_h/500).

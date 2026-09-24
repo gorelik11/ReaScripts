@@ -122,7 +122,7 @@ def test_every_span_is_declared_with_the_size_the_design_gives():
     want = {"an_sc": 16384, "an_w": 8192, "an_in": 8192, "an_out": 8192,
             "an_mi": 4096, "an_mo": 4096, "an_pkI": 2048, "an_pkO": 2048,
             "an_db": 2048, "an_ms_state": 2048, "an_meta": 16,
-            "dq_v": 16 * 2049, "dq_p": 16 * 2049, "dq_meta": 16 * 5}
+            "dq_v": 16 * 2049, "dq_p": 16 * 2049, "dq_meta": 16 * 6}
     spans = L.v16_new_spans()
     assert set(spans) == set(want)
     for name, words in want.items():
@@ -149,7 +149,7 @@ def test_the_block_starts_on_a_page_and_the_engines_move_up_two():
 
 def test_the_block_is_the_size_the_design_states():
     spans = L.v16_new_spans()
-    assert max(e for _, e in spans.values()) - L.v16_block_base() == 123008
+    assert max(e for _, e in spans.values()) - L.v16_block_base() == 123024
 
 
 def test_a_small_shift_does_not_cross_a_page_and_that_is_the_point():
@@ -176,3 +176,55 @@ def test_v16_check_rejects_an_fft_scratch_that_straddles_a_page():
     finally:
         L.V16_BLOCK[:] = saved
     L.v16_check()          # and the real map is still valid afterwards
+
+
+# ---- Task 6: the wedge in EEL2 ----
+
+def test_the_bruteforce_rescan_is_gone():
+    text = open("JSFX/RCBitNova V1.6").read()
+    assert "loop(Lk + 1," not in text, "the per-sample window rescan must be gone"
+    assert text.count("dq_worst(") == 3, "one definition and one call per lane"
+
+
+def test_the_queue_functions_exist():
+    text = open("JSFX/RCBitNova V1.6").read()
+    for fn in ("dq_push", "dq_evict", "dq_rebuild", "dq_worst"):
+        assert _function_body(text, fn), fn
+
+
+def test_dq_push_uses_a_while_loop_not_a_nested_ternary():
+    # an assignment inside a nested ternary has already cost this project one silent defect
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "dq_push")
+    assert "while (" in body
+    assert "+=" not in body.split("while (")[1].split("\n")[0]
+
+
+def test_capacity_is_max_look_plus_one():
+    text = open("JSFX/RCBitNova V1.6").read()
+    assert "DQ_CAP  = MAX_LOOK + 1;" in text
+
+
+def test_validity_is_per_queue_not_global():
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "dq_worst")
+    for strip in ("dq_valid[q]", "dq_lk[q]", "dq_lastwp[q]"):
+        assert strip in body, f"{strip} must be indexed per queue"
+
+
+def test_a_stale_cursor_forces_a_rebuild():
+    # the Both -> Mid -> Both case: the band's cursor advanced while this lane was not written
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "dq_worst")
+    assert "dq_lastwp[q] != expw" in body
+    assert "dq_rebuild(" in body
+
+
+def test_the_rebuild_reads_the_ring_rather_than_recomputing():
+    # reading mb_peak at exactly the positions V1.5 would scan is what reproduces the stale
+    # values a skipped lane leaves behind - the null depends on it
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "dq_rebuild")
+    assert "mb_peak[pkbase + pos]" in body
+
+
+def test_the_queue_state_is_cleared_in_init():
+    # EEL2 memory is not cleared when @init re-runs at transport start or on a rate change
+    text = open("JSFX/RCBitNova V1.6").read()
+    assert "memset(dq_meta, 0, N_QUEUES * 6);" in text

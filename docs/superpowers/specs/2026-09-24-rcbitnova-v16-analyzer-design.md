@@ -293,8 +293,8 @@ than needed.
 | analyser metadata: `an_pos`, `an_gen`, `an_gen_seen`, `fill_count`, `frame_valid`, first-load marker | 16 |
 | **analyser** | **57360** |
 | wedge queues: 16 × `DQ_CAP` 2049 × (value + position) | 65568 |
-| queue metadata: 16 × (head, tail, count, lane-valid, pending-`Lk`) | 80 |
-| **new total** | **123008** (≈ 961 KB) |
+| queue metadata: 16 × (head, tail, count, lane-valid, pending-`Lk`, last-cursor) | 96 |
+| **new total** | **123024** (≈ 961 KB) |
 
 The new block starts at the 131072 page boundary and `lp_base` moves two pages up, to 262144.
 Every engine address therefore changes. `tools/rcbitnova_layout.py` stays the single source of

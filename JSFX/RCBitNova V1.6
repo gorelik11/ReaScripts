@@ -914,7 +914,55 @@ GCM_GACT   = 5;    // gen_active: an AUDIBLE value committed (topo_commit)
 GCM_TIDX   = 6;    // active buffer index for gc_trace  (owned by @gfx)
 GCM_TGEN   = 7;    // generation for gc_trace           (owned by @gfx)
 
-lp_base = ceil((gc_hits + 8) / 65536) * 65536;    // page-align the engine block start
+// ==== V1.6 BLOCK: the analyser and the Mode-B wedge queues ====
+// Derived, never typed: every address below comes from tools/rcbitnova_layout.py (v16_new_spans)
+// and check_addresses compares this file against it.
+//
+// an_sc IS FIRST, ON THE PAGE BOUNDARY, on purpose. It is the FFT scratch (2 * FFT_N words) and a
+// fft() whose buffer crosses a 65536-word page corrupts SILENTLY - V0.7 established that, and it
+// is why 32768 is widely believed unusable. Putting it first makes the rule true by construction
+// instead of by arithmetic that has to be rechecked whenever something above it changes size.
+//
+// The queues come last: they are the only entries sized by MAX_LOOK, which a later version could
+// move, and growing the tail of the block cannot disturb the FFT scratch's page.
+FFT_N   = 8192;
+AN_PX   = 2048;                            // the bound an_px_n clamps to; see @gfx
+DQ_CAP  = MAX_LOOK + 1;                    // 2049 - see the wedge functions above
+N_QUEUES = 16;                             // 8 bands x 2 lanes
+
+an_block    = ceil((gc_hits + 8) / 65536) * 65536;   // 131072: where V1.5's engines used to start
+an_sc       = an_block;                    // 2 * FFT_N: FFT scratch, complex
+an_w        = an_sc + 2 * FFT_N;           // FFT_N: Hann window
+an_in       = an_w + FFT_N;                // FFT_N: ring, the tap BEFORE the plugin
+an_out      = an_in + FFT_N;               // FFT_N: ring, the tap AFTER out_gain and the mute
+an_mi       = an_out + FFT_N;              // FFT_N/2: magnitudes, IN
+an_mo       = an_mi + FFT_N / 2;           // FFT_N/2: magnitudes, OUT
+an_pkI      = an_mo + FFT_N / 2;           // AN_PX: peak hold, IN
+an_pkO      = an_pkI + AN_PX;              // AN_PX: peak hold, OUT
+an_db       = an_pkO + AN_PX;              // AN_PX: per-column scratch
+an_ms_state = an_db + AN_PX;               // AN_PX: red-rule hysteresis, one per column
+an_meta     = an_ms_state + AN_PX;         // 16 words, NAMED below - never index it numerically
+dq_v        = an_meta + 16;                // N_QUEUES * DQ_CAP: queue values
+dq_p        = dq_v + N_QUEUES * DQ_CAP;    // N_QUEUES * DQ_CAP: queue positions
+dq_meta     = dq_p + N_QUEUES * DQ_CAP;    // N_QUEUES * 5: head, tail, cnt, valid, lk_pending
+
+// Per-queue metadata, as five parallel strips rather than a struct: EEL2 has no struct, and
+// strided indexing of a five-word record is where an off-by-one lands in the neighbour's field.
+dq_head  = dq_meta;
+dq_tail  = dq_head  + N_QUEUES;
+dq_cnt   = dq_tail  + N_QUEUES;
+dq_valid = dq_cnt   + N_QUEUES;
+dq_lk    = dq_valid + N_QUEUES;
+dq_lastwp = dq_lk   + N_QUEUES;            // uses the 6th strip; dq_meta is N_QUEUES * 5 words of
+                                           // metadata plus this one, sized in the layout model
+
+// Queue state starts clean. EEL2 memory is NOT cleared when @init re-runs - REAPER calls it again
+// at transport start and on a sample-rate change - and a queue carried across either would hold
+// positions from a ring that has since been rebuilt. dq_valid = 0 alone would force a rebuild,
+// but clearing all six strips means no field is ever read before it has been written.
+memset(dq_meta, 0, N_QUEUES * 6);
+
+lp_base = ceil((dq_meta + N_QUEUES * 6) / 65536) * 65536;   // 262144: page-align the engines
 lp_relayout(8192, 8192);                          // Task 5: both engines Normal (= V0.6)
 lp_win_build(0); lp_win_build(1);
 lp_rt_reset(0);  lp_rt_reset(1);
@@ -1111,6 +1159,76 @@ function gc_w_topo() local(changed) (
   changed && play_state == 0 ? ( topo_commit_state(); );
 );
 
+
+// ==== V1.6: the Mode-B lookahead maximum, as a sliding window ====
+//
+// V1.5 rescanned the whole window on EVERY sample, for every lane of every enabled band. Measured
+// live 2026-09-24 at 96 kHz with eight bands in Mode B Split: CPU = 1.4% + 0.0215% * Lk - at a
+// 2 ms lookahead that loop is 72% of the plugin, at 10 ms it is 94%.
+//
+// Ported from Fable Mix Limiter 2 (Fable Eq Mix, 383-402 and 911-925): a monotonic queue whose
+// values decrease from head to tail, so the head is the window maximum, and exactly one position
+// leaves the window per sample, so one eviction test suffices.
+//
+// THE QUEUE MUST EQUAL V1.5 BUG FOR BUG, because the acceptance is a null against it. V1.5
+// advances a band's cursor even where lane B is never written - mbwpos[b] at the bottom of the
+// Mode-B block sits OUTSIDE the `two ?` branch that writes lane B - so after Both -> Mid -> Both
+// its rescan reads values left in the ring from an earlier rotation and limits on them. The
+// rebuild below reads mb_peak at exactly those positions rather than recomputing anything, which
+// is what reproduces them. (That staleness is a latent defect of V1.5 in its own right; it is
+// recorded in the V1.6 design and must NOT be fixed here, or the null stops proving anything.)
+//
+// `while(run)` rather than a compact ternary: an assignment inside a nested ternary has already
+// cost this project one silent defect that neither the oracle nor a review caught.
+function dq_push(q, v, p) local(base, t, run) (
+  base = q * DQ_CAP;
+  run = 1;
+  while (run) (
+    dq_cnt[q] > 0 ? (
+      t = dq_tail[q] - 1; t < 0 ? t += DQ_CAP;
+      dq_v[base + t] <= v ? ( dq_tail[q] = t; dq_cnt[q] = dq_cnt[q] - 1; ) : ( run = 0; );
+    ) : ( run = 0; );
+  );
+  t = dq_tail[q];
+  dq_v[base + t] = v; dq_p[base + t] = p;
+  t += 1; t >= DQ_CAP ? t = 0;
+  dq_tail[q] = t; dq_cnt[q] = dq_cnt[q] + 1;
+);
+
+function dq_evict(q, lp) local(h) (
+  h = dq_head[q];
+  (dq_cnt[q] > 1 && dq_p[q * DQ_CAP + h] == lp) ? (
+    h += 1; h >= DQ_CAP ? h = 0;
+    dq_head[q] = h; dq_cnt[q] = dq_cnt[q] - 1;
+  );
+);
+
+// Replay the positions V1.5's rescan would read, OLDEST TO NEWEST, excluding wp itself.
+function dq_rebuild(q, pkbase, wp, lk) local(r, pos) (
+  dq_head[q] = 0; dq_tail[q] = 0; dq_cnt[q] = 0;
+  r = lk;
+  while (r >= 1) (
+    pos = wp - r; pos < 0 ? pos += MAX_LOOK;
+    dq_push(q, mb_peak[pkbase + pos], pos);
+    r -= 1;
+  );
+);
+
+// One lane's worst peak. Validity is PER (band, lane): a lane that resumes after the band's
+// cursor advanced without it - Both -> Mid -> Both - is stale and must rebuild, and so is one
+// whose Lk changed while it was not processing. A global flag would mark such a lane clean.
+function dq_worst(q, pkbase, wp, lk) local(expw, evp) (
+  expw = wp - 1; expw < 0 ? expw += MAX_LOOK;
+  (dq_valid[q] == 0 || dq_lk[q] != lk || dq_lastwp[q] != expw) ? (
+    dq_rebuild(q, pkbase, wp, lk);
+    dq_valid[q] = 1; dq_lk[q] = lk;
+  );
+  dq_push(q, mb_peak[pkbase + wp], wp);
+  evp = wp - lk - 1; evp < 0 ? evp += MAX_LOOK;
+  dq_evict(q, evp);
+  dq_lastwp[q] = wp;
+  dq_v[q * DQ_CAP + dq_head[q]];
+);
 
 // Build engine eng's kernel into its Hspec. ftype 3=HP,4=LP; nsec sections (0=identity);
 // brick=1 -> magnitude step at fc (no resonance). res = HP/LP Resonance (0..1).
@@ -2196,8 +2314,7 @@ slider1 != 1 ? (
         dst[b*4] = 2*v1 - ic1; dst[b*4+1] = 2*v2 - ic2;
         bA = ty == 2 ? (xa - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
         mb_band[baseA + wp] = bA; mb_peak[baseA + wp] = abs(bA);
-        worstA = 0; i = 0;
-        loop(Lk + 1, p = mb_peak[baseA + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstA ? worstA = p; i += 1;);
+        worstA = dq_worst(b * 2, baseA, wp, Lk);
 
         two ? (
           ic1 = dst[b*4+2]; ic2 = dst[b*4+3];
@@ -2205,8 +2322,7 @@ slider1 != 1 ? (
           dst[b*4+2] = 2*v1 - ic1; dst[b*4+3] = 2*v2 - ic2;
           bB = ty == 2 ? (xb - dk*v1 - v2) : (ty == 1 ? v2 : dk*v1);
           mb_band[baseB + wp] = bB; mb_peak[baseB + wp] = abs(bB);
-          worstB = 0; i = 0;
-          loop(Lk + 1, p = mb_peak[baseB + ((wp - i + MAX_LOOK) % MAX_LOOK)]; p > worstB ? worstB = p; i += 1;);
+          worstB = dq_worst(b * 2 + 1, baseB, wp, Lk);
         );
 
         linked ? ( worstA = max(worstA, worstB); );   // linked: both channels share max peak

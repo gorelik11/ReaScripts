@@ -261,7 +261,7 @@ V16_BLOCK = [
                                           # the first-load marker, and room to grow
     ("dq_v",        lambda: N_QUEUES * DQ_CAP),
     ("dq_p",        lambda: N_QUEUES * DQ_CAP),
-    ("dq_meta",     lambda: N_QUEUES * 5),   # head, tail, cnt, valid, lk_pending
+    ("dq_meta",     lambda: N_QUEUES * 6),   # head, tail, cnt, valid, lk_pending, lastwp
 ]
 
 
