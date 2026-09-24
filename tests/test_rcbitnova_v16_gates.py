@@ -49,11 +49,9 @@ def test_v16_names_itself_in_desc():
     assert line.startswith("desc: RCBitNova V1.6 - ")
 
 
-def test_v16_differs_from_v15_only_in_desc():
-    a = open("JSFX/RCBitNova V1.5").read().split("\n")
-    b = open("JSFX/RCBitNova V1.6").read().split("\n")
-    assert len(a) == len(b)
-    assert [i for i, (x, y) in enumerate(zip(a, b)) if x != y] == [1]
+# The "V1.6 differs from V1.5 in exactly one line" test lived here for Task 2 only. It did its
+# job in commit 2992338 - it proved the copy was exact BEFORE anything was built on it - and it
+# was required to go red at the first real change, which is Task 3 below. git holds the proof.
 
 
 def test_the_source_gate_targets_v16():
@@ -72,3 +70,37 @@ def test_the_v14_migrator_still_names_v15():
     # it migrates V1.4 -> V1.5 and must not be dragged forward with the working file
     src = open("tools/migrate_v14_to_v15.py").read()
     assert 'add_fx("RCBitNova V1.5")' in src
+
+
+# ---- Task 3: a Phase switch made under playback must commit ----
+
+from tools.rcbitnova_gates import _function_body
+
+
+def _code(text, name):
+    """The function's body with // comments stripped - an assertion about ORDER must not be
+    satisfied, or defeated, by prose. check_forbidden strips the same way."""
+    return "\n".join(l.split("//")[0] for l in _function_body(text, name).splitlines())
+
+
+def test_gc_w_topo_arms_regardless_of_the_transport():
+    # V1.4 gated this whole writer on a stopped transport, so a click made under playback set
+    # nothing - and @block's commit is itself gated on mt_pend, which only this writer and
+    # @slider set, while @slider is not guaranteed to run after slider_automate. The switch then
+    # waited for a plugin reload. Found live 2026-09-24: FIR Brick would not engage.
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "gc_w_topo")
+    assert "mt_pend = 1" in body
+    assert body.index("mt_pend = 1") < body.index("play_state == 0"), \
+        "the arm sits behind the play_state gate: a switch under playback would never commit"
+
+
+def test_gc_w_topo_also_arms_the_fade_out():
+    # arming mt_pend alone is not enough: @block commits at (mt_state == 2 && mt_g == 0), which
+    # is only ever reached if the fade-out was started.
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "gc_w_topo")
+    assert "mt_state = 1" in body and "mt_ready = 0" in body
+
+
+def test_gc_w_topo_still_commits_immediately_when_stopped():
+    body = _code(open("JSFX/RCBitNova V1.6").read(), "gc_w_topo")
+    assert "play_state == 0" in body and "topo_commit_state()" in body

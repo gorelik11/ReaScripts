@@ -1075,13 +1075,40 @@ function topo_commit() ( topo_commit_state(); topo_pdc(); pdc_dirty = 0; );
 //
 // Only while the transport is stopped, the same condition @block trusts for an immediate commit.
 // STATE only - the PDC publication is left to @block through pdc_dirty.
-function gc_w_topo() (
+function gc_w_topo() local(changed) (
   sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
   sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
-  play_state == 0 && (slider140 != act_phase
-                      || (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]))
-                      || (slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl)))
-    ? ( mt_pend = 1; topo_commit_state(); );
+  changed = slider140 != act_phase
+            || (slider140 == 1 && (sel_bd0 != lp_geo[0] || sel_bd1 != lp_geo[4]))
+            || (slider140 == 1 && (slider134 != act_hp_pl || slider138 != act_lp_pl));
+  // V1.6: ARM UNCONDITIONALLY. V1.4 put this whole writer behind `play_state == 0`, so a click
+  // made under playback set nothing at all - and @block's commit (the only other caller) is
+  // itself gated on mt_pend, which only this writer and @slider raise, while @slider is NOT
+  // guaranteed to run after slider_automate. The switch then waited for a plugin reload: the
+  // button read "Phase: Linear" while act_phase stayed Min and FIR Brick stayed an identity.
+  // Reported live 2026-09-13 as a stopped-transport bug, fixed there only; the playback half
+  // was found by the V1.5 live matrix on 2026-09-24.
+  //
+  // FOUR SINGLE-LEVEL ternaries, none with an else-branch, every action a plain assignment in
+  // explicit parens. @slider's equivalent nests its arm inside an outer ternary that HAS an else
+  // branch - the same family as V0.8's silent defect, kept there only because it is the path
+  // every live switch exercises. This one does not need to take that risk.
+  changed ? ( mt_pend = 1; mt_ready = 0; );
+  changed && mt_state != 1 ? (
+    mt_pos = floor((1 - mt_g) * mt_fo + 0.5);   // restart the fade-out from where we are
+    mt_state = 1;
+  );
+  // Reversal back to the active topology while still pending: cancel and fade back in, exactly
+  // as @slider does, so a switch clicked and unclicked under audio leaves no mute dip behind.
+  !changed && mt_pend ? (
+    mt_pend = 0;
+    mt_state = 3;
+    mt_pos = floor(mt_g * mt_fi + 0.5);
+  );
+  // Immediate commit ONLY when stopped: the ramp that would release it advances in @sample, and
+  // with no audio in flight it would never advance. Under playback @block commits at the bottom
+  // of the ramp - the V0.9 path that already exists and is already proven.
+  changed && play_state == 0 ? ( topo_commit_state(); );
 );
 
 

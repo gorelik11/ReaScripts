@@ -556,6 +556,35 @@ def check_fade_cannot_latch(text, path):
             f"come first and remember last, or a fade is judged before it can advance")
 
 
+def check_topo_writer_arms_always(text, path):
+    """The GUI's Phase/Resolution/Placement writer must ARM before it looks at the transport.
+
+    V1.4 put the whole of gc_w_topo behind `play_state == 0`. @block is the only other committer
+    and it waits on mt_pend, which only this writer and @slider raise - and @slider is not
+    guaranteed to run after slider_automate. So a Phase switch clicked in the plugin's own window
+    UNDER PLAYBACK committed nothing and waited for a plugin reload; FIR Brick, which exists only
+    in the linear engine, stayed an identity. Found by the V1.5 live matrix, 2026-09-24.
+
+    Arming mt_pend alone is not enough either: @block commits at (mt_state == 2 && mt_g == 0),
+    which is reached only if the fade-out was started.
+
+    Comments are stripped before the ORDER is judged: this function's own explanation mentions
+    play_state, and an assertion that prose can satisfy is not an assertion.
+    """
+    body = _function_body(text, "gc_w_topo")
+    assert body, f"{path}: gc_w_topo not found"
+    code = "\n".join(l.split("//")[0] for l in body.splitlines())
+    i_arm = code.find("mt_pend = 1")
+    i_gate = code.find("play_state == 0")
+    assert i_arm >= 0, f"{path}: gc_w_topo never raises mt_pend"
+    assert i_gate < 0 or i_arm < i_gate, (
+        f"{path}: gc_w_topo arms mt_pend behind the play_state gate - a Phase switch made under "
+        f"playback would never commit, exactly the V1.4 defect")
+    assert "mt_state = 1" in code and "mt_ready = 0" in code, (
+        f"{path}: gc_w_topo raises mt_pend without starting the fade-out; @block commits at the "
+        f"bottom of that ramp and would never get there")
+
+
 def check_topology_commit_has_two_callers(text, path):
     """A queued topology change must not wait for a caller that never runs.
 
@@ -672,6 +701,7 @@ def check_source(path=V16, project=False):
     check_desc_names_the_file(text, path)
     check_fade_cannot_latch(text, path)
     check_topology_commit_has_two_callers(text, path)
+    check_topo_writer_arms_always(text, path)
     check_graph_frequency(text, path)
     check_filter_writers(text, path)
 

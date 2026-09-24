@@ -2851,6 +2851,15 @@ SEEDED_DEFECTS = [
      "@block must rebuild when dsp_dirty"),
     (lambda t: t.replace("dsp_dirty = 1;\n", "dsp_dirty = 0;\n"),
      "dsp_dirty must start RAISED"),
+    # the GUI's topology writer must arm BEFORE it consults the transport, or a Phase switch
+    # clicked under playback commits nothing and waits for a plugin reload (V1.4's half-fix,
+    # found by the V1.5 live matrix on 2026-09-24)
+    (lambda t: t.replace("  changed ? ( mt_pend = 1; mt_ready = 0; );",
+                         "  changed && play_state == 0 ? ( mt_pend = 1; mt_ready = 0; );"),
+     "arms mt_pend behind the play_state gate"),
+    (lambda t: t.replace("  changed ? ( mt_pend = 1; mt_ready = 0; );",
+                         "  changed ? ( mt_pend = 1; );"),
+     "raises mt_pend without starting the fade-out"),
     # a new version left carrying the previous one's desc is INVISIBLE to REAPER
     (lambda t: t.replace("desc: RCBitNova V1.6 - ", "desc: RCBitNova V1.2 - "),
      "desc says V1.2 but the file is V1.6"),
