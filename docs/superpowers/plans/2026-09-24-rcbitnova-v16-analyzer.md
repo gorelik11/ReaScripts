@@ -48,14 +48,18 @@ Read `tools/rcbitnova_gates.py` lines 34-56 (`DECLARED_FIXTURE_V14`, `load_decla
 
 - [ ] **Step 2: Freeze the live V1.5 records**
 
-With REAPER open and a `RCBitNova V1.5` instance on track index 1, run:
+`freeze_declared` adds a FRESH instance to an EMPTY scratch track on purpose - a default cannot
+be recovered from an instance that has already been written to - and it asserts the track holds no
+RCBitNova. So it cannot read the owner's working instance. Insert a scratch track at the end, pass
+its index, and delete it afterwards:
 
 ```bash
 python3 - <<'PY'
 import sys; sys.path.insert(0, ".")
 from tools.rcbitnova_gates import freeze_declared
 print(freeze_declared(path="tests/fixtures/v15_declared_176.json",
-                      track_index=1, n_declared=176))
+                      track_index=SCRATCH_INDEX, n_declared=176,
+                      effect="RCBitNova V1.5"))
 PY
 ```
 
@@ -65,17 +69,20 @@ Expected: a JSON file with exactly 176 records.
 
 ```python
 # tests/test_rcbitnova_v16_gates.py
-import json
+# A record is [index, name, lo, hi, step, default] - the shape _declared_records writes.
+from tools.rcbitnova_gates import load_declared_v14, load_declared_v15
 
-def test_v15_manifest_has_176_records():
-    recs = json.load(open("tests/fixtures/v15_declared_176.json"))
+def test_v15_manifest_pins_the_hp_lp_range_change():
+    recs = load_declared_v15()
     assert len(recs) == 176
-    assert recs[84]["name"] == "HP Slope (dB/oct)"
-    assert recs[85]["name"] == "HP Freq (Hz)"
-    assert recs[85]["hi"] == 24000.0
-    assert recs[89]["name"] == "LP Freq (Hz)"
-    assert recs[89]["hi"] == 24000.0
-    assert recs[92]["name"] == "Phase"
+    assert [r[0] for r in recs] == list(range(176))
+    assert recs[85][1] == "HP Freq (Hz)" and (recs[85][2], recs[85][3]) == (20.0, 24000.0)
+    assert recs[89][1] == "LP Freq (Hz)" and (recs[89][2], recs[89][3]) == (20.0, 24000.0)
+
+def test_only_the_two_range_records_changed_since_v14():
+    v14, v15 = load_declared_v14(), load_declared_v15()
+    differing = [i for i, (a, b) in enumerate(zip(v14, v15)) if a != b]
+    assert differing == [85, 89]
 ```
 
 - [ ] **Step 4: Run it**

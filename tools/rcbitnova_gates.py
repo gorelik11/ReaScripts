@@ -39,6 +39,19 @@ def load_declared_v14(path=DECLARED_FIXTURE_V14):
         return [tuple(r) for r in json.load(f)]
 
 
+# V1.5's full declared block, frozen from the installed build on 2026-09-24 BEFORE V1.6 existed -
+# the order matters: a fixture written after the new file exists can freeze the new file's mistake
+# as if it were the baseline. Same 176 records as V1.4, but HP Freq and LP Freq are declared
+# <20,24000,1> here and <20,20000,1> there, which is the whole of V1.5. This is the exact prefix
+# V1.6's manifest must still report.
+DECLARED_FIXTURE_V15 = os.path.join("tests", "fixtures", "v15_declared_176.json")
+
+
+def load_declared_v15(path=DECLARED_FIXTURE_V15):
+    with open(path) as f:
+        return [tuple(r) for r in json.load(f)]
+
+
 V10 = "JSFX/RCBitNova V1.0"
 V11 = "JSFX/RCBitNova V1.1"          # FROZEN: tagged rcbitnova-v1.1, shipped, in the owner's
                                      # projects. Never edited again.
