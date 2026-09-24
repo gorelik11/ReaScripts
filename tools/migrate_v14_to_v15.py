@@ -137,8 +137,13 @@ def migrate_chain_v15(track, rpr, project, dry_run=True):
         if tuple(dst_names[N_DECLARED_V15:]) != HOST_TAIL:
             raise RuntimeError(f"V1.5 host tail is {dst_names[N_DECLARED_V15:]!r}")
 
+        # Through the RPR boundary, NOT param.normalized = v. Measured live 2026-09-24: reapy
+        # 0.10.0's setter (reapy/core/fx/fx_param.py:163) reads `parent_fx.id`, which the FX class
+        # does not have - it has .index. Reading normalized works, writing raises AttributeError on
+        # the first record. The FakeReaper implements the setter, so this passes offline and fails
+        # on every live migration. Same lesson as .lo/.hi above, on the write path.
         for i, v in enumerate(declared):
-            dst.params[i].normalized = v
+            rpr.TrackFX_SetParamNormalized(track.id, dst.index, i, v)
         # ...and the two whose declared RANGE changed, through actual Hz. Read through the RPR
         # boundary, which exists in both the host and the fake; the param object live has no .lo.
         for i in RANGE_CHANGES:
@@ -147,7 +152,7 @@ def migrate_chain_v15(track, rpr, project, dry_run=True):
             lo, hi = r[4], r[5]
             rpr.TrackFX_SetParamNormalized(track.id, dst.index, i, (hz - lo) / (hi - lo))
         for k, v in enumerate(host):
-            dst.params[N_DECLARED_V15 + k].normalized = v
+            rpr.TrackFX_SetParamNormalized(track.id, dst.index, N_DECLARED_V15 + k, v)
 
         # Read back BEFORE destroying the only known-good instance.
         for i, v in enumerate(declared):
