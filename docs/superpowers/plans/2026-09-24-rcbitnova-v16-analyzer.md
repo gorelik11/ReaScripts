@@ -38,7 +38,7 @@
 - Test: `tests/test_rcbitnova_v16_gates.py`
 
 **Interfaces:**
-- Produces: `load_declared_v15(path=DECLARED_FIXTURE_V15) -> list[dict]`, 176 records, each `{"name": str, "default": float, "lo": float, "hi": float, "step": float, "labels": list[str] | None}`.
+- Produces: `load_declared_v15(path=DECLARED_FIXTURE_V15) -> list[tuple]`, 176 records, each `(index, name, lo, hi, step, default)` — the shape `_declared_records` writes.
 
 This must happen **before** the V1.6 file exists. Once it exists, a mistake in it can be frozen as if it were the baseline.
 
