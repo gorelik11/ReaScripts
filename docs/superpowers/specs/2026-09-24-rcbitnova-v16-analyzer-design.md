@@ -86,7 +86,7 @@ Two things from it must NOT be carried over:
 |---|---|
 | Role | **Working display**, not a measuring instrument. No freeze, no deep vertical range. |
 | Taps | **IN and OUT both**, as in `Fable Eq Mix` — grey IN behind, green OUT in front. |
-| Domain | **Mid / Side / Left / Right** — four scalar domains (see §4.2). |
+| Domain | **Mid / Side / Left / Right / M/S** — five scalar modes (see §4.2). |
 | Source | Port from `Fable Eq Mix`. Nothing from `spectrum.jsfx-inc`, and no address from either. |
 | Quality switch | **Not in this version.** See §1. |
 
@@ -142,15 +142,21 @@ or `@block` — three bugs of exactly that shape were fixed in V1.1–V1.4.
 One cursor advances both rings, so IN and OUT can never drift by a sample. The input is only
 *captured* at the top.
 
-`D(l, r)` is the selected domain, and all four are **scalar**, which is what keeps the design at
-one FFT pair:
+Every mode is **scalar**, which is what keeps the design at one FFT pair:
 
-| Domain | `D(l, r)` |
-|---|---|
-| Mid | `(l + r) * 0.5` |
-| Side | `(l - r) * 0.5` |
-| Left | `l` |
-| Right | `r` |
+| Domain | `an_in` gets | `an_out` gets |
+|---|---|---|
+| Mid | `(iL + iR) * 0.5` | `(spl0 + spl1) * 0.5` |
+| Side | `(iL - iR) * 0.5` | `(spl0 - spl1) * 0.5` |
+| Left | `iL` | `spl0` |
+| Right | `iR` | `spl1` |
+| **M/S** | `(spl0 + spl1) * 0.5` — Mid of the **output** | `(spl0 - spl1) * 0.5` — Side of the output |
+
+The fifth mode reuses the same two rings for a different comparison: instead of input against
+output it shows **Mid against Side of the output**, which costs no extra memory and no extra
+transform. What is traded is the before/after view while it is selected — an acceptable trade,
+because this mode answers a different question and is looked at deliberately. See §4.4 for the
+red rule it exists for.
 
 `L+R` from revision 1 is deleted. With a single scalar ring it is Mid with a +1 bit offset — a
 third name for a second thing. Left and Right replace it: unambiguous, no extra memory, and they
@@ -216,6 +222,31 @@ independently chose the same curve axis.)
 Draw order: spectrum → grid → EQ curve → band nodes. The spectrum is always behind, or eight
 nodes drown in it.
 
+### 4.4.1 The red rule (M/S mode only)
+
+In `M/S` the second curve is Side, and **every column where Side exceeds Mid is drawn red** — a
+mono-compatibility warning read straight off the spectrum, at the frequencies where it happens
+rather than as one summary number.
+
+| Condition (per column, in bits) | Colour |
+|---|---|
+| `side <= mid` | normal (green) |
+| `side > mid` | warm red |
+| `side > mid + 1` | bright red |
+
+Tilt cancels out of the comparison — both curves carry the same tilt — so the rule is tilt-
+independent by construction. Two guards keep it from lying:
+
+- **Floor gate.** A column is only eligible when `max(mid, side) >= -16 bits`. Near the display
+  floor at −20 bits the two values differ by arithmetic noise, and without this the top of the
+  graph flickers red over silence.
+- **Hysteresis, per column.** A column turns red at `side > mid + 0.1 bit` and turns back at
+  `side < mid - 0.1 bit`. Exact equality is a coin flip at 30 frames per second; this costs one
+  `an_ms_state` byte-per-column array and removes the shimmer at the boundary.
+
+The rule is evaluated after both smoothing passes, on the same values that are drawn — never on
+raw bins, or the colour and the curve would disagree on screen.
+
 ### 4.5 Controls
 
 The highest existing slider is **246** (`Panel: open dynamics card`), not 142. REAPER orders
@@ -225,7 +256,7 @@ existing one silently shifts every higher parameter in every saved project.
 | # | Parameter | Values | Default |
 |---|---|---|---|
 | 247 | Analyzer | Off / On | **Off** |
-| 248 | Analyzer Domain | Mid / Side / Left / Right | **Mid** |
+| 248 | Analyzer Domain | Mid / Side / Left / Right / M/S | **Mid** |
 | 249 | Analyzer Tilt | 0 / 3 / 4.5 dB per octave | **4.5** |
 | 250 | Analyzer Peak Hold | Off / On | **Off** |
 
@@ -257,12 +288,13 @@ than needed.
 | magnitudes `an_mi` + `an_mo` | 8192 |
 | peaks `an_pkI` + `an_pkO` (2048 columns each) | 4096 |
 | pixel scratch `an_db` | 2048 |
+| red-rule hysteresis state `an_ms_state` (one per column) | 2048 |
 | FFT scratch `an_sc` | 16384 |
 | analyser metadata: `an_pos`, `an_gen`, `an_gen_seen`, `fill_count`, `frame_valid`, first-load marker | 16 |
-| **analyser** | **55312** |
+| **analyser** | **57360** |
 | wedge queues: 16 × `DQ_CAP` 2049 × (value + position) | 65568 |
 | queue metadata: 16 × (head, tail, count, lane-valid, pending-`Lk`) | 80 |
-| **new total** | **120960** (≈ 945 KB) |
+| **new total** | **123008** (≈ 961 KB) |
 
 The new block starts at the 131072 page boundary and `lp_base` moves two pages up, to 262144.
 Every engine address therefore changes. `tools/rcbitnova_layout.py` stays the single source of
@@ -390,6 +422,8 @@ What no test in this repository can reach:
 
 - The analyser **with the transport stopped** — including a domain change there, which by §4.1
   clears and then waits. It must be documented as expected, not reported as a hang.
+- **M/S mode and the red rule**: anti-phase material must turn the affected columns red, and a
+  mono source must never show red anywhere, at any level including near-silence.
 - Domain switching under playback: no mixed-stream smear.
 - Peak-hold reset by right-click; peak behaviour across transport start, sample-rate change and
   Analyzer Off→On (the reset matrix of §8).
