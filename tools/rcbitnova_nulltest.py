@@ -88,18 +88,11 @@ for _b in range(1, 9):
                      f"B{_b} Soft Ceiling Macro (bits below 0)": 2})
 
 TRANSITIONS = {
-    # 1. the lookahead knob moved under audio, up and back down
-    "lk_sweep": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0},
-                 "env": {"Lookahead (ms, Mode B)": [(0.0, 2.0), (3.0, 10.0), (6.5, 2.0)]}},
+    # 1. NOT HERE ANY MORE - see PDC_MOVERS below.
     # 2. Both -> Mid -> Both: lane B stops being written while the band's cursor keeps advancing
     "both_mid_both": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 5.0},
                       "env": {"B1 Placement": [(0.0, 0), (3.0, 1), (6.5, 0)]}},
-    # 3. the same, with the Lk change landing WHILE lane B is inactive - the pending change must
-    #    survive until that lane next processes, or it is marked clean without having rebuilt
-    "lk_change_while_lane_inactive": {
-        "values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0},
-        "env": {"B1 Placement": [(0.0, 0), (2.0, 1), (7.0, 0)],
-                "Lookahead (ms, Mode B)": [(0.0, 2.0), (4.0, 9.0)]}},
+    # 3. NOT HERE ANY MORE - see PDC_MOVERS below.
     # 4. the dynamics section switched off and back on under audio
     "modeb_off_on": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 4.0},
                      "env": {"B1 Dyn": [(0.0, 1), (3.0, 0), (6.0, 1)]}},
@@ -122,14 +115,67 @@ TRANSITIONS = {
 }
 
 
-def write_fx_envelope(RPR, track_id, fx_index, param_index, points):
-    """An FX parameter envelope with square points, in the parameter's OWN units."""
+# ---- WHY THE TWO LOOKAHEAD CASES ARE NOT IN THE TABLE ABOVE ----
+#
+# A change of `Lookahead (ms, Mode B)` IS a change of PDC: Lk is the plugin's reported latency.
+# A null test compares two SEPARATE renders, and when a plugin's latency changes mid-render the
+# host inserts compensation - so what is being compared at that instant is REAPER's behaviour,
+# not the detector's.
+#
+# That is measured, not assumed (2026-09-25). `lk_sweep` renders bit-identical when it is the
+# only case in a run, and fails DETERMINISTICALLY when even one other case precedes it: the same
+# sample every time (574464, 2.992 s, the envelope step at 3.0 s), the same two values, with the
+# envelope verified point by point - time, value, square shape, active - on BOTH renders. The
+# baseline reads exactly 0.0 there, which is the compensation silence; the version under test
+# reads the value it would have with no step at all. Four hypotheses were raised and each was
+# killed by its own experiment: host nondeterminism (it is deterministic), the analyser build
+# (the live and the dead gate differ by one short-circuiting `0 &&`), the envelope failing to
+# apply (read-back proves it applied), and case content (one unrelated case is enough).
+#
+# A case whose result depends on how many renders preceded it cannot be an acceptance test. The
+# Lk-change path is covered where the coverage is honest:
+#   - tools/rcbitnova_wedge.py + tests: an Lk change up, down, and one that lands WHILE a lane is
+#     inactive, each compared against the brute-force rescan sample by sample;
+#   - the three transitions that remain here, which exercise the same rebuild without moving PDC;
+#   - the live matrix: turn the lookahead knob under playback and listen for a click.
+PDC_MOVERS = ("lk_sweep", "lk_change_while_lane_inactive")
+
+
+def write_fx_envelope(RPR, track_id, fx_index, param_index, points, label=""):
+    """An FX parameter envelope with square points, in the parameter's OWN units.
+
+    READ BACK before returning. A transition case whose envelope silently failed to take renders
+    a constant parameter and compares two versions on an experiment that never happened - and if
+    it fails to take on only ONE of the two renders, the comparison reports a difference that has
+    nothing to do with the code under test. That is not hypothetical: it happened on 2026-09-25,
+    where the version under test produced exactly the value it produces with no envelope at all.
+    """
     env = RPR.GetFXEnvelope(track_id, fx_index, param_index, True)
-    assert env, "GetFXEnvelope returned nothing"
+    assert env, f"GetFXEnvelope returned nothing for {label or param_index}"
     RPR.DeleteEnvelopePointRange(env, -1.0, 1.0e9)      # REAPER's own point at t=0 goes first
     for t, v in points:
         RPR.InsertEnvelopePoint(env, float(t), float(v), 1, 0.0, False, True)  # shape 1 = square
     RPR.Envelope_SortPoints(env)
+
+    n = int(RPR.CountEnvelopePoints(env))
+    assert n == len(points), (
+        f"{label or param_index}: wrote {len(points)} envelope points, REAPER reports {n}")
+    # MEASURED return shape (2026-09-25), not guessed - the first version of this check indexed
+    # [2] and [3] for time and value and failed on a correct envelope:
+    #   GetEnvelopePoint -> [retval, env, ptidx, TIME, VALUE, shape, tension, selected]
+    #   GetSetEnvelopeInfo_String -> [retval, env, key, VALUE, setNewValue]
+    # It also confirms the vault's rule: an FX parameter envelope stores ACTUAL slider values.
+    for k, (t, v) in enumerate(points):
+        got = RPR.GetEnvelopePoint(env, k, 0, 0, 0, 0, 0)
+        assert abs(got[3] - t) < 1e-6 and abs(got[4] - v) < 1e-6, (
+            f"{label or param_index}: point {k} reads (t={got[3]}, v={got[4]}), "
+            f"wrote (t={t}, v={v})")
+        assert int(got[5]) == 1, (
+            f"{label or param_index}: point {k} has shape {got[5]}, expected 1 (square) - a ramp "
+            f"makes the two versions disagree about WHEN the value changed")
+    # an envelope that exists but is BYPASSED changes nothing and looks identical from here
+    act = RPR.GetSetEnvelopeInfo_String(env, "ACTIVE", "", False)
+    assert act[3] == "1", f"{label or param_index}: the envelope is not active (ACTIVE={act[3]!r})"
     return env
 
 
@@ -211,6 +257,14 @@ def main():
         # being called. The run hung with zero output and died on RELEASE with
         # ConnectionAbortedError. Refusing to run in a project that has content is the same
         # protection without fighting the architecture.
+        pr = reapy.Project()
+        # A crashed run leaves its own scratch track behind, and the next run then refuses to
+        # start - three times on 2026-09-25, each needing a manual delete. Clear OUR track (by
+        # the exact name this harness gives it, nothing else) and then apply the same guard.
+        for _t in list(reapy.Project().tracks):
+            if RPR.GetTrackName(_t.id, "", 512)[2] == TRACK:
+                RPR.DeleteTrack(_t.id)
+        RPR.TrackList_AdjustWindows(False)
         pr = reapy.Project()
         assert len(pr.tracks) == 0, (
             f"this project has {len(pr.tracks)} tracks; open an empty project before running the "
@@ -297,7 +351,8 @@ def main():
                 names = [fx.params[k].name for k in range(fx.n_params)]
                 for pname, points in env.items():
                     assert pname in names, f"no such parameter: {pname}"
-                    write_fx_envelope(RPR, tr.id, i, names.index(pname), points)
+                    write_fx_envelope(RPR, tr.id, i, names.index(pname), points,
+                                      label=f"{fx_name} / {pname}")
             got = [RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)[0] for k in range(N_DECLARED)]
             it = tr.items[0]
             RPR.Main_OnCommand(40289, 0)                 # unselect all items
@@ -309,12 +364,14 @@ def main():
             return RPR.GetMediaSourceFileName(src, "", 1024)[1], got
 
         outcomes = []
-        only = sys.argv[1] if len(sys.argv) > 1 else None
+        # a COMMA LIST, not a single name: several of these cases only misbehave in company,
+        # and narrowing "which company" is how that gets diagnosed rather than guessed at
+        only = set(sys.argv[1].split(",")) if len(sys.argv) > 1 else None
 
         # MUST FAIL FIRST. If automation is not applied during "apply track FX as new take", every
         # transition case renders a constant parameter and reports a clean pass for a comparison
         # that never happened. So: the same version, with and without the envelope, must DIFFER.
-        if not only or only in TRANSITIONS:
+        if not only or (only & set(TRANSITIONS)):
             probe = {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0}
             flat, _ = render(BASE, values=probe)
             flat_keep = flat + ".flat.wav"
@@ -336,7 +393,7 @@ def main():
                     "automation here, so every transition case below would be vacuous")
 
         for case, values in {**CASES, **DIVERGENT}.items():
-            if only and case != only:
+            if only and case not in only:
                 continue
             a, state_base = render(BASE, values=values)
             keep = a + ".base.wav"
@@ -367,7 +424,7 @@ def main():
         # sound. State is copied from the base render exactly as above, so the two instances hold
         # identical values by construction and only the detector differs.
         for case, spec in TRANSITIONS.items():
-            if only and case != only:
+            if only and case not in only:
                 continue
             a, state_base = render(BASE, values=spec["values"], env=spec["env"])
             keep = a + ".base.wav"
@@ -391,7 +448,7 @@ def main():
     proof = _self_test_comparator(outcomes[0][4])
     print(f"  comparator rejects a one-ULP difference: {proof}", flush=True)
     assert proof, "a one-ULP edit passed - the render is quantising and this gate proves nothing"
-    want = len(CASES) + len(DIVERGENT) + len(TRANSITIONS) if not only else 1
+    want = len(CASES) + len(DIVERGENT) + len(TRANSITIONS) if not only else len(only)
     assert len(outcomes) == want, f"{len(outcomes)} cases ran, expected {want}"
     for _case, _n, _rate, _bits, keep, b in outcomes:
         for f in (keep, b):
