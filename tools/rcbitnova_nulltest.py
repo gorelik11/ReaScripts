@@ -64,6 +64,61 @@ CASES["modeB_disabled_band"] = {"B1 Enable": 0, "B1 Freq": 200, "B1 Dyn": 1, "B1
                                 "B2 Enable": 1, "B2 Macro (bits)": 1, "B2 Freq": 1000}
 DIVERGENT = {}
 
+# ---- V1.6: transitions, the cases the steady-state set cannot reach ----
+#
+# The wedge's risk is not the steady state - it is every boundary: an Lk change, a lane that stops
+# being written and resumes, a band switched off and on. A parameter written before the render
+# never exercises any of them, so these cases drive the change DURING the render, through an FX
+# parameter automation envelope: exact, repeatable, and applied by REAPER itself rather than by a
+# race between this script and the audio thread.
+#
+# Two gotchas, both already paid for in this project:
+#   - InsertEnvelopePoint takes ACTUAL slider values for an FX parameter envelope, not normalised.
+#   - REAPER auto-creates a point at t=0; it must be deleted before custom points are written.
+# And one that is specific to this harness: if automation turns out NOT to be applied during
+# "apply track FX as new take", every case below would render identically and report a clean pass
+# for a comparison that never happened. _self_test_envelope() exists to make that impossible.
+#
+# Shape 1 (square) everywhere: a ramp would make the two versions disagree about WHEN the value
+# changed, which is a different experiment from the one being run.
+MODE_B_8 = {}
+for _b in range(1, 9):
+    MODE_B_8.update({f"B{_b} Enable": 1, f"B{_b} Dyn": 1, f"B{_b} Dyn Mode": 1,
+                     f"B{_b} Freq": 120 * _b,
+                     f"B{_b} Soft Ceiling Macro (bits below 0)": 2})
+
+TRANSITIONS = {
+    # 1. the lookahead knob moved under audio, up and back down
+    "lk_sweep": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0},
+                 "env": {"Lookahead (ms, Mode B)": [(0.0, 2.0), (3.0, 10.0), (6.5, 2.0)]}},
+    # 2. Both -> Mid -> Both: lane B stops being written while the band's cursor keeps advancing
+    "both_mid_both": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 5.0},
+                      "env": {"B1 Placement": [(0.0, 0), (3.0, 1), (6.5, 0)]}},
+    # 3. the same, with the Lk change landing WHILE lane B is inactive - the pending change must
+    #    survive until that lane next processes, or it is marked clean without having rebuilt
+    "lk_change_while_lane_inactive": {
+        "values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0},
+        "env": {"B1 Placement": [(0.0, 0), (2.0, 1), (7.0, 0)],
+                "Lookahead (ms, Mode B)": [(0.0, 2.0), (4.0, 9.0)]}},
+    # 4. the dynamics section switched off and back on under audio
+    "modeb_off_on": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 4.0},
+                     "env": {"B1 Dyn": [(0.0, 1), (3.0, 0), (6.0, 1)]}},
+    # 5. a band disabled and re-enabled - V1.0 shipped with a band that was off but still audible
+    "band_disable_enable": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 4.0},
+                            "env": {"B3 Enable": [(0.0, 1), (2.5, 0), (5.5, 1)]}},
+}
+
+
+def write_fx_envelope(RPR, track_id, fx_index, param_index, points):
+    """An FX parameter envelope with square points, in the parameter's OWN units."""
+    env = RPR.GetFXEnvelope(track_id, fx_index, param_index, True)
+    assert env, "GetFXEnvelope returned nothing"
+    RPR.DeleteEnvelopePointRange(env, -1.0, 1.0e9)      # REAPER's own point at t=0 goes first
+    for t, v in points:
+        RPR.InsertEnvelopePoint(env, float(t), float(v), 1, 0.0, False, True)  # shape 1 = square
+    RPR.Envelope_SortPoints(env)
+    return env
+
 
 def read_float_wav(path):
     """Python's `wave` rejects WAVE_FORMAT_IEEE_FLOAT (3), and the renders here are float, so the
@@ -172,7 +227,7 @@ def main():
             while tr.fxs:
                 tr.fxs[-1].delete()
 
-        def render(fx_name, values=None, state=None):
+        def render(fx_name, values=None, state=None, env=None):
             """One pass: fresh item, fresh instance, set state, bake, return the file it wrote
             and the N_DECLARED ACTUAL VALUES it was holding.
 
@@ -215,6 +270,11 @@ def main():
                     r = RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)
                     lo, hi = r[4], r[5]
                     RPR.TrackFX_SetParamNormalized(tr.id, i, k, (v - lo) / (hi - lo))
+            if env:
+                names = [fx.params[k].name for k in range(fx.n_params)]
+                for pname, points in env.items():
+                    assert pname in names, f"no such parameter: {pname}"
+                    write_fx_envelope(RPR, tr.id, i, names.index(pname), points)
             got = [RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)[0] for k in range(N_DECLARED)]
             it = tr.items[0]
             RPR.Main_OnCommand(40289, 0)                 # unselect all items
@@ -227,6 +287,31 @@ def main():
 
         outcomes = []
         only = sys.argv[1] if len(sys.argv) > 1 else None
+
+        # MUST FAIL FIRST. If automation is not applied during "apply track FX as new take", every
+        # transition case renders a constant parameter and reports a clean pass for a comparison
+        # that never happened. So: the same version, with and without the envelope, must DIFFER.
+        if not only or only in TRANSITIONS:
+            probe = {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0}
+            flat, _ = render(BASE, values=probe)
+            flat_keep = flat + ".flat.wav"
+            os.rename(flat, flat_keep)
+            moved, _ = render(BASE, values=probe,
+                              env={"Lookahead (ms, Mode B)": [(0.0, 2.0), (3.0, 10.0)]})
+            # compare() RAISES on a difference, it does not return one - so the expected outcome
+            # here is the exception. Written the other way round the first time, which made the
+            # self-test kill the run with the very evidence that it works.
+            try:
+                compare(flat_keep, moved, "envelope self-test")
+            except AssertionError as exc:
+                where = str(exc).split("first difference at ")[-1].split(":")[0]
+                print(f"envelope self-test: the envelope changes the render at {where}"
+                      f" - the transitions below are real", flush=True)
+            else:
+                raise AssertionError(
+                    "an FX parameter envelope did NOT change the render: apply-FX is ignoring "
+                    "automation here, so every transition case below would be vacuous")
+
         for case, values in {**CASES, **DIVERGENT}.items():
             if only and case != only:
                 continue
@@ -253,6 +338,27 @@ def main():
             n, rate, bits = compare(keep, b, case)
             outcomes.append((case, n, rate, bits, keep, b))
             print(f"  {case:20s} identical: {n} samples, {rate} Hz, {bits}-bit float", flush=True)
+
+        # The transitions. The SAME envelope goes on both renders - the experiment is whether the
+        # two versions agree while a parameter moves, not whether a moving parameter changes the
+        # sound. State is copied from the base render exactly as above, so the two instances hold
+        # identical values by construction and only the detector differs.
+        for case, spec in TRANSITIONS.items():
+            if only and case != only:
+                continue
+            a, state_base = render(BASE, values=spec["values"], env=spec["env"])
+            keep = a + ".base.wav"
+            os.rename(a, keep)
+            b, state_test = render(UNDER_TEST, state=state_base, env=spec["env"])
+            worst = max(range(len(state_base)),
+                        key=lambda k: abs(state_base[k] - state_test[k]))
+            assert abs(state_base[worst] - state_test[worst]) <= 1e-6, (
+                f"{case}: the two instances do not hold the same VALUE at declared record "
+                f"{worst}: {BASE} {state_base[worst]}, {UNDER_TEST} {state_test[worst]}")
+            n, rate, bits = compare(keep, b, case)
+            outcomes.append((case, n, rate, bits, keep, b))
+            print(f"  {case:20s} identical: {n} samples, {rate} Hz, {bits}-bit float", flush=True)
+
         clear()
         RPR.DeleteTrack(track().id)                      # leave the project as it was found
 
