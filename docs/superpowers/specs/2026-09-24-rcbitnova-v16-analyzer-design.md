@@ -287,14 +287,15 @@ than needed.
 | rings `an_in` + `an_out` | 16384 |
 | magnitudes `an_mi` + `an_mo` | 8192 |
 | peaks `an_pkI` + `an_pkO` (2048 columns each) | 4096 |
-| pixel scratch `an_db` | 2048 |
+| pixel scratch `an_db` (stream being drawn) | 2048 |
+| pixel scratch `an_db2` (the stream drawn before it, for the red rule) | 2048 |
 | red-rule hysteresis state `an_ms_state` (one per column) | 2048 |
 | FFT scratch `an_sc` | 16384 |
 | analyser metadata: `an_pos`, `an_gen`, `an_gen_seen`, `fill_count`, `frame_valid`, first-load marker | 16 |
-| **analyser** | **57360** |
+| **analyser** | **59408** |
 | wedge queues: 16 × `DQ_CAP` 2049 × (value + position) | 65568 |
 | queue metadata: 16 × (head, tail, count, lane-valid, pending-`Lk`, last-cursor) | 96 |
-| **new total** | **123024** (≈ 961 KB) |
+| **new total** | **125072** (≈ 977 KB) |
 
 The new block starts at the 131072 page boundary and `lp_base` moves two pages up, to 262144.
 Every engine address therefore changes. `tools/rcbitnova_layout.py` stays the single source of

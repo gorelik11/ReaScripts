@@ -234,6 +234,15 @@ slider245:0<-100,100,0.1>-B8 Hard Ceiling Micro (% bit)
 // sanitised on every read.
 slider246:0<0,8,1>-Panel: open dynamics card (0 none, 1..8 band)
 
+// ---- V1.6 analyser. NUMBERED 247-250, above every existing slider on purpose: REAPER orders
+// parameters by slider NUMBER, not by position in the file, so a number below an existing one
+// silently shifts every higher parameter in every saved project. Off by default - a new
+// parameter must not change how an existing project looks or performs when it loads.
+slider247:0<0,1,1{Off,On}>-Analyzer
+slider248:0<0,4,1{Mid,Side,Left,Right,M/S}>-Analyzer Domain
+slider249:2<0,2,1{0,3,4.5}>-Analyzer Tilt (dB/oct)
+slider250:0<0,1,1{Off,On}>-Analyzer Peak Hold
+
 
 @init
 
@@ -940,7 +949,8 @@ an_mo       = an_mi + FFT_N / 2;           // FFT_N/2: magnitudes, OUT
 an_pkI      = an_mo + FFT_N / 2;           // AN_PX: peak hold, IN
 an_pkO      = an_pkI + AN_PX;              // AN_PX: peak hold, OUT
 an_db       = an_pkO + AN_PX;              // AN_PX: per-column scratch
-an_ms_state = an_db + AN_PX;               // AN_PX: red-rule hysteresis, one per column
+an_db2      = an_db + AN_PX;               // AN_PX: the previous stream's smoothed columns
+an_ms_state = an_db2 + AN_PX;              // AN_PX: red-rule hysteresis, one per column
 an_meta     = an_ms_state + AN_PX;         // 16 words, NAMED below - never index it numerically
 dq_v        = an_meta + 16;                // N_QUEUES * DQ_CAP: queue values
 dq_p        = dq_v + N_QUEUES * DQ_CAP;    // N_QUEUES * DQ_CAP: queue positions
@@ -960,6 +970,26 @@ dq_lastwp = dq_lk   + N_QUEUES;            // uses the 6th strip; dq_meta is N_Q
 // at transport start and on a sample-rate change - and a queue carried across either would hold
 // positions from a ring that has since been rebuilt. dq_valid = 0 alone would force a rebuild,
 // but clearing all six strips means no field is ever read before it has been written.
+// ---- V1.6 analyser state ----
+// an_meta holds the ONE thing that must outlive @init: REAPER re-runs @init at transport start
+// and on a sample-rate change, and that resets variables while MEMORY survives. Peak hold is
+// supposed to survive a transport start, so the "have we ever loaded before" marker lives in
+// memory; everything on the hot path is an ordinary global, which is both faster and correctly
+// reset by the same @init.
+ANM_MARK = 0;                      // an_meta[ANM_MARK] != 0 once this instance has booted once
+
+an_pos = 0; an_fill = 0; an_gen = 0; an_gen_seen = 0;
+memset(an_in, 0, FFT_N); memset(an_out, 0, FFT_N);
+memset(an_mi, 0, FFT_N / 2); memset(an_mo, 0, FFT_N / 2);
+memset(an_ms_state, 0, AN_PX);
+i = 0; loop(FFT_N, an_w[i] = 0.5 - 0.5 * cos(2 * $pi * i / FFT_N); i += 1;);
+an_meta[ANM_MARK] == 0 ? (
+  // first load of this instance: start the peak arrays at the display floor, not at zero -
+  // zero is +0 dB on a magnitude scale and would paint a full-height peak line on frame one
+  i = 0; loop(AN_PX, an_pkI[i] = 0; an_pkO[i] = 0; i += 1;);
+  an_meta[ANM_MARK] = 1;
+);
+
 memset(dq_meta, 0, N_QUEUES * 6);
 
 lp_base = ceil((dq_meta + N_QUEUES * 6) / 65536) * 65536;   // 262144: page-align the engines
@@ -2074,6 +2104,7 @@ mt_state == 2 && mt_pend == 0 ? (
 // Running signal stays L/R. Each band derives its working domain by placement.
 // Bypass (slider1==1) leaves spl0/spl1 untouched = clean pass-through.
 slider1 != 1 ? (
+  an_iL = spl0; an_iR = spl1;                   // V1.6: the analyser's IN tap, before anything
   anti = -anti; spl0 += anti; spl1 += anti;     // anti-denormal
   // ===== DEDICATED HP/LP FILTER SECTION (Phase Min = cascade / Linear = convolution) =====
   act_phase == 0 ? (                                    // Min phase (V0.5 path, zero-latency)
@@ -2434,6 +2465,27 @@ slider1 != 1 ? (
     spl0 = spl0 * mt_g;
     spl1 = spl1 * mt_g;
   );
+
+  // ---- V1.6 analyser tap. READS ONLY - the null against V1.5 is what proves that. ----
+  // One cursor advances both rings, so IN and OUT can never drift by a sample.
+  // slider247 and the domain are read INLINE: state cached in @slider or @block is dead while
+  // the transport is stopped, which is the shape of three bugs already fixed in this plugin.
+  slider247 >= 0.5 ? (
+    // @gfx bumps an_gen when the domain changes or the analyser is switched on; the rings are
+    // cleared HERE, by the section that owns them, never by the GUI thread.
+    an_gen != an_gen_seen ? (
+      memset(an_in, 0, FFT_N); memset(an_out, 0, FFT_N);
+      an_pos = 0; an_fill = 0; an_gen_seen = an_gen;
+    );
+    slider248 == 0 ? ( an_a = (an_iL + an_iR) * 0.5;  an_b = (spl0 + spl1) * 0.5; ) :
+    slider248 == 1 ? ( an_a = (an_iL - an_iR) * 0.5;  an_b = (spl0 - spl1) * 0.5; ) :
+    slider248 == 2 ? ( an_a = an_iL;                  an_b = spl0; ) :
+    slider248 == 3 ? ( an_a = an_iR;                  an_b = spl1; ) :
+                     ( an_a = (spl0 + spl1) * 0.5;    an_b = (spl0 - spl1) * 0.5; );
+    an_in[an_pos] = an_a; an_out[an_pos] = an_b;
+    an_pos += 1; an_pos >= FFT_N ? an_pos = 0;
+    an_fill < FFT_N ? an_fill = an_fill + 1;
+  );
 );
 
 @gfx 900 500
@@ -2562,8 +2614,137 @@ loop(5,
 );
 gc_src = gc_trace + gc_meta[GCM_TIDX] * (5 * GC_N);
 
-// ---- background and grid
+// ---- background
 gfx_set(0.09, 0.09, 0.10, 1); gfx_rect(0, 0, gfx_w, gfx_h);
+
+// ================= V1.6 SPECTRUM ANALYSER =================
+// Drawn FIRST, behind the grid, the curve and the nodes: eight band nodes drown in a fill.
+//
+// Two vertical scales share this rectangle and do not pretend otherwise. The EQ curve is a LINE
+// about the centre on +/-4 bits; the spectrum is a FILL from the bottom on its own -20..+2 bits.
+// They are different shapes, which is what keeps them readable together - the arrangement is
+// Fable Eq Mix's, and its eq_scale of 24 dB is exactly this plugin's +/-4 bits.
+//
+// Everything here runs in the GUI thread. @sample pays a ring write and nothing else.
+slider247 >= 0.5 && an_fill >= FFT_N ? (
+  // ONE latch per frame, used by BOTH transforms. Reading an_pos again between them would splice
+  // two different points of the ring into one picture.
+  an_latch = an_pos;
+  an_px_n = min(gc_pw, AN_PX);
+  an_tilt = slider249 == 0 ? 0 : slider249 == 1 ? 3 : 4.5;
+
+  an_st = 0;
+  loop(2,
+    an_src = an_st == 0 ? an_in : an_out;
+    an_mag = an_st == 0 ? an_mi : an_mo;
+    gc_i = 0;
+    loop(FFT_N,
+      an_k = an_latch + gc_i; an_k >= FFT_N ? an_k -= FFT_N;
+      an_sc[gc_i*2] = an_src[an_k] * an_w[gc_i]; an_sc[gc_i*2+1] = 0;
+      gc_i += 1;
+    );
+    fft(an_sc, FFT_N); fft_permute(an_sc, FFT_N);
+    gc_i = 0;
+    loop(FFT_N / 2,
+      an_re = an_sc[gc_i*2]; an_im = an_sc[gc_i*2+1];
+      an_m = sqrt(an_re*an_re + an_im*an_im) * (4 / FFT_N);
+      an_pv = an_mag[gc_i] * 0.86;              // per-frame decay with a max hold
+      an_mag[gc_i] = an_m > an_pv ? an_m : an_pv;
+      gc_i += 1;
+    );
+    an_st += 1;
+  );
+
+  // ---- bins -> columns -> bits, then draw. Both streams: IN grey behind, OUT green in front.
+  an_dx = gc_pw / an_px_n;
+  an_nyq = srate * 0.5;
+  an_st = 0;
+  loop(2,
+    an_mag = an_st == 0 ? an_mi : an_mo;
+    gc_i = 0;
+    loop(an_px_n,
+      // the plugin's OWN axis transform, so the spectrum and the curve cannot disagree about
+      // where a frequency is
+      an_f0 = gc_f_of_x(gc_px + gc_i * an_dx);
+      an_f1 = gc_f_of_x(gc_px + (gc_i + 1) * an_dx);
+      an_f0 >= an_nyq ? (
+        // nothing is representable up here; the floor, NOT the last real bin repeated - that
+        // would paint content in the very octave the FIR Brick is judged by
+        an_db[gc_i] = -20;
+      ) : (
+        an_b0 = an_f0 * FFT_N / srate;
+        an_b1 = an_f1 * FFT_N / srate;
+        an_b1 - an_b0 <= 1 ? (
+          // columns denser than bins: interpolate. The INDEX is clamped before the fraction -
+          // at 192 kHz, 20 Hz is bin 0.853 and the other order interpolates the wrong pair.
+          an_bi = floor(an_b0);
+          an_bi = max(1, min(FFT_N / 2 - 2, an_bi));
+          an_fr = an_b0 - an_bi;
+          an_fr = max(0, min(1, an_fr));
+          an_m = an_mag[an_bi] + (an_mag[an_bi + 1] - an_mag[an_bi]) * an_fr;
+        ) : (
+          // several bins inside one column: MAXIMUM, never a mean. A mean smooths real peaks
+          // away up here and still looks entirely believable.
+          an_bi = max(1, floor(an_b0));
+          an_be = min(FFT_N / 2 - 1, ceil(an_b1));
+          an_m = 0;
+          while (an_bi <= an_be) ( an_mag[an_bi] > an_m ? an_m = an_mag[an_bi]; an_bi += 1; );
+        );
+        an_db[gc_i] = max(log(max(an_m, 0.000000000001)) / log(2)
+                          + an_tilt / 6.020599913 * (log(max(an_f0, 20) / 1000) / log(2)), -20);
+      );
+      gc_i += 1;
+    );
+    // 3-tap smoothing, twice, in pixel space; the ends are left alone
+    an_pass = 0;
+    loop(2,
+      an_pv = an_db[0]; gc_i = 1;
+      loop(an_px_n - 2,
+        an_cv = an_db[gc_i];
+        an_db[gc_i] = an_pv * 0.25 + an_cv * 0.5 + an_db[gc_i + 1] * 0.25;
+        an_pv = an_cv; gc_i += 1;
+      );
+      an_pass += 1;
+    );
+    // keep this stream's SMOOTHED columns: the red rule must compare the values that are on
+    // screen, not raw bins, or the colour and the curve disagree with each other
+    an_st == 0 ? ( memcpy(an_db2, an_db, an_px_n); );
+    // In M/S the second stream is SIDE, and every column where it exceeds MID is drawn red -
+    // a mono-compatibility warning at the frequency where it happens rather than as one number.
+    // Two guards, without which the rule lies: a FLOOR, because near the bottom of the scale the
+    // two values differ by arithmetic noise and the top of the graph would flicker red over
+    // silence; and per-column HYSTERESIS, because exact equality is a coin flip at 30 frames a
+    // second. State is per column, so it must persist across frames - hence an_ms_state.
+    an_ms = slider248 == 4 && an_st == 1;
+    an_st == 0 ? ( gfx_set(0.42, 0.46, 0.56, 0.55); ) : ( gfx_set(0.30, 0.86, 0.45, 0.80); );
+    gc_i = 0;
+    loop(an_px_n,
+      an_ms ? (
+        an_md = an_db2[gc_i]; an_sd = an_db[gc_i];
+        max(an_md, an_sd) >= -16 ? (
+          an_ms_state[gc_i] == 0 ? (
+            an_sd > an_md + 0.1 ? ( an_ms_state[gc_i] = 1; );
+          ) : (
+            an_sd < an_md - 0.1 ? ( an_ms_state[gc_i] = 0; );
+          );
+          an_ms_state[gc_i] >= 1 ? (
+            an_ms_state[gc_i] = an_sd > an_md + 1 ? 2 : 1;
+          );
+        ) : ( an_ms_state[gc_i] = 0; );
+        an_ms_state[gc_i] == 2 ? ( gfx_set(1.00, 0.25, 0.20, 0.95); ) :
+        an_ms_state[gc_i] == 1 ? ( gfx_set(0.80, 0.35, 0.25, 0.85); ) :
+                                 ( gfx_set(0.30, 0.86, 0.45, 0.80); );
+      );
+      an_yv = gc_py + gc_ph * (2 - an_db[gc_i]) / 22;      // -20..+2 bits over the full height
+      an_yv = max(gc_py, min(gc_py + gc_ph, an_yv));
+      an_xv = gc_px + gc_i * an_dx;
+      gfx_line(an_xv, gc_py + gc_ph, an_xv, an_yv, 0);
+      gc_i += 1;
+    );
+    an_st += 1;
+  );
+);
+// ---- grid
 gfx_set(0.25, 0.25, 0.27, 1);
 gc_i = 0;
 loop(3,

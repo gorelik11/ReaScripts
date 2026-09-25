@@ -121,7 +121,7 @@ def test_the_constants_match_the_design():
 def test_every_span_is_declared_with_the_size_the_design_gives():
     want = {"an_sc": 16384, "an_w": 8192, "an_in": 8192, "an_out": 8192,
             "an_mi": 4096, "an_mo": 4096, "an_pkI": 2048, "an_pkO": 2048,
-            "an_db": 2048, "an_ms_state": 2048, "an_meta": 16,
+            "an_db": 2048, "an_db2": 2048, "an_ms_state": 2048, "an_meta": 16,
             "dq_v": 16 * 2049, "dq_p": 16 * 2049, "dq_meta": 16 * 6}
     spans = L.v16_new_spans()
     assert set(spans) == set(want)
@@ -149,7 +149,7 @@ def test_the_block_starts_on_a_page_and_the_engines_move_up_two():
 
 def test_the_block_is_the_size_the_design_states():
     spans = L.v16_new_spans()
-    assert max(e for _, e in spans.values()) - L.v16_block_base() == 123024
+    assert max(e for _, e in spans.values()) - L.v16_block_base() == 125072
 
 
 def test_a_small_shift_does_not_cross_a_page_and_that_is_the_point():

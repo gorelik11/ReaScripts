@@ -255,7 +255,10 @@ V16_BLOCK = [
     ("an_mo",       lambda: FFT_N // 2),  # magnitudes, OUT
     ("an_pkI",      lambda: AN_PX),       # peak hold, IN
     ("an_pkO",      lambda: AN_PX),       # peak hold, OUT
-    ("an_db",       lambda: AN_PX),       # per-column scratch
+    ("an_db",       lambda: AN_PX),       # per-column scratch, the stream being drawn
+    ("an_db2",      lambda: AN_PX),       # the stream drawn BEFORE it, kept so the red
+                                          # rule compares SMOOTHED values - the ones on
+                                          # screen - rather than raw bins
     ("an_ms_state", lambda: AN_PX),       # red-rule hysteresis, one per column
     ("an_meta",     lambda: 16),          # an_pos, an_gen, an_gen_seen, an_fill, frame_valid,
                                           # the first-load marker, and room to grow
