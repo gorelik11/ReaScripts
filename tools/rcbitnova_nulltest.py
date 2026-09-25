@@ -106,6 +106,19 @@ TRANSITIONS = {
     # 5. a band disabled and re-enabled - V1.0 shipped with a band that was off but still audible
     "band_disable_enable": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 4.0},
                             "env": {"B3 Enable": [(0.0, 1), (2.5, 0), (5.5, 1)]}},
+    # 6-8. THE ANALYSER MUST NOT MOVE A SAMPLE. Its four parameters exist only on the version
+    #      under test, so they are written through `test_only`, after the state copy. An analyser
+    #      that is ON and still nulls is the proof that its taps only READ - there is no other
+    #      way to demonstrate that from outside the plugin.
+    "analyzer_on_mid": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0}, "env": {},
+                        "test_only": {"Analyzer": 1, "Analyzer Domain": 0}},
+    "analyzer_on_ms": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0}, "env": {},
+                       "test_only": {"Analyzer": 1, "Analyzer Domain": 4,
+                                     "Analyzer Peak Hold": 1}},
+    # the analyser switched ON under audio: the ring clear runs in @sample, mid-stream
+    "analyzer_switched_on": {"values": {**MODE_B_8, "Lookahead (ms, Mode B)": 2.0},
+                             "env": {}, "test_only": {"Analyzer": 0},
+                             "test_env": {"Analyzer": [(0.0, 0), (3.0, 1), (6.0, 0)]}},
 }
 
 
@@ -227,7 +240,7 @@ def main():
             while tr.fxs:
                 tr.fxs[-1].delete()
 
-        def render(fx_name, values=None, state=None, env=None):
+        def render(fx_name, values=None, state=None, env=None, extra=None):
             """One pass: fresh item, fresh instance, set state, bake, return the file it wrote
             and the N_DECLARED ACTUAL VALUES it was holding.
 
@@ -270,6 +283,16 @@ def main():
                     r = RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)
                     lo, hi = r[4], r[5]
                     RPR.TrackFX_SetParamNormalized(tr.id, i, k, (v - lo) / (hi - lo))
+            if extra:
+                # parameters that exist ONLY on the version under test - the analyser's four.
+                # Written after the state copy so they are not overwritten by it, and never sent
+                # to the baseline, which has no such records.
+                names = [fx.params[k].name for k in range(fx.n_params)]
+                for pname, value in extra.items():
+                    assert pname in names, f"no such parameter: {pname}"
+                    k = names.index(pname)
+                    r = RPR.TrackFX_GetParam(tr.id, i, k, 0, 0)
+                    RPR.TrackFX_SetParamNormalized(tr.id, i, k, (value - r[4]) / (r[5] - r[4]))
             if env:
                 names = [fx.params[k].name for k in range(fx.n_params)]
                 for pname, points in env.items():
@@ -349,7 +372,9 @@ def main():
             a, state_base = render(BASE, values=spec["values"], env=spec["env"])
             keep = a + ".base.wav"
             os.rename(a, keep)
-            b, state_test = render(UNDER_TEST, state=state_base, env=spec["env"])
+            b, state_test = render(UNDER_TEST, state=state_base,
+                                   env={**spec["env"], **spec.get("test_env", {})},
+                                   extra=spec.get("test_only"))
             worst = max(range(len(state_base)),
                         key=lambda k: abs(state_base[k] - state_test[k]))
             assert abs(state_base[worst] - state_test[worst]) <= 1e-6, (
@@ -366,7 +391,7 @@ def main():
     proof = _self_test_comparator(outcomes[0][4])
     print(f"  comparator rejects a one-ULP difference: {proof}", flush=True)
     assert proof, "a one-ULP edit passed - the render is quantising and this gate proves nothing"
-    want = len(CASES) + len(DIVERGENT) if not only else 1
+    want = len(CASES) + len(DIVERGENT) + len(TRANSITIONS) if not only else 1
     assert len(outcomes) == want, f"{len(outcomes)} cases ran, expected {want}"
     for _case, _n, _rate, _bits, keep, b in outcomes:
         for f in (keep, b):

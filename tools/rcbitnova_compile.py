@@ -68,8 +68,19 @@ def check(track_index=0):
             RPR.DeleteTrack(reapy.Project().tracks[0].id)
 
     problems = []
-    if n != 179:
-        problems.append(f"reports {n} parameters, expected 179")
+    # DERIVED from the file, not typed: a hard-coded count has to be edited by hand every time a
+    # parameter is added, and the edit that is forgotten turns this check into a nuisance that
+    # gets "fixed" by loosening it. Declared sliders + REAPER's three host parameters.
+    import os as _os
+    import re as _re
+    src = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                        "JSFX", "RCBitNova V1.6")
+    declared = len(_re.findall(r"^slider\d+:", open(src, encoding="utf-8",
+                                                    errors="replace").read(), _re.M))
+    want = declared + 3
+    if n != want:
+        problems.append(f"reports {n} parameters, expected {want} "
+                        f"({declared} declared + Bypass/Wet/Delta)")
     for line in text.splitlines():
         low = line.lower()
         if "error" in low or "syntax" in low:

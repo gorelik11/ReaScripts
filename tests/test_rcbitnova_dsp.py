@@ -3079,7 +3079,11 @@ def test_the_null_harness_copies_every_declared_record_by_value():
     assert "norms=" not in src, "the raw normalised pass-through must be gone, not merely unused"
     # env= was added in V1.6 for the transition cases; the point of this assertion is that the
     # signature still takes STATE (copied by value) and offers no normalised pass-through.
-    assert "def render(fx_name, values=None, state=None, env=None):" in src
+    # env= and extra= were added in V1.6: env drives the transition cases, extra writes the four
+    # analyser parameters, which exist only on the version under test. The point of this
+    # assertion is unchanged - the signature still takes STATE, copied by value, and offers no
+    # normalised pass-through.
+    assert "def render(fx_name, values=None, state=None, env=None, extra=None):" in src
     # the replay must convert through the DESTINATION instance's own range
     assert "lo, hi = r[4], r[5]" in src
 
