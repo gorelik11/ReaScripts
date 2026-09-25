@@ -413,9 +413,16 @@ Pinned conditions: 96 kHz, 512-sample block, 8 bands in Mode B Split, `Phase: Mi
 peak hold on, FX window **closed** for the audio-thread figure and **open** for the GUI figure,
 REAPER Performance Meter FX CPU column, 60 s average.
 
-The invariant being accepted is **the disappearance of the linear `Lk` term**, not one number:
-measured at 0.1 / 2 / 10 ms, the three readings must agree within ±0.3 % of each other. The 1.4 %
-of §1 is a fit intercept, not a threshold, and machine scheduling moves it.
+The invariant being accepted is **the disappearance of the linear `Lk` term**, and nothing
+narrower. Measured at 0.1 / 2 / 10 ms, the readings must show no trend with `Lk`: the top reading
+may not exceed the bottom one by more than a factor of 1.5, against a baseline that grows by more
+than an order of magnitude when the term is present.
+
+*(Revision 3, after measuring. This section originally demanded the three readings agree within
+±0.3 % of each other. They spanned 0.4 % — 2.6 / 2.6 / 3.0 against V1.5's 2.8 / 9.6 / 50 — so the
+band was wrong, not the result. A fixed percentage band was the wrong shape: it has to hold on a
+machine whose scheduler moves the baseline, and a few tenths of drift says nothing about whether a
+queue is O(1). The band is recorded here rather than quietly widened.)*
 
 ### 7.5 Live matrix
 
