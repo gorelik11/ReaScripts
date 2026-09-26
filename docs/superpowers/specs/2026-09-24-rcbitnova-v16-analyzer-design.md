@@ -247,6 +247,19 @@ independent by construction. Two guards keep it from lying:
 The rule is evaluated after both smoothing passes, on the same values that are drawn — never on
 raw bins, or the colour and the curve would disagree on screen.
 
+**Resolution: the rule stays at the display's own, near-bin resolution — it is NOT smoothed onto
+an octave grid.** Compared live against SPAN in Mid/Side (2026-09-26), this plugin paints
+noticeably more red, and the reason is visible in SPAN's own settings: it smooths at 1/6 octave,
+so narrow bands where Side exceeds Mid dissolve into the average. Both pictures are honest; they
+answer questions of different grain. The owner chose the fine one, and the reason is the design
+rationale worth keeping: *the comfortable picture is already available in SPAN — the instrument is
+for seeing what the comfortable picture hides.* Learning that red is still there at a finer grain
+is information, not noise.
+
+Validated by the test that decides it: with a mono sum inserted immediately before the plugin,
+Side is zero by construction, and **no column went red at any level** — so the fine grain is
+reporting real Side energy, not arithmetic floor noise.
+
 ### 4.5 Controls
 
 The highest existing slider is **246** (`Panel: open dynamics card`), not 142. REAPER orders
