@@ -3,6 +3,8 @@
 A record is [index, name, lo, hi, step, default] - the shape _declared_records writes, NOT a
 dict. The plan's first draft asserted dict keys; the fixture is the authority, not the plan.
 """
+import pytest
+
 from tools.rcbitnova_gates import load_declared_v15
 
 
@@ -228,3 +230,51 @@ def test_the_queue_state_is_cleared_in_init():
     # EEL2 memory is not cleared when @init re-runs at transport start or on a rate change
     text = open("JSFX/RCBitNova V1.6").read()
     assert "memset(dq_meta, 0, N_QUEUES * 6);" in text
+
+
+# ---- the analyser's two stateful writers ----
+# The generation is the ONLY thing @gfx tells @sample. A writer that changes the domain or turns
+# the analyser on without bumping it leaves the rings holding the PREVIOUS stream, and the display
+# mixes the two for ~85 ms at 96 kHz - a picture that looks entirely plausible and is wrong.
+
+ANALYSER_WRITERS = {"gc_w_analyzer": "slider247", "gc_w_an_domain": "slider248"}
+
+
+@pytest.mark.parametrize("fn,slider", sorted(ANALYSER_WRITERS.items()))
+def test_analyser_writer_bumps_the_generation(fn, slider):
+    body = _code(open("JSFX/RCBitNova V1.6").read(), fn)
+    assert f"{slider} = v;" in body
+    assert f"slider_automate({slider})" in body
+    assert "an_gen = an_gen + 1" in body, f"{fn} must bump an_gen or the rings keep the old stream"
+    assert "gc_an_reset_display()" in body, f"{fn} must clear what @gfx owns"
+
+
+@pytest.mark.parametrize("fn,slider", sorted(ANALYSER_WRITERS.items()))
+def test_analyser_writer_writes_before_it_bumps(fn, slider):
+    # the order matters for the same reason every other writer here writes, automates, THEN
+    # rebuilds: @sample compares generations inline, and a bump that lands before the slider
+    # changes lets it clear the rings for the value that is about to be replaced
+    body = _code(open("JSFX/RCBitNova V1.6").read(), fn)
+    assert body.index(f"slider_automate({slider})") < body.index("an_gen = an_gen + 1")
+
+
+def test_the_gui_never_clears_a_ring():
+    # @sample owns an_in/an_out; a GUI thread clearing a buffer the audio thread is writing is a
+    # race with no upside. Only @sample and @init may touch them.
+    text = open("JSFX/RCBitNova V1.6").read()
+    gfx = text[text.index("\n@gfx"):]
+    code = "\n".join(l.split("//")[0] for l in gfx.splitlines())
+    for ring in ("an_in", "an_out"):
+        assert f"memset({ring}" not in code, f"@gfx clears {ring}, which @sample owns"
+    for fn in ("gc_an_reset_display", "gc_w_analyzer", "gc_w_an_domain"):
+        body = _code(text, fn)
+        for ring in ("an_in", "an_out"):
+            assert f"memset({ring}" not in body, f"{fn} clears {ring}, which @sample owns"
+
+
+def test_peaks_start_at_the_floor_not_at_zero():
+    # zero bits is FULL SCALE; a peak array starting at zero draws a solid line along the top
+    text = open("JSFX/RCBitNova V1.6").read()
+    code = "\n".join(l.split("//")[0] for l in text.splitlines())
+    assert "memset(an_pkI, -20, AN_PX)" in code and "memset(an_pkO, -20, AN_PX)" in code
+    assert "an_pkI[i] = 0" not in code and "memset(an_pkI, 0" not in code
