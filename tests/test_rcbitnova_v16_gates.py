@@ -278,3 +278,46 @@ def test_peaks_start_at_the_floor_not_at_zero():
     code = "\n".join(l.split("//")[0] for l in text.splitlines())
     assert "memset(an_pkI, -20, AN_PX)" in code and "memset(an_pkO, -20, AN_PX)" in code
     assert "an_pkI[i] = 0" not in code and "memset(an_pkI, 0" not in code
+
+
+# ---- the V1.6 manifest: V1.5 as an exact prefix, then exactly four records ----
+
+def test_v16_manifest_is_v15_then_the_analyser():
+    from tools.rcbitnova_gates import expected_v16_manifest, N_DECLARED_V16
+    v15 = [tuple(r) for r in load_declared_v15()]
+    v16 = expected_v16_manifest()
+    assert N_DECLARED_V16 == len(v16) == 180
+    assert v16[:176] == v15, "the audio-bearing prefix changed - existing projects would move"
+    assert [r[0] for r in v16[176:]] == [176, 177, 178, 179]
+    assert [r[1] for r in v16[176:]] == [
+        "Analyzer", "Analyzer Domain", "Analyzer Tilt (dB/oct)", "Analyzer Peak Hold"]
+
+
+def test_the_analyser_is_off_by_default():
+    # a new parameter must not change how an existing project looks or performs when it loads
+    from tools.rcbitnova_gates import expected_v16_manifest
+    rec = {r[1]: r for r in expected_v16_manifest()}
+    assert rec["Analyzer"][5] == 0.0
+    assert rec["Analyzer Peak Hold"][5] == 0.0
+
+
+def test_the_manifest_matches_the_declarations_in_the_file():
+    # the pinned records and the slider lines must agree, or the live gate tests a fiction
+    import re
+    from tools.rcbitnova_gates import V16_APPENDED
+    text = open("JSFX/RCBitNova V1.6").read()
+    for num, (idx, name, lo, hi, step, default) in zip((247, 248, 249, 250), V16_APPENDED):
+        m = re.search(r"^slider%d:([\d.]+)<([\d.]+),([\d.]+),([\d.]+)" % num, text, re.M)
+        assert m, f"slider{num} not declared"
+        assert tuple(float(x) for x in m.groups()) == (default, lo, hi, step), (
+            f"slider{num} declares {m.groups()}, the manifest pins "
+            f"default={default} range={lo}..{hi} step={step}")
+
+
+def test_the_live_gate_never_uses_an_existing_track():
+    # it drives every parameter to its extremes; on track 0 of a working mix that is the master bus
+    from tools.rcbitnova_gates import check_live, _function_body
+    import inspect
+    src = inspect.getsource(check_live)
+    assert "pr.tracks[track_index]" not in src
+    assert "InsertTrackAtIndex(n0, False)" in src and "DeleteTrack(RPR.GetTrack(0, n0))" in src

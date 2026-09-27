@@ -62,6 +62,7 @@ V15 = "JSFX/RCBitNova V1.5"          # FROZEN: tagged rcbitnova-v1.5, the null b
 V16 = "JSFX/RCBitNova V1.6"          # the working file - every source check below targets this
 N_DECLARED_V11 = 175                 # frozen forever
 N_DECLARED_V12 = 176                 # 175 inherited + the panel-state slider, last
+N_DECLARED_V16 = 180                 # V1.5's 176, then the analyser's four at 247..250
 
 # finditer, not match: several assignments can share a line, and anchoring to the first one loses
 # the rest.
@@ -232,6 +233,26 @@ RANGE_CHANGES = {
     85: ((20.0, 20000.0), (20.0, 24000.0)),   # HP Freq (Hz)
     89: ((20.0, 20000.0), (20.0, 24000.0)),   # LP Freq (Hz)
 }
+
+
+# The four records V1.6 appends. Pinned field by field: a build that edits or drops an OLD
+# declaration still satisfies "every new slider is above 246", so the prefix is checked exactly
+# and these are checked exactly - the gate proves both halves, not just the ordering rule.
+V16_APPENDED = [
+    (176, "Analyzer", 0.0, 1.0, 1.0, 0.0),
+    (177, "Analyzer Domain", 0.0, 4.0, 1.0, 0.0),
+    (178, "Analyzer Tilt (dB/oct)", 0.0, 2.0, 1.0, 2.0),
+    (179, "Analyzer Peak Hold", 0.0, 1.0, 1.0, 0.0),
+]
+
+
+def expected_v16_manifest():
+    """V1.5's 176 frozen records as an EXACT prefix, then the four analyser records.
+
+    No migrator is needed and this is why: the audio-bearing prefix is unchanged, and the four
+    appended parameters are display-only with defaults that leave the analyser off.
+    """
+    return [tuple(r) for r in load_declared_v15()] + list(V16_APPENDED)
 
 
 def expected_v15_manifest():
@@ -788,16 +809,15 @@ def check_live(track_index=0):
     import reapy
     with reapy.inside_reaper():
         from reapy import reascript_api as RPR
-        pr = reapy.Project()
-        made_track = 0
-        if len(pr.tracks) == 0:
-            RPR.InsertTrackAtIndex(0, False)
-            RPR.TrackList_AdjustWindows(False)
-            made_track = 1
-            pr = reapy.Project()
-        tr = pr.tracks[track_index]
-        assert not [f for f in tr.fxs if "RCBitNova" in f.name], \
-            f"track {track_index} already holds an RCBitNova; use an empty scratch track"
+        # ITS OWN TRACK, ALWAYS, AT THE END. It used to take track 0 whenever the project was
+        # not empty - which in a working mix is the master bus - and this gate does not merely add
+        # an instance there: _records drives every parameter to its extremes to prove it moves.
+        # Found 2026-09-27 with a 41-track project open whose track 0 is "Bus".
+        n0 = int(RPR.CountTracks(0))
+        RPR.InsertTrackAtIndex(n0, False)
+        RPR.TrackList_AdjustWindows(False)
+        RPR.GetSetMediaTrackInfo_String(RPR.GetTrack(0, n0), "P_NAME", "RCBN GATE TEMP", True)
+        tr = reapy.Project().tracks[n0]
 
         def manifest(name, n_declared):
             fx = tr.add_fx(name)
@@ -817,13 +837,14 @@ def check_live(track_index=0):
             return n, recs[:n_declared], recs[n_declared:]
 
         n10, dec10, host10 = manifest("RCBitNova V1.0", N_DECLARED_V10)
-        n11, dec11, host11 = manifest("RCBitNova V1.6", N_DECLARED_V12)
-        if made_track:
-            RPR.DeleteTrack(reapy.Project().tracks[0].id)
+        n11, dec11, host11 = manifest("RCBitNova V1.6", N_DECLARED_V16)
+        RPR.DeleteTrack(RPR.GetTrack(0, n0))
+        RPR.TrackList_AdjustWindows(False)
+        assert int(RPR.CountTracks(0)) == n0, "the gate's own track was not removed"
 
     assert n10 == N_DECLARED_V10 + 3, f"V1.0 reports {n10} parameters, expected 98"
-    assert n11 == N_DECLARED_V12 + 3, \
-        f"V1.3 reports {n11} parameters, expected {N_DECLARED_V12} declared + 3 host"
+    assert n11 == N_DECLARED_V16 + 3, \
+        f"V1.6 reports {n11} parameters, expected {N_DECLARED_V16} declared + 3 host"
     assert [r[1] for r in host10] == HOST_TAIL, f"V1.0 host tail is {[r[1] for r in host10]}"
     assert [r[1] for r in host11] == HOST_TAIL, f"V1.1 host tail is {[r[1] for r in host11]}"
     # The ONE documented deviation from "the 95 declared records are identical": the ceiling Macro
@@ -851,14 +872,14 @@ def check_live(track_index=0):
                 f"parameter {a[0]} upper bound went {a[3]} -> {b[3]}, table says {was_hi} -> {now_hi}"
         else:
             assert a == b, f"declared parameter {a[0]} differs:\n  V1.0 {a}\n  V1.1 {b}"
-    assert len(dec11) == N_DECLARED_V12
+    assert len(dec11) == N_DECLARED_V16
 
     # And the second comparison, against ALL 176 of V1.4's records - the first one covers only
     # V1.0's 95, so record 175, the panel-card state, is checked nowhere else. The expected
     # manifest is DERIVED in memory from the frozen V1.4 fixture plus the range table; the fixture
     # itself is never rewritten, because a baseline regenerated from source agrees with whatever
     # the source says.
-    expected = expected_v15_manifest()
+    expected = expected_v16_manifest()
     # the live record is (index, name, lo, hi, step, is_toggle, default, trips); the manifest is
     # (index, name, lo, hi, step, default) - so pick fields, do not slice.
     got = [(r[0], r[1], r[2], r[3], r[4], r[6]) for r in dec11]
@@ -888,7 +909,7 @@ def main(argv):
         except AssertionError as exc:
             print(f"FAIL --live: {exc}")
             return 1
-        print(f"OK --live: V1.0 {n10} params, V1.1 {n11}, {added} added; "
+        print(f"OK --live: V1.0 {n10} params, V1.6 {n11}, {added} added; "
               f"the 95 declared records are identical and the host tail matches by position")
         return 0
     try:
