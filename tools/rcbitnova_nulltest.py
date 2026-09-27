@@ -151,7 +151,10 @@ def write_fx_envelope(RPR, track_id, fx_index, param_index, points, label=""):
     where the version under test produced exactly the value it produces with no envelope at all.
     """
     env = RPR.GetFXEnvelope(track_id, fx_index, param_index, True)
-    assert env, f"GetFXEnvelope returned nothing for {label or param_index}"
+    # NOT `assert env`: reapy returns a NULL pointer as the string '(Type*)0x00...0', which is
+    # truthy, so that assertion could never fail. Measured 2026-09-27.
+    assert env and not str(env).endswith("0x0000000000000000"), \
+        f"GetFXEnvelope returned NULL for {label or param_index}"
     RPR.DeleteEnvelopePointRange(env, -1.0, 1.0e9)      # REAPER's own point at t=0 goes first
     for t, v in points:
         RPR.InsertEnvelopePoint(env, float(t), float(v), 1, 0.0, False, True)  # shape 1 = square
