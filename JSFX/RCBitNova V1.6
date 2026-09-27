@@ -986,7 +986,7 @@ i = 0; loop(FFT_N, an_w[i] = 0.5 - 0.5 * cos(2 * $pi * i / FFT_N); i += 1;);
 an_meta[ANM_MARK] == 0 ? (
   // first load of this instance: start the peak arrays at the display floor, not at zero -
   // zero is +0 dB on a magnitude scale and would paint a full-height peak line on frame one
-  i = 0; loop(AN_PX, an_pkI[i] = 0; an_pkO[i] = 0; i += 1;);
+  memset(an_pkI, -20, AN_PX); memset(an_pkO, -20, AN_PX);
   an_meta[ANM_MARK] = 1;
 );
 
@@ -1153,6 +1153,30 @@ function topo_commit() ( topo_commit_state(); topo_pdc(); pdc_dirty = 0; );
 //
 // Only while the transport is stopped, the same condition @block trusts for an immediate commit.
 // STATE only - the PDC publication is left to @block through pdc_dirty.
+// ---- V1.6: the analyser's stateful writers ----
+// Both bump an_gen. That generation is the ONLY thing @gfx tells @sample: @sample owns the rings
+// and clears them itself, on the audio thread, because a GUI thread clearing a buffer an audio
+// thread is writing is a race with no upside. What @gfx owns - magnitudes, peaks, the red-rule
+// state - it clears here, so a domain change cannot leave the previous domain's peaks sitting on
+// the new picture, decaying at 0.86 a frame into something that looks like data.
+function gc_an_reset_display() local(i) (
+  memset(an_mi, 0, FFT_N / 2); memset(an_mo, 0, FFT_N / 2);
+  memset(an_ms_state, 0, AN_PX);
+  memset(an_pkI, -20, AN_PX); memset(an_pkO, -20, AN_PX);   // the FLOOR, in bits, not zero -
+);                                                          // zero bits is FULL SCALE
+
+function gc_w_analyzer(v) (
+  slider247 = v; slider_automate(slider247);
+  an_gen = an_gen + 1;
+  gc_an_reset_display();
+);
+
+function gc_w_an_domain(v) (
+  slider248 = v; slider_automate(slider248);
+  an_gen = an_gen + 1;
+  gc_an_reset_display();
+);
+
 function gc_w_topo() local(changed) (
   sel_bd0 = slider141 == 1 ? BD_HIGH : 8192;
   sel_bd1 = slider142 == 1 ? BD_HIGH : 8192;
@@ -2564,7 +2588,15 @@ gc_panel_hot = gc_panel_on && mouse_y >= gc_rows_y &&
 // So the fix belongs to the STRIP, not to two rectangles.
 gc_by = gc_py + 4 * gc_sc;          // moved up from the drawing code: geometry, not drawing
 gc_bw = 110 * gc_sc;
-gc_topbar_hot = mouse_y >= gc_by && mouse_y < gc_by + gc_fh &&
+// V1.6: a SECOND row, for the analyser. The strip is drawn OVER the plot rather than reserving
+// space beside it, so a second row costs no plot height - it covers a little more of the top of
+// the curve, which is where nothing lives anyway (+4..+2 bits).
+gc_by2 = gc_by + gc_fh + 4 * gc_sc;
+// ONE hot rectangle for BOTH rows, computed HERE, before node arbitration. A control drawn
+// without extending this reopens the defect the comment above describes: a click on a label that
+// also enables the band underneath it and arms its drag. Four new rectangles, four new ways to
+// change audio from a click that was meant to change a display - so the strip owns them all.
+gc_topbar_hot = mouse_y >= gc_by && mouse_y < gc_by2 + gc_fh &&
                 mouse_x >= gc_px + gc_pw - 5 * gc_bw - 32 * gc_sc && mouse_x < gc_px + gc_pw;
 // Small mode reserves only 24 px below the plot, which the fields alone fill: the strip is hidden
 // there rather than clipped. Nodes and the right-click menu still reach every band.
@@ -2626,6 +2658,10 @@ gfx_set(0.09, 0.09, 0.10, 1); gfx_rect(0, 0, gfx_w, gfx_h);
 // Fable Eq Mix's, and its eq_scale of 24 dB is exactly this plugin's +/-4 bits.
 //
 // Everything here runs in the GUI thread. @sample pays a ring write and nothing else.
+gc_an_clear_peaks ? (
+  memset(an_pkI, -20, AN_PX); memset(an_pkO, -20, AN_PX);
+  gc_an_clear_peaks = 0;
+);
 slider247 >= 0.5 && an_fill >= FFT_N ? (
   // ONE latch per frame, used by BOTH transforms. Reading an_pos again between them would splice
   // two different points of the ring into one picture.
@@ -2740,6 +2776,23 @@ slider247 >= 0.5 && an_fill >= FFT_N ? (
       an_xv = gc_px + gc_i * an_dx;
       gfx_line(an_xv, gc_py + gc_ph, an_xv, an_yv, 0);
       gc_i += 1;
+    );
+    // Peak hold: a per-column maximum that never decays, drawn as a one-pixel line above the
+    // fill. It holds until the right-click reset or a domain change - "persistent" here means
+    // across frames AND across a transport start, which is why the arrays live in memory and
+    // why @init only initialises them on the very first load of the instance.
+    slider250 >= 0.5 ? (
+      an_pk = an_st == 0 ? an_pkI : an_pkO;
+      an_st == 0 ? ( gfx_set(0.62, 0.66, 0.76, 0.9); ) : ( gfx_set(0.55, 0.95, 0.65, 0.95); );
+      gc_i = 0;
+      loop(an_px_n,
+        an_db[gc_i] > an_pk[gc_i] ? ( an_pk[gc_i] = an_db[gc_i]; );
+        an_yv = gc_py + gc_ph * (2 - an_pk[gc_i]) / 22;
+        an_yv = max(gc_py, min(gc_py + gc_ph, an_yv));
+        an_xv = gc_px + gc_i * an_dx;
+        gfx_line(an_xv, an_yv, an_xv + an_dx, an_yv, 0);
+        gc_i += 1;
+      );
     );
     an_st += 1;
   );
@@ -3136,11 +3189,35 @@ gc_hf1 = gc_field_at(201, gc_px + gc_pw - 4 * gc_bw - 24 * gc_sc, gc_by, gc_bw,
                      "LP ", slider136, 0);
 gc_hf1 ? ( gc_pfield = 201; gc_pfield_v = slider136; );
 
+// ---- V1.6: the analyser's four controls, second row, right-aligned with the first.
+// Hidden in small mode along with the rest of the strip (gc_strip_on), so a cramped window keeps
+// its plot rather than its buttons.
+gc_strip_on ? (
+  gc_ab0 = gc_button(gc_px + gc_pw - 4 * gc_bw - 24 * gc_sc, gc_by2, gc_bw,
+                     slider247 >= 0.5 ? "Analyzer: On" : "Analyzer: Off", slider247 >= 0.5);
+  gc_ab1 = gc_button(gc_px + gc_pw - 3 * gc_bw - 16 * gc_sc, gc_by2, gc_bw,
+                     slider248 == 0 ? "Dom: Mid" : slider248 == 1 ? "Dom: Side" :
+                     slider248 == 2 ? "Dom: Left" : slider248 == 3 ? "Dom: Right" : "Dom: M/S",
+                     slider248 == 4);
+  gc_ab2 = gc_button(gc_px + gc_pw - 2 * gc_bw - 8 * gc_sc, gc_by2, gc_bw,
+                     slider249 == 0 ? "Tilt: 0" : slider249 == 1 ? "Tilt: 3" : "Tilt: 4.5",
+                     slider249 > 0);
+  gc_ab3 = gc_button(gc_px + gc_pw - gc_bw, gc_by2, gc_bw,
+                     slider250 >= 0.5 ? "Peak: Hold" : "Peak: Off", slider250 >= 0.5);
+) : ( gc_ab0 = 0; gc_ab1 = 0; gc_ab2 = 0; gc_ab3 = 0; );
+
 gc_click ? (
   gc_hb0 ? ( slider140 = 1 - slider140; slider_automate(slider140); gc_w_topo(); ) :
   gc_hb1 ? ( slider141 = 1 - slider141; slider_automate(slider141); gc_w_topo(); ) :
-  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); gc_w_topo(); );
+  gc_hb2 ? ( slider142 = 1 - slider142; slider_automate(slider142); gc_w_topo(); ) :
+  gc_ab0 ? ( gc_w_analyzer(1 - (slider247 >= 0.5)); ) :
+  gc_ab1 ? ( gc_w_an_domain(slider248 >= 4 ? 0 : slider248 + 1); ) :
+  gc_ab2 ? ( slider249 = slider249 >= 2 ? 0 : slider249 + 1; slider_automate(slider249); ) :
+  gc_ab3 ? ( slider250 = 1 - (slider250 >= 0.5); slider_automate(slider250); );
 );
+// Right-click on Peak Hold clears the held peaks without turning the mode off - the reset a
+// held display needs most is the one that does not change what you were looking at.
+gc_rclick && gc_ab3 ? ( gc_an_clear_peaks = 1; );
 
 // ---- readout strip: five FIELDS, each named for the slider it edits.
 // Named per parameter on purpose - a single "G" field would be ambiguous between Macro and
