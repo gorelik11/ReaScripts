@@ -4,6 +4,26 @@ Bit-accurate dynamics processing plugins for REAPER. All gain values use exact p
 
 ## Plugins
 
+### Freqphaser 1.2 — Fold mode, 90° buttons, Move by default
+
+Polish user manual: [`Freqphaser 1.2 - instrukcja (PL).md`](Freqphaser%201.2%20-%20instrukcja%20(PL).md).
+
+- New per-band mode **Fold**: Side -> Mid at a fixed +90 degrees with constant power. Mid gets
+  `a = 2^bits - 1`, Side keeps `sqrt(1 - a^2)`, and the fold is computed per frequency after the
+  band weights mix, so no channel cancels at any Amount and a crossover next to an untouched band
+  does not dip 3 dB. 1 bit is full mono, same as Move.
+- A small **90** button next to each Phase knob snaps it to +90 degrees, the only angle at which
+  neither channel cancels (`1 +- 2a cos(phi) + a^2`). GUI only; no new parameter.
+- **Move is the default mode**; Add stays available. Mode keeps its slider numbers and only
+  gains a third value, so parameter positions are unchanged.
+- Amount stays capped at 1 bit: 1 bit is already all of the band's Side, and more could only
+  subtract the opposite channel (a polarity flip).
+
+### Freqphaser 1.1 — Width
+
+Global Width section: a broadband +90° Fold, plus a bit-accurate Side gain
+`2^((Macro + Micro%) * Ratio)` (RCBitRangeGain formula), numbered above every band slider.
+
 ### Freqphaser 1.0 — Five-band Side-to-Mid phase router
 
 Mastering utility for recovering stereo-only material in mono. It splits Side into five

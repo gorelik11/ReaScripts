@@ -1,0 +1,1155 @@
+desc:Freqphaser 1.2 - Five-Band Side-to-Mid Phase Router + Width + Fold
+options:want_all_kb
+
+// GPL v3 - Dima Gorelik, 2026
+// 0 bit means no transfer; 1 bit means unity transfer: amount = 2^bits - 1.
+// Fold mode: +90 degrees, removing only enough Side to keep constant power,
+// so no channel cancels at any amount and 1 bit is full mono.
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+slider1:200<20,20000,1>-Crossover 1 (Hz)
+slider2:1500<20,20000,1>-Crossover 2 (Hz)
+slider3:7000<20,20000,1>-Crossover 3 (Hz)
+slider4:10000<20,20000,1>-Crossover 4 (Hz)
+slider5:1<0,3,1{12,24,48,96}>-Slope (dB/oct)
+slider6:0<0,1,1{Off,On}>-Mono Check
+
+slider11:0<0,1,0.05>-B1 Amount (bit)
+slider12:0<-180,180,1>-B1 Phase (deg)
+slider13:1<0,2,1{Add,Move,Fold}>-B1 Mode
+slider14:0<0,1,1{Off,On}>-B1 Listen
+
+slider21:0<0,1,0.05>-B2 Amount (bit)
+slider22:0<-180,180,1>-B2 Phase (deg)
+slider23:1<0,2,1{Add,Move,Fold}>-B2 Mode
+slider24:0<0,1,1{Off,On}>-B2 Listen
+
+slider31:0<0,1,0.05>-B3 Amount (bit)
+slider32:0<-180,180,1>-B3 Phase (deg)
+slider33:1<0,2,1{Add,Move,Fold}>-B3 Mode
+slider34:0<0,1,1{Off,On}>-B3 Listen
+
+slider41:0<0,1,0.05>-B4 Amount (bit)
+slider42:0<-180,180,1>-B4 Phase (deg)
+slider43:1<0,2,1{Add,Move,Fold}>-B4 Mode
+slider44:0<0,1,1{Off,On}>-B4 Listen
+
+slider51:0<0,1,0.05>-B5 Amount (bit)
+slider52:0<-180,180,1>-B5 Phase (deg)
+slider53:1<0,2,1{Add,Move,Fold}>-B5 Mode
+slider54:0<0,1,1{Off,On}>-B5 Listen
+
+// Width.  Numbered above every band slider so adding them cannot shift the
+// parameter positions that saved projects already address.
+slider61:0<0,1,0.05>-Width Fold (bit)
+slider62:0<-16,16,1>-Side Macro Shift (bit)
+slider63:0<-100,100,0.000001>-Side Micro Shift (% of a bit)
+slider64:1<0,3,0.25>-Side Bit Ratio
+
+@init
+
+FP_BD = 32768;
+FP_P = 2048;
+FP_B = 4096;
+FP_KMAX = 16;
+FP_LATENCY = 18432;
+FP_REBUILD_INTERVAL = floor(srate * 0.1);
+ext_noinit = 1;
+
+FP_PB2 = FP_B * 2;
+FP_OUTN = 16384;
+FP_DRYN = 32768;
+FP_ONE_BIT_DB = 6.020599913279624;
+FP_FINITE_LIMIT = pow(2, 300);
+FP_SIDE_SMOOTH = 800;
+FP_SIDE_SMOOTH_INV = 1 / (FP_SIDE_SMOOTH + 1);
+
+// JSFX FFT buffers may not cross a 65536-word page.  A 32768-point
+// complex FFT occupies a full page, so its buffer must begin on one.
+function fp_align(p, unit) local(u) (
+  u = min(unit, 65536);
+  ceil(p / u) * u;
+);
+
+function fp_layout(base) local(p, bank_words) (
+  p = fp_align(base, FP_BD * 2);
+  fp_desbuf = p; p += FP_BD * 2;
+  p = fp_align(p, FP_BD * 2);
+  fp_rem_spectrum = p; p += FP_BD * 2;
+  fp_ktime = p; p += FP_BD;
+  fp_window = p; p += FP_BD;
+
+  bank_words = FP_KMAX * FP_PB2;
+  p = fp_align(p, FP_PB2); fp_hinj_active = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hinj_target = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hrem_active = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_hrem_target = p; p += bank_words;
+  p = fp_align(p, FP_PB2); fp_fdl = p; p += bank_words;
+
+  p = fp_align(p, FP_PB2); fp_fftw = p; p += FP_PB2;
+  p = fp_align(p, FP_PB2); fp_accum = p; p += FP_PB2;
+  p = fp_align(p, FP_PB2); fp_tmpc = p; p += FP_PB2;
+
+  fp_in_side = p; p += FP_B;
+  fp_out_inj = p; p += FP_OUTN;
+  fp_out_rem = p; p += FP_OUTN;
+  fp_dry_left = p; p += FP_DRYN;
+  fp_dry_right = p; p += FP_DRYN;
+  p;
+);
+
+function fp_i0(x) local(sum, term, k, halfx) (
+  sum = 1; term = 1; k = 1; halfx = x * 0.5;
+  while (k < 40) (
+    term *= (halfx / k) * (halfx / k);
+    sum += term;
+    k += 1;
+  );
+  sum;
+);
+
+function fp_build_window() local(i, a, norm) (
+  norm = 1 / fp_i0(14);
+  i = 0;
+  loop(FP_BD,
+    a = 2 * i / (FP_BD - 1) - 1;
+    fp_window[i] = fp_i0(14 * sqrt(max(1 - a * a, 0))) * norm;
+    i += 1;
+  );
+);
+
+function fp_high_fraction(freq, cutoff, slope) local(z) (
+  freq <= 0 ? (
+    0;
+  ) : (
+    z = slope / FP_ONE_BIT_DB * log(freq / cutoff) / log(2);
+    z >= 60 ? 1 : z <= -60 ? 0 : 1 / (1 + pow(2, -z));
+  );
+);
+
+function fp_finite(value) (
+  value == value && abs(value) < FP_FINITE_LIMIT;
+);
+
+// This guard lives on the kernel boundary, not only in @slider/@gfx: host
+// automation and malformed presets must never create crossed masks.
+function fp_sanitize_cuts()
+  local(step_bins, step_hz, lower, upper, b, changed, changed_count, low_bound, high_bound) (
+  fp_finite(fp_cuts[0]) ? 0 : fp_cuts[0] = fp_last_cuts[0];
+  fp_finite(fp_cuts[1]) ? 0 : fp_cuts[1] = fp_last_cuts[1];
+  fp_finite(fp_cuts[2]) ? 0 : fp_cuts[2] = fp_last_cuts[2];
+  fp_finite(fp_cuts[3]) ? 0 : fp_cuts[3] = fp_last_cuts[3];
+  step_bins = max(2, ceil(fp_slope / 12) * 2);
+  step_hz = max(1, step_bins * srate / FP_BD);
+  lower = max(20, step_hz);
+  upper = min(20000, srate * 0.49);
+  changed = -1; changed_count = 0; b = 0;
+  loop(4,
+    fp_cuts[b] != fp_last_cuts[b] ? ( changed = b; changed_count += 1; );
+    b += 1;
+  );
+  changed_count == 1 ? (
+    low_bound = changed == 0 ? lower : fp_last_cuts[changed-1] + step_hz;
+    high_bound = changed == 3 ? upper : fp_last_cuts[changed+1] - step_hz;
+    high_bound = max(high_bound, low_bound);
+    fp_cuts[changed] = min(max(fp_cuts[changed], low_bound), high_bound);
+  ) : (
+    fp_cuts[0] = min(max(fp_cuts[0], lower), upper - 3*step_hz);
+    fp_cuts[1] = min(max(fp_cuts[1], fp_cuts[0] + step_hz), upper - 2*step_hz);
+    fp_cuts[2] = min(max(fp_cuts[2], fp_cuts[1] + step_hz), upper - step_hz);
+    fp_cuts[3] = min(max(fp_cuts[3], fp_cuts[2] + step_hz), upper);
+  );
+  b = 0;
+  loop(5,
+    fp_finite(fp_bits[b]) ? 0 : fp_bits[b] = fp_last_bits[b];
+    fp_finite(fp_phase[b]) ? 0 : fp_phase[b] = fp_last_phase[b];
+    fp_bits[b] = min(max(fp_bits[b], 0), 1);
+    fp_phase[b] = min(max(fp_phase[b], -180), 180);
+    fp_finite(fp_move[b]) ? 0 : fp_move[b] = fp_last_move[b];
+    fp_move[b] = min(max(floor(fp_move[b] + 0.5), 0), 2);
+    fp_last_bits[b] = fp_bits[b];
+    fp_last_phase[b] = fp_phase[b];
+    fp_last_move[b] = fp_move[b];
+    b += 1;
+  );
+  memcpy(fp_last_cuts, fp_cuts, 4);
+
+  fp_finite(fp_fold_bits) ? 0 : fp_fold_bits = fp_last_fold;
+  fp_fold_bits = min(max(fp_fold_bits, 0), 1);
+  fp_last_fold = fp_fold_bits;
+);
+
+function fp_sanitize_discrete()
+  local(v, b) (
+  v = slider5;
+  (!fp_finite(v) || v < 0 || v > 3) ? v = fp_last_slope : v = floor(v + 0.5);
+  fp_last_slope = v; slider5 = v;
+  fp_slope = v == 0 ? 12 : v == 1 ? 24 : v == 2 ? 48 : 96;
+
+  v = slider6;
+  (!fp_finite(v) || v < 0 || v > 1) ? v = fp_last_mono : v = v > 0.5;
+  fp_last_mono = v; fp_mono_check = v; slider6 = v;
+
+  fp_listen_values[0] = slider14; fp_listen_values[1] = slider24;
+  fp_listen_values[2] = slider34; fp_listen_values[3] = slider44;
+  fp_listen_values[4] = slider54;
+  b = 0;
+  loop(5,
+    v = fp_listen_values[b];
+    (!fp_finite(v) || v < 0 || v > 1) ? v = fp_last_listen[b] : v = v > 0.5;
+    fp_listen_values[b] = v; fp_last_listen[b] = v;
+    b += 1;
+  );
+  slider14 = fp_listen_values[0]; slider24 = fp_listen_values[1];
+  slider34 = fp_listen_values[2]; slider44 = fp_listen_values[3];
+  slider54 = fp_listen_values[4];
+  fp_listen_band = -1;
+  fp_listen_values[0] > 0.5 ? fp_listen_band = 0;
+  fp_listen_band < 0 && fp_listen_values[1] > 0.5 ? fp_listen_band = 1;
+  fp_listen_band < 0 && fp_listen_values[2] > 0.5 ? fp_listen_band = 2;
+  fp_listen_band < 0 && fp_listen_values[3] > 0.5 ? fp_listen_band = 3;
+  fp_listen_band < 0 && fp_listen_values[4] > 0.5 ? fp_listen_band = 4;
+);
+
+function fp_sanitize_side_gain() local(v) (
+  v = fp_side_macro;
+  (!fp_finite(v) || v < -16 || v > 16) ? v = fp_last_side_macro : v = floor(v + 0.5);
+  fp_last_side_macro = v; fp_side_macro = v; slider62 = v;
+
+  v = fp_side_micro;
+  !fp_finite(v) ? v = fp_last_side_micro : v = min(max(v, -100), 100);
+  fp_last_side_micro = v; fp_side_micro = v; slider63 = v;
+
+  v = fp_side_ratio;
+  !fp_finite(v) ? v = fp_last_side_ratio : v = min(max(v, 0), 3);
+  fp_last_side_ratio = v; fp_side_ratio = v; slider64 = v;
+
+  // shift = 2 ^ ((Macro + Micro%) * Bit Ratio)
+  fp_side_gain_target = pow(2, (fp_side_macro + fp_side_micro * 0.01) * fp_side_ratio);
+  fp_finite(fp_side_gain_target) ? 0 : fp_side_gain_target = 1;
+);
+
+function fp_kernel_signature_changed() local(b, changed) (
+  changed = fp_slope != fp_built_slope || fp_listen_band != fp_built_listen ||
+            fp_fold_bits != fp_built_fold;
+  b = 0;
+  loop(4,
+    fp_cuts[b] != fp_built_cuts[b] ? changed = 1;
+    b += 1;
+  );
+  b = 0;
+  loop(5,
+    (fp_bits[b] != fp_built_bits[b] || fp_phase[b] != fp_built_phase[b] ||
+     fp_move[b] != fp_built_move[b]) ? changed = 1;
+    b += 1;
+  );
+  changed;
+);
+
+function fp_save_built_signature() (
+  fp_built_slope = fp_slope;
+  fp_built_listen = fp_listen_band;
+  fp_built_fold = fp_fold_bits;
+  memcpy(fp_built_cuts, fp_cuts, 4);
+  memcpy(fp_built_bits, fp_bits, 5);
+  memcpy(fp_built_phase, fp_phase, 5);
+  memcpy(fp_built_move, fp_move, 5);
+);
+
+function fp_arm_kernel_change() local(b, requested) (
+  requested = fp_listen_band >= 0 || fp_fold_bits > 0;
+  b = 0;
+  loop(5,
+    fp_bits[b] > 0 ? requested = 1;
+    b += 1;
+  );
+  !fp_kernel_valid ? (
+    fp_dirty = requested;
+  ) : requested ? (
+    fp_dirty = fp_kernel_signature_changed();
+  ) : (
+    fp_dirty = fp_active_injection_needed || fp_active_removal_needed ||
+               fp_target_injection_needed || fp_target_removal_needed;
+  );
+);
+
+// Writes the current combined response to fp_tr/fp_ti (Mid injection)
+// and fp_rr (unrotated Side removal).  pow(2, bits) - 1 is the agreed
+// zero-origin bit scale inherited from RCBitRangeGain.
+function fp_prepare_band_gains()
+  local(b, bits, amount, phase) (
+  fp_target_injection_needed = fp_listen_band >= 0;
+  fp_target_removal_needed = 0;
+  b = 0;
+  loop(5,
+    bits = fp_bits[b];
+    amount = pow(2, bits) - 1;
+    fp_listen_band >= 0 ? amount = fp_listen_band == b;
+    phase = fp_phase[b] * $pi / 180;
+    fp_gain_re[b] = amount * cos(phase);
+    fp_gain_im[b] = amount * sin(phase);
+    fp_gain_rem[b] = fp_listen_band < 0 && fp_move[b] == 1 ? amount : 0;
+    // Fold bands leave re/im/rem at zero; fp_transfer folds them per frequency.
+    fp_gain_fold[b] = fp_listen_band < 0 && fp_move[b] == 2 ? amount : 0;
+    fp_gain_fold[b] != 0 ? (
+      fp_gain_re[b] = 0; fp_gain_im[b] = 0;
+      fp_target_removal_needed = 1;
+    );
+    amount != 0 ? fp_target_injection_needed = 1;
+    fp_gain_rem[b] != 0 ? fp_target_removal_needed = 1;
+    b += 1;
+  );
+  fp_fold_amount = fp_listen_band >= 0 ? 0 : pow(2, fp_fold_bits) - 1;
+  fp_fold_amount != 0 ? (
+    fp_target_injection_needed = 1;
+    fp_target_removal_needed = 1;
+  );
+);
+
+function fp_transfer(freq, negative_bin)
+  local(c1, c2, c3, c4, w, b, folded) (
+  c1 = fp_high_fraction(freq, fp_cuts[0], fp_slope);
+  c2 = fp_high_fraction(freq, fp_cuts[1], fp_slope);
+  c3 = fp_high_fraction(freq, fp_cuts[2], fp_slope);
+  c4 = fp_high_fraction(freq, fp_cuts[3], fp_slope);
+  fp_weights[0] = 1 - c1;
+  fp_weights[1] = c1 - c2;
+  fp_weights[2] = c2 - c3;
+  fp_weights[3] = c3 - c4;
+  fp_weights[4] = c4;
+
+  fp_tr = 0; fp_ti = 0; fp_rr = 0; folded = 0;
+  b = 0;
+  loop(5,
+    w = fp_weights[b];
+    fp_tr += w * fp_gain_re[b];
+    fp_ti += w * fp_gain_im[b];
+    fp_rr += w * fp_gain_rem[b];
+    folded += w * fp_gain_fold[b];
+    b += 1;
+  );
+  // Band Fold: +90 degrees at constant power, |injection|^2 + |kept Side|^2 = 1.
+  // Folded after the band weights mix, so a crossover next to an untouched
+  // band keeps constant power instead of dipping 3 dB.
+  folded > 0 ? (
+    folded = min(folded, 1);
+    fp_ti += folded;
+    fp_rr += 1 - sqrt(1 - folded * folded);
+  );
+  // Width fold: broadband (weight 1.0) Side -> Mid at a fixed +90 degrees.  A
+  // real-coefficient fold would leave L untouched and move only R, steering the
+  // image into the left channel instead of narrowing it; the quadrature copy
+  // reaches both channels equally.
+  fp_ti += fp_fold_amount;
+  fp_rr += fp_fold_amount;
+  // Fold and the per-band Move draw on the same Side.  Removing more than all
+  // of it would invert Side rather than silence it.
+  fp_rr > 1 ? fp_rr = 1;
+  negative_bin ? fp_ti = -fp_ti;
+);
+
+function fp_partition_kernel(destination)
+  local(k, i, base) (
+  k = 0;
+  loop(FP_KMAX,
+    base = k * FP_PB2;
+    i = 0;
+    loop(FP_P,
+      fp_fftw[i*2] = fp_ktime[k*FP_P + i];
+      fp_fftw[i*2+1] = 0;
+      i += 1;
+    );
+    i = FP_P;
+    loop(FP_B - FP_P,
+      fp_fftw[i*2] = 0;
+      fp_fftw[i*2+1] = 0;
+      i += 1;
+    );
+    fft(fp_fftw, FP_B); fft_permute(fp_fftw, FP_B);
+    memcpy(destination + base, fp_fftw, FP_PB2);
+    k += 1;
+  );
+);
+
+function fp_build_spectra()
+  local(i, kk, freq, negative_bin, half) (
+  half = FP_BD * 0.5;
+  i = 0;
+  loop(FP_BD,
+    kk = i <= half ? i : FP_BD - i;
+    freq = kk * srate / FP_BD;
+    negative_bin = i > half;
+    fp_transfer(freq, negative_bin);
+    fp_desbuf[i*2] = fp_tr;
+    fp_desbuf[i*2+1] = (i == 0 || i == half) ? 0 : fp_ti;
+    fp_rem_spectrum[i*2] = fp_rr;
+    fp_rem_spectrum[i*2+1] = 0;
+    i += 1;
+  );
+);
+
+function fp_spectrum_to_kernel(source_spectrum, destination)
+  local(i, src, inv, half) (
+  half = FP_BD * 0.5;
+  fft_ipermute(source_spectrum, FP_BD); ifft(source_spectrum, FP_BD);
+  inv = 1 / FP_BD;
+  i = 0;
+  loop(FP_BD,
+    src = i + half; src >= FP_BD ? src -= FP_BD;
+    fp_ktime[i] = source_spectrum[src*2] * inv * fp_window[i];
+    i += 1;
+  );
+  fp_partition_kernel(destination);
+);
+
+function fp_commit_targets() local(words) (
+  words = FP_KMAX * FP_PB2;
+  memcpy(fp_hinj_active, fp_hinj_target, words);
+  memcpy(fp_hrem_active, fp_hrem_target, words);
+  fp_active_injection_needed = fp_target_injection_needed;
+  fp_active_removal_needed = fp_target_removal_needed;
+  fp_fading = 0;
+  fp_fade_pos = 0;
+  fp_arm_kernel_change();
+);
+
+function fp_build_kernels() local(words) (
+  fp_sanitize_cuts();
+  fp_prepare_band_gains();
+  fp_build_spectra();
+  fp_spectrum_to_kernel(fp_desbuf, fp_hinj_target);
+  fp_spectrum_to_kernel(fp_rem_spectrum, fp_hrem_target);
+  fp_save_built_signature();
+  words = FP_KMAX * FP_PB2;
+  fp_kernel_valid ? (
+    fp_fading = 1;
+    fp_fade_pos = 0;
+  ) : (
+    fp_commit_targets();
+    fp_kernel_valid = 1;
+  );
+  fp_dirty = 0;
+  fp_build_clock = 0;
+);
+
+function fp_convolve_bank(hspec, outbuf, mix_mode)
+  local(k, idx, i, out_index, scale, value, alpha) (
+  memset(fp_accum, 0, FP_PB2);
+  k = 0;
+  loop(FP_KMAX,
+    idx = fp_fdl_write - k; idx < 0 ? idx += FP_KMAX;
+    memcpy(fp_tmpc, fp_fdl + idx * FP_PB2, FP_PB2);
+    convolve_c(fp_tmpc, hspec + k * FP_PB2, FP_B);
+    i = 0;
+    loop(FP_PB2,
+      fp_accum[i] += fp_tmpc[i];
+      i += 1;
+    );
+    k += 1;
+  );
+  fft_ipermute(fp_accum, FP_B); ifft(fp_accum, FP_B);
+  scale = 1 / FP_B;
+  i = 0;
+  loop(FP_P,
+    out_index = fp_out_write + i; out_index >= FP_OUTN ? out_index -= FP_OUTN;
+    value = fp_accum[(FP_P + i)*2] * scale;
+    mix_mode == 0 ? (
+      outbuf[out_index] = value;
+    ) : mix_mode == 1 ? (
+      alpha = min((fp_fade_pos + i) / fp_fade_len, 1);
+      outbuf[out_index] = value * (1 - alpha);
+    ) : (
+      alpha = min((fp_fade_pos + i) / fp_fade_len, 1);
+      outbuf[out_index] += value * alpha;
+    );
+    i += 1;
+  );
+);
+
+function fp_zero_output(outbuf) local(i, out_index) (
+  i = 0;
+  loop(FP_P,
+    out_index = fp_out_write + i; out_index >= FP_OUTN ? out_index -= FP_OUTN;
+    outbuf[out_index] = 0;
+    i += 1;
+  );
+);
+
+// One Side FFT feeds both the injection and removal convolutions.
+function fp_run_hop() local(i, source_index) (
+  i = 0;
+  loop(FP_B,
+    source_index = fp_input_write + i; source_index >= FP_B ? source_index -= FP_B;
+    fp_fftw[i*2] = fp_in_side[source_index];
+    fp_fftw[i*2+1] = 0;
+    i += 1;
+  );
+  fft(fp_fftw, FP_B); fft_permute(fp_fftw, FP_B);
+  memcpy(fp_fdl + fp_fdl_write * FP_PB2, fp_fftw, FP_PB2);
+
+  fp_fading ? (
+    fp_zero_output(fp_out_inj); fp_zero_output(fp_out_rem);
+    fp_active_injection_needed ? fp_convolve_bank(fp_hinj_active, fp_out_inj, 1);
+    fp_target_injection_needed ? fp_convolve_bank(fp_hinj_target, fp_out_inj, 2);
+    fp_active_removal_needed ? fp_convolve_bank(fp_hrem_active, fp_out_rem, 1);
+    fp_target_removal_needed ? fp_convolve_bank(fp_hrem_target, fp_out_rem, 2);
+    fp_fade_pos += FP_P;
+    fp_fade_pos >= fp_fade_len ? fp_commit_targets();
+  ) : (
+    fp_active_injection_needed ? fp_convolve_bank(fp_hinj_active, fp_out_inj, 0) : fp_zero_output(fp_out_inj);
+    fp_active_removal_needed ? fp_convolve_bank(fp_hrem_active, fp_out_rem, 0) : fp_zero_output(fp_out_rem);
+  );
+
+  fp_out_write += FP_P; fp_out_write >= FP_OUTN ? fp_out_write -= FP_OUTN;
+  fp_fdl_write += 1; fp_fdl_write >= FP_KMAX ? fp_fdl_write = 0;
+);
+
+function fp_process(side_input) (
+  fp_in_side[fp_input_write] = side_input;
+  fp_input_write += 1; fp_input_write >= FP_B ? fp_input_write = 0;
+  fp_hop_count += 1;
+
+  fp_injection = fp_out_inj[fp_out_read];
+  fp_removal = fp_out_rem[fp_out_read];
+  fp_out_read += 1; fp_out_read >= FP_OUTN ? fp_out_read = 0;
+
+  fp_hop_count >= FP_P ? (
+    fp_hop_count = 0;
+    fp_run_hop();
+  );
+);
+
+function fp_publish_pdc() (
+  pdc_delay = FP_LATENCY;
+  pdc_bot_ch = 0;
+  pdc_top_ch = 2;
+  ext_tail_size = FP_BD + 2 * FP_P + 64;
+);
+
+function fp_request_route(route) (
+  fp_route_boot ? (
+    fp_route_current = route;
+    fp_route_target = route;
+    fp_route_boot = 0;
+  ) : fp_route_fading ? (
+    route != fp_route_target ? fp_route_pending = route;
+  ) : route != fp_route_current ? (
+    fp_route_target = route;
+    fp_route_pos = 0;
+    fp_route_fading = 1;
+  );
+);
+
+function fp_route_values(route) (
+  route == 2 ? (
+    fp_route_l = fp_injection;
+    fp_route_r = fp_injection;
+  ) : route == 1 ? (
+    fp_route_l = fp_mid_out;
+    fp_route_r = fp_mid_out;
+  ) : (
+    fp_route_l = fp_normal_l;
+    fp_route_r = fp_normal_r;
+  );
+);
+
+// @gfx only writes named sliders and this flag.  The audio thread imports the
+// new values here, so GUI drawing never mutates live DSP arrays directly.
+function fp_poll_gui_values() (
+  fp_cuts[0] = slider1; fp_cuts[1] = slider2;
+  fp_cuts[2] = slider3; fp_cuts[3] = slider4;
+  fp_bits[0] = slider11; fp_phase[0] = slider12; fp_move[0] = slider13;
+  fp_bits[1] = slider21; fp_phase[1] = slider22; fp_move[1] = slider23;
+  fp_bits[2] = slider31; fp_phase[2] = slider32; fp_move[2] = slider33;
+  fp_bits[3] = slider41; fp_phase[3] = slider42; fp_move[3] = slider43;
+  fp_bits[4] = slider51; fp_phase[4] = slider52; fp_move[4] = slider53;
+fp_fold_bits = slider61;
+fp_side_macro = slider62; fp_side_micro = slider63; fp_side_ratio = slider64;
+  fp_sanitize_discrete();
+  fp_sanitize_cuts();
+  fp_sanitize_side_gain();
+  slider61 = fp_fold_bits;
+  fp_listen_band >= 0 ? fp_requested_route = 2 : fp_mono_check > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
+  fp_request_route(fp_requested_route);
+  fp_arm_kernel_change();
+);
+
+fp_cuts = 0;
+fp_weights = 8;
+fp_bits = 16;
+fp_phase = 24;
+fp_move = 32;
+fp_last_cuts = 40;
+fp_last_bits = 48;
+fp_last_phase = 56;
+fp_last_move = 112;
+fp_last_listen = 120;
+fp_listen_values = 136;
+fp_gain_re = 88;
+fp_gain_im = 96;
+fp_gain_rem = 104;
+fp_built_cuts = 144;
+fp_built_bits = 152;
+fp_built_phase = 160;
+fp_built_move = 168;
+fp_gain_fold = 176;
+fp_base = 65536;
+fp_top = fp_layout(fp_base);
+memset(fp_base, 0, fp_top - fp_base);
+freembuf(fp_top + 1);
+fp_build_window();
+
+fp_input_write = 0;
+fp_hop_count = 0;
+fp_out_read = 0;
+fp_out_write = FP_P;
+fp_fdl_write = 0;
+fp_dry_write = 0;
+fp_kernel_valid = 0;
+fp_dirty = 0;
+fp_build_clock = FP_REBUILD_INTERVAL;
+fp_listen_band = -1;
+fp_active_injection_needed = 0;
+fp_target_injection_needed = 0;
+fp_active_removal_needed = 0;
+fp_target_removal_needed = 0;
+fp_last_cuts[0] = 200; fp_last_cuts[1] = 1500;
+fp_last_cuts[2] = 7000; fp_last_cuts[3] = 10000;
+memset(fp_last_bits, 0, 5); memset(fp_last_phase, 0, 5);
+memset(fp_last_move, 1, 5); memset(fp_last_listen, 0, 5);
+fp_last_slope = 1; fp_last_mono = 0; fp_mono_check = 0;
+memset(fp_built_cuts, 0, 4); memset(fp_built_bits, 0, 5);
+memset(fp_built_phase, 0, 5); memset(fp_built_move, 0, 5);
+fp_built_slope = -1; fp_built_listen = -2;
+fp_fold_bits = 0; fp_last_fold = 0; fp_built_fold = -1; fp_fold_amount = 0;
+fp_side_macro = 0; fp_side_micro = 0; fp_side_ratio = 1;
+fp_last_side_macro = 0; fp_last_side_micro = 0; fp_last_side_ratio = 1;
+fp_side_gain_target = 1; fp_side_gain_current = 1;
+fp_fading = 0;
+fp_fade_pos = 0;
+fp_fade_len = max(1, floor(srate * 0.05));
+fp_route_current = 0;
+fp_route_target = 0;
+fp_route_pending = -1;
+fp_route_fading = 0;
+fp_route_pos = 0;
+fp_route_len = max(1, floor(srate * 0.05));
+fp_route_boot = 1;
+fp_publish_pdc();
+
+@slider
+
+fp_cuts[0] = slider1; fp_cuts[1] = slider2;
+fp_cuts[2] = slider3; fp_cuts[3] = slider4;
+
+fp_bits[0] = slider11; fp_phase[0] = slider12; fp_move[0] = slider13;
+fp_bits[1] = slider21; fp_phase[1] = slider22; fp_move[1] = slider23;
+fp_bits[2] = slider31; fp_phase[2] = slider32; fp_move[2] = slider33;
+fp_bits[3] = slider41; fp_phase[3] = slider42; fp_move[3] = slider43;
+fp_bits[4] = slider51; fp_phase[4] = slider52; fp_move[4] = slider53;
+fp_fold_bits = slider61;
+fp_side_macro = slider62; fp_side_micro = slider63; fp_side_ratio = slider64;
+
+fp_sanitize_discrete();
+fp_sanitize_cuts();
+fp_sanitize_side_gain();
+slider61 = fp_fold_bits;
+slider1 = fp_cuts[0]; slider2 = fp_cuts[1];
+slider3 = fp_cuts[2]; slider4 = fp_cuts[3];
+fp_listen_band >= 0 ? fp_requested_route = 2 : fp_mono_check > 0.5 ? fp_requested_route = 1 : fp_requested_route = 0;
+fp_request_route(fp_requested_route);
+fp_arm_kernel_change();
+fp_publish_pdc();
+
+@block
+
+fp_build_clock = min(fp_build_clock + samplesblock, FP_REBUILD_INTERVAL);
+fp_gui_changed ? (
+  fp_gui_changed = 0;
+  fp_poll_gui_values();
+);
+fp_dirty && !fp_fading && (!fp_kernel_valid || fp_build_clock >= FP_REBUILD_INTERVAL) ? fp_build_kernels();
+
+@sample
+
+fp_left = spl0; fp_right = spl1;
+fp_finite(fp_left) ? 0 : fp_left = 0;
+fp_finite(fp_right) ? 0 : fp_right = 0;
+fp_mid = (fp_left + fp_right) * 0.5;
+fp_side = (fp_left - fp_right) * 0.5;
+
+fp_dry_left[fp_dry_write] = fp_left;
+fp_dry_right[fp_dry_write] = fp_right;
+fp_dry_read = fp_dry_write - FP_LATENCY;
+fp_dry_read < 0 ? fp_dry_read += FP_DRYN;
+fp_left_delayed = fp_dry_left[fp_dry_read];
+fp_right_delayed = fp_dry_right[fp_dry_read];
+fp_mid_delayed = (fp_left_delayed + fp_right_delayed) * 0.5;
+fp_side_delayed = (fp_left_delayed - fp_right_delayed) * 0.5;
+fp_dry_write += 1; fp_dry_write >= FP_DRYN ? fp_dry_write = 0;
+
+fp_process(fp_side);
+fp_finite(fp_injection) ? 0 : fp_injection = 0;
+fp_finite(fp_removal) ? 0 : fp_removal = 0;
+
+// PurestGain one-pole, so a Side Gain move cannot zipper.
+fp_side_gain_current = ((fp_side_gain_current * FP_SIDE_SMOOTH) + fp_side_gain_target) * FP_SIDE_SMOOTH_INV;
+fp_side_gain_target == 1 && abs(fp_side_gain_current - 1) < 0.000000001 ? fp_side_gain_current = 1;
+fp_finite(fp_side_gain_current) ? 0 : fp_side_gain_current = 1;
+
+fp_mid_out = fp_mid_delayed + fp_injection;
+// Fold first, then lift whatever Side is left.
+fp_side_out = (fp_side_delayed - fp_removal) * fp_side_gain_current;
+fp_normal_l = fp_mid_out + fp_side_out;
+fp_normal_r = fp_mid_out - fp_side_out;
+fp_neutral = !fp_fading && !fp_active_injection_needed && !fp_active_removal_needed && fp_route_current == 0 && !fp_route_fading && fp_side_gain_current == 1;
+
+fp_neutral ? (
+  spl0 = fp_left_delayed;
+  spl1 = fp_right_delayed;
+) : fp_route_fading ? (
+  fp_route_values(fp_route_current);
+  fp_old_l = fp_route_l; fp_old_r = fp_route_r;
+  fp_route_values(fp_route_target);
+  fp_route_alpha = min(fp_route_pos / fp_route_len, 1);
+  spl0 = fp_old_l * (1 - fp_route_alpha) + fp_route_l * fp_route_alpha;
+  spl1 = fp_old_r * (1 - fp_route_alpha) + fp_route_r * fp_route_alpha;
+  fp_route_pos += 1;
+  fp_route_pos >= fp_route_len ? (
+    fp_route_current = fp_route_target;
+    fp_route_fading = 0;
+    fp_route_pos = 0;
+    fp_route_pending >= 0 ? (
+      fp_queued_route = fp_route_pending;
+      fp_route_pending = -1;
+      fp_request_route(fp_queued_route);
+    );
+  );
+) : (
+  fp_route_values(fp_route_current);
+  spl0 = fp_route_l;
+  spl1 = fp_route_r;
+);
+fp_finite(spl0) ? 0 : spl0 = 0;
+fp_finite(spl1) ? 0 : spl1 = 0;
+
+@gfx 900 700
+
+function fp_gui_amount(b) (
+  b == 0 ? slider11 : b == 1 ? slider21 : b == 2 ? slider31 : b == 3 ? slider41 : slider51;
+);
+
+function fp_gui_phase(b) (
+  b == 0 ? slider12 : b == 1 ? slider22 : b == 2 ? slider32 : b == 3 ? slider42 : slider52;
+);
+
+function fp_gui_mode(b) (
+  b == 0 ? slider13 : b == 1 ? slider23 : b == 2 ? slider33 : b == 3 ? slider43 : slider53;
+);
+
+function fp_gui_listen(b) (
+  b == 0 ? slider14 : b == 1 ? slider24 : b == 2 ? slider34 : b == 3 ? slider44 : slider54;
+);
+
+function fp_gui_cut(b) (
+  b == 0 ? slider1 : b == 1 ? slider2 : b == 2 ? slider3 : slider4;
+);
+
+function fp_gui_cut_bounds(b) local(slope, step_bins, step_hz, top) (
+  slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
+  step_bins = max(2, ceil(slope / 12) * 2);
+  step_hz = max(1, step_bins * srate / FP_BD);
+  top = min(20000, srate * 0.49);
+  b == 0 ? ( fp_cut_low = max(20, step_hz); fp_cut_high = slider2-step_hz; ) :
+  b == 1 ? ( fp_cut_low = slider1+step_hz; fp_cut_high = slider3-step_hz; ) :
+  b == 2 ? ( fp_cut_low = slider2+step_hz; fp_cut_high = slider4-step_hz; ) :
+           ( fp_cut_low = slider3+step_hz; fp_cut_high = top; );
+  fp_cut_high = max(fp_cut_high, fp_cut_low);
+);
+
+function fp_gui_write_cut(b, value) (
+  value = floor(value + 0.5);
+  fp_gui_cut_bounds(b);
+  value = min(max(value, fp_cut_low), fp_cut_high);
+  b == 0 ? ( slider1 = value; slider_automate(slider1); ) :
+  b == 1 ? ( slider2 = value; slider_automate(slider2); ) :
+  b == 2 ? ( slider3 = value; slider_automate(slider3); ) :
+           ( slider4 = value; slider_automate(slider4); );
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_amount(b, value) (
+  value = floor(value / 0.05 + 0.5) * 0.05;
+  value = min(max(value, 0), 1);
+  b == 0 ? ( slider11 = value; slider_automate(slider11); ) :
+  b == 1 ? ( slider21 = value; slider_automate(slider21); ) :
+  b == 2 ? ( slider31 = value; slider_automate(slider31); ) :
+  b == 3 ? ( slider41 = value; slider_automate(slider41); ) :
+           ( slider51 = value; slider_automate(slider51); );
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_phase(b, value) (
+  value = floor(value + 0.5);
+  value = min(max(value, -180), 180);
+  b == 0 ? ( slider12 = value; slider_automate(slider12); ) :
+  b == 1 ? ( slider22 = value; slider_automate(slider22); ) :
+  b == 2 ? ( slider32 = value; slider_automate(slider32); ) :
+  b == 3 ? ( slider42 = value; slider_automate(slider42); ) :
+           ( slider52 = value; slider_automate(slider52); );
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_mode(b, value) (
+  b == 0 ? ( slider13 = value; slider_automate(slider13); ) :
+  b == 1 ? ( slider23 = value; slider_automate(slider23); ) :
+  b == 2 ? ( slider33 = value; slider_automate(slider33); ) :
+  b == 3 ? ( slider43 = value; slider_automate(slider43); ) :
+           ( slider53 = value; slider_automate(slider53); );
+  fp_gui_changed = 1;
+);
+
+function fp_draw_field(x, y, w, h, label, value, style, hot) (
+  gfx_set(0.13, 0.15, 0.19, 1); gfx_rect(x, y, w, h, 1);
+  hot ? gfx_set(0.45, 0.62, 0.85, 1) : gfx_set(0.25, 0.28, 0.34, 1);
+  gfx_rect(x, y, w, h, 0);
+  gfx_set(0.56, 0.61, 0.69, 1); gfx_x = x+8; gfx_y = y+7; gfx_drawstr(label, 0);
+  gfx_set(0.94, 0.95, 0.98, 1); gfx_x = x+70; gfx_y = y+7;
+  style == 0 ? gfx_printf("%+.0f", value) :
+  style == 1 ? gfx_printf("%+.1f%%", value) : gfx_printf("%.2f", value);
+);
+
+function fp_gui_write_fold(value) (
+  value = floor(value / 0.05 + 0.5) * 0.05;
+  value = min(max(value, 0), 1);
+  slider61 = value; slider_automate(slider61);
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_side_macro(value) (
+  value = floor(value + 0.5);
+  value = min(max(value, -16), 16);
+  slider62 = value; slider_automate(slider62);
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_side_micro(value) (
+  value = min(max(value, -100), 100);
+  slider63 = value; slider_automate(slider63);
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_side_ratio(value) (
+  value = floor(value / 0.25 + 0.5) * 0.25;
+  value = min(max(value, 0), 3);
+  slider64 = value; slider_automate(slider64);
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_listen(b, value) (
+  slider14 = 0; slider_automate(slider14);
+  slider24 = 0; slider_automate(slider24);
+  slider34 = 0; slider_automate(slider34);
+  slider44 = 0; slider_automate(slider44);
+  slider54 = 0; slider_automate(slider54);
+  value > 0.5 ? (
+    b == 0 ? ( slider14 = 1; slider_automate(slider14); ) :
+    b == 1 ? ( slider24 = 1; slider_automate(slider24); ) :
+    b == 2 ? ( slider34 = 1; slider_automate(slider34); ) :
+    b == 3 ? ( slider44 = 1; slider_automate(slider44); ) :
+             ( slider54 = 1; slider_automate(slider54); );
+  );
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_slope(value) (
+  slider5 = min(max(floor(value + 0.5), 0), 3);
+  slider_automate(slider5);
+  fp_gui_changed = 1;
+);
+
+function fp_gui_write_mono(value) (
+  slider6 = value > 0.5;
+  slider_automate(slider6);
+  fp_gui_changed = 1;
+);
+
+function fp_freq_to_x(freq) (
+  fp_strip_x + log(max(freq, 20) / 20) / log(fp_gui_max_freq / 20) * fp_strip_w;
+);
+
+function fp_x_to_freq(x) (
+  20 * pow(fp_gui_max_freq / 20, min(max((x - fp_strip_x) / fp_strip_w, 0), 1));
+);
+
+function fp_gui_high(freq, cutoff, slope) local(z) (
+  freq <= 0 ? 0 : (
+    z = slope / FP_ONE_BIT_DB * log(freq / cutoff) / log(2);
+    z >= 60 ? 1 : z <= -60 ? 0 : 1 / (1 + pow(2, -z));
+  );
+);
+
+function fp_gui_weight(b, freq)
+  local(slope, c1, c2, c3, c4) (
+  slope = slider5 == 0 ? 12 : slider5 == 1 ? 24 : slider5 == 2 ? 48 : 96;
+  c1 = fp_gui_high(freq, slider1, slope);
+  c2 = fp_gui_high(freq, slider2, slope);
+  c3 = fp_gui_high(freq, slider3, slope);
+  c4 = fp_gui_high(freq, slider4, slope);
+  b == 0 ? 1-c1 : b == 1 ? c1-c2 : b == 2 ? c2-c3 : b == 3 ? c3-c4 : c4;
+);
+
+function fp_set_band_color(b, alpha) (
+  b == 0 ? gfx_set(0.26, 0.72, 1.00, alpha) :
+  b == 1 ? gfx_set(0.32, 0.92, 0.70, alpha) :
+  b == 2 ? gfx_set(0.95, 0.80, 0.30, alpha) :
+  b == 3 ? gfx_set(1.00, 0.48, 0.34, alpha) :
+           gfx_set(0.78, 0.48, 1.00, alpha);
+);
+
+function fp_draw_knob(cx, cy, radius, normalized, hot)
+  local(a0, a1, a, px, py, i) (
+  hot ? gfx_set(0.22, 0.25, 0.31, 1) : gfx_set(0.15, 0.17, 0.21, 1);
+  gfx_circle(cx, cy, radius, 1, 1);
+  gfx_set(0.38, 0.41, 0.48, 1);
+  gfx_circle(cx, cy, radius, 0, 1);
+  a0 = -2.35; a1 = a0 + min(max(normalized, 0), 1) * 4.7;
+  fp_set_band_color(fp_draw_band, 1);
+  i = 0;
+  loop(24,
+    a = a0 + (a1-a0) * i / 23;
+    px = cx + cos(a) * (radius + 4);
+    py = cy + sin(a) * (radius + 4);
+    i == 0 ? ( gfx_x = px; gfx_y = py; ) : gfx_lineto(px, py, 1);
+    i += 1;
+  );
+  gfx_set(0.94, 0.95, 0.98, 1);
+  gfx_x = cx; gfx_y = cy;
+  gfx_lineto(cx + cos(a1) * (radius - 6), cy + sin(a1) * (radius - 6), 1);
+);
+
+function fp_draw_button(x, y, w, h, label, active, hot) (
+  active ? gfx_set(0.18, 0.52, 0.72, 1) : hot ? gfx_set(0.23, 0.25, 0.30, 1) : gfx_set(0.15, 0.17, 0.21, 1);
+  gfx_rect(x, y, w, h, 1);
+  gfx_set(0.82, 0.85, 0.90, 1);
+  gfx_x = x + 8; gfx_y = y + 6; gfx_drawstr(label, 1, x+w-8, y+h);
+);
+
+function fp_inside(x, y, w, h) (
+  mouse_x >= x && mouse_x <= x+w && mouse_y >= y && mouse_y <= y+h;
+);
+
+function fp_parse_edit() local(i, c, value, fraction, decimal, negative) (
+  i = 0; value = 0; fraction = 1; decimal = 0; negative = 0;
+  loop(fp_edit_len,
+    c = fp_edit_buffer[i];
+    c == 45 ? negative = 1 : c == 46 ? decimal = 1 : (
+      decimal ? ( fraction *= 0.1; value += (c-48) * fraction; ) : value = value*10 + c-48;
+    );
+    i += 1;
+  );
+  negative ? value = -value;
+  value;
+);
+
+fp_ui_scale = gfx_ext_retina > 1 ? gfx_ext_retina : 1;
+gfx_setfont(1, "Arial", 16 * min(fp_ui_scale, 1.5));
+gfx_clear = 0x101318;
+fp_gui_max_freq = min(20000, srate * 0.49);
+fp_strip_x = 42; fp_strip_y = 74; fp_strip_w = max(gfx_w - 84, 400); fp_strip_h = 112;
+fp_col_w = fp_strip_w / 5;
+fp_edit_buffer = 64;
+
+gfx_set(0.93, 0.95, 0.98, 1); gfx_x = 42; gfx_y = 24;
+gfx_drawstr("Freqphaser 1.2", 0);
+gfx_set(0.56, 0.61, 0.69, 1); gfx_x = 190; gfx_y = 27;
+gfx_drawstr("five-band Side -> Mid phase router + width", 0);
+
+gfx_set(0.08, 0.10, 0.13, 1); gfx_rect(fp_strip_x, fp_strip_y, fp_strip_w, fp_strip_h, 1);
+gfx_set(0.25, 0.28, 0.34, 1); gfx_rect(fp_strip_x, fp_strip_y, fp_strip_w, fp_strip_h, 0);
+
+// Draw the realized design masks, not misleading solid band rectangles.
+fp_band = 0;
+loop(5,
+  fp_set_band_color(fp_band, 0.9);
+  fp_i = 0;
+  loop(floor(fp_strip_w)+1,
+    fp_fx = fp_strip_x + fp_i;
+    fp_ff = fp_x_to_freq(fp_fx);
+    fp_fy = fp_strip_y + fp_strip_h - fp_gui_weight(fp_band, fp_ff) * (fp_strip_h-12) - 6;
+    fp_i == 0 ? ( gfx_x = fp_fx; gfx_y = fp_fy; ) : gfx_lineto(fp_fx, fp_fy, 1);
+    fp_i += 1;
+  );
+  fp_band += 1;
+);
+
+fp_hit = -1;
+fp_band = 0;
+loop(4,
+  fp_hx = fp_freq_to_x(fp_gui_cut(fp_band));
+  fp_set_band_color(fp_band+1, 1);
+  gfx_line(fp_hx, fp_strip_y, fp_hx, fp_strip_y+fp_strip_h, 1);
+  gfx_circle(fp_hx, fp_strip_y+fp_strip_h*0.5, 6, 1, 1);
+  abs(mouse_x-fp_hx) <= 10 && mouse_y >= fp_strip_y && mouse_y <= fp_strip_y+fp_strip_h ? fp_hit = 100+fp_band;
+  gfx_set(0.80, 0.83, 0.88, 1); gfx_x = fp_hx-24; gfx_y = fp_strip_y+fp_strip_h+5;
+  gfx_printf("%.0f", fp_gui_cut(fp_band));
+  fp_band += 1;
+);
+
+fp_band = 0;
+loop(5,
+  fp_cx = fp_strip_x + fp_col_w*(fp_band+0.5);
+  fp_amount_y = 295; fp_phase_y = 415;
+  fp_hot_amount = (mouse_x-fp_cx)*(mouse_x-fp_cx) + (mouse_y-fp_amount_y)*(mouse_y-fp_amount_y) <= 34*34;
+  fp_hot_phase = (mouse_x-fp_cx)*(mouse_x-fp_cx) + (mouse_y-fp_phase_y)*(mouse_y-fp_phase_y) <= 34*34;
+  fp_hot_amount ? fp_hit = 200+fp_band;
+  fp_hot_phase ? fp_hit = 300+fp_band;
+  fp_draw_band = fp_band;
+  fp_draw_knob(fp_cx, fp_amount_y, 30, fp_gui_amount(fp_band), fp_hot_amount);
+  fp_draw_knob(fp_cx, fp_phase_y, 30, (fp_gui_phase(fp_band)+180)/360, fp_hot_phase);
+  // "90" snaps Phase to +90, the angle at which no channel cancels.  Lit while
+  // Phase sits at +-90; hidden in Fold, which is always +90.
+  fp_gui_mode(fp_band) < 1.5 ? (
+    fp_hot_snap = fp_inside(fp_cx+40, fp_phase_y-12, 38, 24);
+    fp_hot_snap ? fp_hit = 700+fp_band;
+    fp_draw_button(fp_cx+40, fp_phase_y-12, 38, 24, "90", abs(abs(fp_gui_phase(fp_band)) - 90) < 0.5, fp_hot_snap);
+  );
+  gfx_set(0.68, 0.72, 0.79, 1); gfx_x = fp_cx-28; gfx_y = 235; gfx_drawstr("AMOUNT", 0);
+  gfx_x = fp_cx-22; gfx_y = 355; gfx_drawstr("PHASE", 0);
+  gfx_set(0.94, 0.95, 0.98, 1); gfx_x = fp_cx-30; gfx_y = 329;
+  gfx_printf("%.2f bit", fp_gui_amount(fp_band));
+  gfx_x = fp_cx-28; gfx_y = 449;
+  fp_gui_mode(fp_band) > 1.5 ? gfx_drawstr("+90 fold", 0) : gfx_printf("%+.0f deg", fp_gui_phase(fp_band));
+
+  fp_bx = fp_strip_x + fp_col_w*fp_band + 10; fp_bw = fp_col_w-20;
+  fp_hot_mode = fp_inside(fp_bx, 490, fp_bw, 30);
+  fp_hot_listen = fp_inside(fp_bx, 528, fp_bw, 30);
+  fp_hot_mode ? fp_hit = 400+fp_band;
+  fp_hot_listen ? fp_hit = 500+fp_band;
+  // Separate statements: an assignment inside a nested ternary is an EEL2 trap.
+  #fp_mode = "ADD";
+  fp_gui_mode(fp_band) > 0.5 ? #fp_mode = "MOVE";
+  fp_gui_mode(fp_band) > 1.5 ? #fp_mode = "FOLD";
+  fp_draw_button(fp_bx, 490, fp_bw, 30, #fp_mode, fp_gui_mode(fp_band)>0.5, fp_hot_mode);
+  fp_draw_button(fp_bx, 528, fp_bw, 30, "LISTEN", fp_gui_listen(fp_band)>0.5, fp_hot_listen);
+  fp_band += 1;
+);
+
+fp_hot_slope = fp_inside(42, 578, 170, 30); fp_hot_slope ? fp_hit = 600;
+fp_hot_mono = fp_inside(224, 578, 150, 30); fp_hot_mono ? fp_hit = 601;
+slider5 == 0 ? #fp_slope_text = "SLOPE 12 dB/oct" : slider5 == 1 ? #fp_slope_text = "SLOPE 24 dB/oct" : slider5 == 2 ? #fp_slope_text = "SLOPE 48 dB/oct" : #fp_slope_text = "SLOPE 96 dB/oct";
+fp_draw_button(42, 578, 170, 30, #fp_slope_text, 0, fp_hot_slope);
+fp_draw_button(224, 578, 150, 30, "MONO CHECK", slider6>0.5, fp_hot_mono);
+
+// ---- Width -------------------------------------------------------------
+gfx_set(0.08, 0.10, 0.13, 1); gfx_rect(42, 620, gfx_w-84, 68, 1);
+gfx_set(0.25, 0.28, 0.34, 1); gfx_rect(42, 620, gfx_w-84, 68, 0);
+gfx_set(0.68, 0.72, 0.79, 1); gfx_x = 54; gfx_y = 628; gfx_drawstr("WIDTH", 0);
+
+fp_fold_amt = pow(2, slider61) - 1;
+fp_side_g = pow(2, (slider62 + slider63 * 0.01) * slider64);
+gfx_set(0.94, 0.95, 0.98, 1); gfx_x = 54; gfx_y = 656;
+gfx_printf("%.0f%%", (1 - fp_fold_amt) * fp_side_g * 100);
+
+fp_hot_fold = (mouse_x-176)*(mouse_x-176) + (mouse_y-654)*(mouse_y-654) <= 30*30;
+fp_hot_fold ? fp_hit = 610;
+fp_draw_band = 0;
+fp_draw_knob(176, 654, 26, slider61, fp_hot_fold);
+gfx_set(0.68, 0.72, 0.79, 1); gfx_x = 148; gfx_y = 628; gfx_drawstr("FOLD", 0);
+gfx_set(0.94, 0.95, 0.98, 1); gfx_x = 146; gfx_y = 686-6;
+gfx_printf("%.2f bit", slider61);
+
+fp_hot_macro = fp_inside(250, 640, 140, 28); fp_hot_macro ? fp_hit = 611;
+fp_hot_micro = fp_inside(404, 640, 140, 28); fp_hot_micro ? fp_hit = 612;
+fp_hot_ratio = fp_inside(558, 640, 140, 28); fp_hot_ratio ? fp_hit = 613;
+fp_draw_field(250, 640, 140, 28, "MACRO", slider62, 0, fp_hot_macro);
+fp_draw_field(404, 640, 140, 28, "MICRO", slider63, 1, fp_hot_micro);
+fp_draw_field(558, 640, 140, 28, "RATIO", slider64, 2, fp_hot_ratio);
+gfx_set(0.56, 0.61, 0.69, 1); gfx_x = 712; gfx_y = 648;
+gfx_drawstr("Side gain, bit-accurate", 0);
+
+fp_left_now = mouse_cap & 1;
+fp_right_now = mouse_cap & 2;
+fp_left_pressed = fp_left_now && !(fp_mouse_last & 1);
+fp_right_pressed = fp_right_now && !(fp_mouse_last & 2);
+fp_left_released = !fp_left_now && (fp_mouse_last & 1);
+
+fp_left_pressed && fp_hit >= 0 ? (
+  fp_hit >= 100 && fp_hit < 200 ? ( fp_drag_type = 1; fp_drag_band = fp_hit-100; ) :
+  fp_hit >= 200 && fp_hit < 300 ? (
+    fp_drag_type = 2; fp_drag_band = fp_hit-200;
+  ) : fp_hit >= 300 && fp_hit < 400 ? (
+    fp_drag_type = 3; fp_drag_band = fp_hit-300;
+  ) : fp_hit >= 400 && fp_hit < 500 ? (
+    fp_band = fp_hit-400; fp_gui_write_mode(fp_band, (fp_gui_mode(fp_band) + 1) % 3); fp_drag_type = 0;
+  ) : fp_hit >= 500 && fp_hit < 600 ? (
+    fp_band = fp_hit-500; fp_gui_write_listen(fp_band, 1-fp_gui_listen(fp_band)); fp_drag_type = 0;
+  ) : fp_hit == 600 ? ( fp_gui_write_slope((slider5+1)%4); fp_drag_type = 0; )
+    : fp_hit == 601 ? ( fp_gui_write_mono(1-slider6); fp_drag_type = 0; )
+    : fp_hit == 610 ? ( fp_drag_type = 4; ) : fp_hit == 611 ? ( fp_drag_type = 5; )
+    : fp_hit == 612 ? ( fp_drag_type = 6; ) : fp_hit == 613 ? ( fp_drag_type = 7; );
+  fp_drag_y = mouse_y;
+  fp_drag_value = fp_drag_type == 2 ? fp_gui_amount(fp_drag_band) :
+                  fp_drag_type == 3 ? fp_gui_phase(fp_drag_band) :
+                  fp_drag_type == 4 ? slider61 : fp_drag_type == 5 ? slider62 :
+                  fp_drag_type == 6 ? slider63 : fp_drag_type == 7 ? slider64 : 0;
+);
+
+fp_left_pressed && fp_hit >= 700 && fp_hit < 800 ? fp_gui_write_phase(fp_hit-700, 90);
+
+fp_left_now && fp_drag_type == 1 ? fp_gui_write_cut(fp_drag_band, fp_x_to_freq(mouse_x));
+fp_left_now && fp_drag_type == 2 ? fp_gui_write_amount(fp_drag_band, fp_drag_value + (fp_drag_y-mouse_y)*0.005);
+fp_left_now && fp_drag_type == 3 ? fp_gui_write_phase(fp_drag_band, fp_drag_value + (fp_drag_y-mouse_y));
+fp_left_now && fp_drag_type == 4 ? fp_gui_write_fold(fp_drag_value + (fp_drag_y-mouse_y)*0.005);
+fp_left_now && fp_drag_type == 5 ? fp_gui_write_side_macro(fp_drag_value + (fp_drag_y-mouse_y)*0.05);
+fp_left_now && fp_drag_type == 6 ? fp_gui_write_side_micro(fp_drag_value + (fp_drag_y-mouse_y)*0.5);
+fp_left_now && fp_drag_type == 7 ? fp_gui_write_side_ratio(fp_drag_value + (fp_drag_y-mouse_y)*0.005);
+fp_left_released ? fp_drag_type = 0;
+
+mouse_wheel != 0 && fp_hit >= 200 && fp_hit < 300 ? (
+  fp_band = fp_hit-200; fp_gui_write_amount(fp_band, fp_gui_amount(fp_band) + sign(mouse_wheel)*0.05);
+);
+mouse_wheel != 0 && fp_hit >= 300 && fp_hit < 400 ? (
+  fp_band = fp_hit-300; fp_gui_write_phase(fp_band, fp_gui_phase(fp_band) + sign(mouse_wheel));
+);
+mouse_wheel != 0 && fp_hit == 610 ? fp_gui_write_fold(slider61 + sign(mouse_wheel)*0.05);
+mouse_wheel != 0 && fp_hit == 611 ? fp_gui_write_side_macro(slider62 + sign(mouse_wheel));
+mouse_wheel != 0 && fp_hit == 612 ? fp_gui_write_side_micro(slider63 + sign(mouse_wheel));
+mouse_wheel != 0 && fp_hit == 613 ? fp_gui_write_side_ratio(slider64 + sign(mouse_wheel)*0.25);
+mouse_wheel = 0;
+
+fp_right_pressed && ((fp_hit >= 100 && fp_hit < 400) || (fp_hit >= 610 && fp_hit <= 613)) ? (
+  fp_edit_target = fp_hit;
+  fp_edit_len = 0;
+);
+
+fp_edit_target >= 100 ? (
+  gfx_set(0.04, 0.05, 0.07, 0.96); gfx_rect(gfx_w*0.5-150, 198, 300, 48, 1);
+  gfx_set(0.94, 0.95, 0.98, 1); gfx_x = gfx_w*0.5-136; gfx_y = 212;
+  gfx_drawstr("Type value, Enter to apply", 0);
+  while ((fp_key = gfx_getchar()) > 0) (
+    fp_key == 13 ? (
+      fp_edit_len > 0 ? (
+        fp_edit_value = fp_parse_edit();
+        fp_edit_target < 200 ? fp_gui_write_cut(fp_edit_target-100, fp_edit_value) :
+        fp_edit_target < 300 ? fp_gui_write_amount(fp_edit_target-200, fp_edit_value) :
+        fp_edit_target < 400 ? fp_gui_write_phase(fp_edit_target-300, fp_edit_value) :
+        fp_edit_target == 610 ? fp_gui_write_fold(fp_edit_value) :
+        fp_edit_target == 611 ? fp_gui_write_side_macro(fp_edit_value) :
+        fp_edit_target == 612 ? fp_gui_write_side_micro(fp_edit_value) :
+                                fp_gui_write_side_ratio(fp_edit_value);
+      );
+      fp_edit_target = -1; fp_edit_len = 0;
+    ) : fp_key == 27 ? ( fp_edit_target = -1; fp_edit_len = 0; )
+      : fp_key == 8 ? ( fp_edit_len > 0 ? ( fp_edit_len = fp_edit_len - 1; ); )
+      : (((fp_key >= 48 && fp_key <= 57) || fp_key == 45 || fp_key == 46) && fp_edit_len < 20 ? (
+          fp_edit_buffer[fp_edit_len] = fp_key; fp_edit_len += 1;
+        ););
+  );
+);
+
+fp_mouse_last = mouse_cap;

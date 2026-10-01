@@ -17,6 +17,9 @@ class BandSetting:
     bits: float
     phase_deg: float
     move: bool
+    # Constant-power fold: Side -> Mid at a fixed +90 degrees, removing only as
+    # much Side as keeps |injection|^2 + |kept Side|^2 == 1.  Ignores phase_deg.
+    fold: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,13 +222,23 @@ def transfer_at(
 
     injection = 0j
     removal = 0.0
+    folded = 0.0
     for weight, setting in zip(
         band_weights(freq, cuts, slope_db_oct), settings, strict=True
     ):
         amount = amount_from_bits(setting.bits)
+        if setting.fold:
+            folded += weight * amount
+            continue
         injection += weight * amount * phase_factor(setting.phase_deg)
         if setting.move:
             removal += weight * amount
+    # Folded per frequency, after the band weights are mixed, so a crossover
+    # between a folded and an untouched band keeps constant power too.
+    if folded > 0.0:
+        folded = min(folded, 1.0)
+        injection += folded * 1j
+        removal += 1.0 - math.sqrt(1.0 - folded * folded)
     fold = amount_from_bits(fold_bits)
     injection += fold * 1j
     removal += fold

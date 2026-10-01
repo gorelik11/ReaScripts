@@ -208,7 +208,7 @@ _EXPECTED_WIDTH_SLIDERS = {
 }
 
 
-def assert_distinct_desc(source: str) -> None:
+def assert_distinct_desc(source: str, version: str = "1.1") -> None:
     """REAPER identifies a JSFX by its desc line, NOT by its filename.
 
     A new version left with the old desc is invisible: the FX browser shows
@@ -219,15 +219,21 @@ def assert_distinct_desc(source: str) -> None:
     desc = next(
         line for line in source.splitlines() if line.startswith("desc:")
     )
-    assert "1.1" in desc, desc
+    assert f"Freqphaser {version} -" in desc, desc
     assert "Freqphaser 1.0 -" not in desc, desc
 
 
-def assert_width_manifest(source: str) -> None:
+def assert_width_manifest(
+    source: str, band_modes: str = "0,1,1{Add,Move}", band_mode_default: str = "0"
+) -> None:
     records = _slider_records(source)
 
-    # Every band slider keeps its exact declaration.
-    for number, expected in _EXPECTED_SLIDERS.items():
+    # Every band slider keeps its exact declaration.  A Mode slider may only
+    # widen its range in place: same number, same default, same name.
+    expected_sliders = dict(_EXPECTED_SLIDERS)
+    for band, base in enumerate((10, 20, 30, 40, 50), start=1):
+        expected_sliders[base + 3] = (band_mode_default, band_modes, f"-B{band} Mode")
+    for number, expected in expected_sliders.items():
         assert records[number] == expected, (number, records.get(number), expected)
 
     for number, expected in _EXPECTED_WIDTH_SLIDERS.items():
@@ -279,3 +285,48 @@ def assert_width_manifest(source: str) -> None:
     assert re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?[eE][+-]?\d+").search(
         executable
     ) is None
+
+
+def assert_fold_mode_structure(source: str) -> None:
+    """Band Mode 2 = constant-power Fold at +90 degrees, folded per frequency."""
+
+    executable = "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+
+    # Mode is sanitized as a 0/1/2 integer; the 1.1 boolean squash would turn
+    # Fold (2) back into Move.
+    assert "fp_move[b] = fp_move[b] > 0.5;" not in executable
+    assert "fp_move[b] = min(max(floor(fp_move[b] + 0.5), 0), 2);" in executable
+
+    gains = source.split("function fp_prepare_band_gains", 1)[1].split(
+        "function fp_transfer", 1
+    )[0]
+    assert "fp_move[b] == 1 ? amount : 0" in gains
+    assert "fp_gain_fold[b]" in gains
+
+    transfer = source.split("function fp_transfer", 1)[1].split(
+        "function fp_partition_kernel", 1
+    )[0]
+    assert "folded += w * fp_gain_fold[b];" in transfer
+    assert "fp_ti += folded;" in transfer
+    assert "fp_rr += 1 - sqrt(1 - folded * folded);" in transfer
+    # The fold must be added before the negative-bin conjugation.
+    assert transfer.index("fp_ti += folded;") < transfer.index("negative_bin ? fp_ti = -fp_ti;")
+
+    assert "fp_gain_fold = 176;" in source
+
+    # GUI cycles ADD -> MOVE -> FOLD.
+    assert '"FOLD"' in source
+    assert "(fp_gui_mode(fp_band) + 1) % 3" in source
+
+
+def assert_phase_snap_buttons(source: str) -> None:
+    """A small per-band "90" button snaps Phase to +90 (GUI only, no new slider)."""
+
+    gfx = source.split("@gfx", 1)[1]
+    # Drawn and hit-tested next to the Phase knob, hidden in Fold mode where
+    # Phase is ignored.
+    assert "fp_hit = 700+fp_band;" in gfx
+    assert 'fp_draw_button(fp_cx+40, fp_phase_y-12, 38, 24, "90"' in gfx
+    # A standalone press handler, not another branch of the nested ternary.
+    assert "fp_left_pressed && fp_hit >= 700 && fp_hit < 800 ? fp_gui_write_phase(fp_hit-700, 90);" in gfx
+    assert max(_slider_records(source)) == 64

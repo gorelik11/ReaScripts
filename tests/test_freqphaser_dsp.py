@@ -383,3 +383,97 @@ def test_full_fold_moves_all_side_into_the_centre():
     assert max(abs(a - b) for a, b in zip(left, right, strict=True)) < 0.001
     mono = [(a + b) * 0.5 for a, b in zip(left, right, strict=True)]
     assert max(abs(v) for v in mono) > 0.97
+
+
+# ------------------------------------------------------ V1.2 constant-power FOLD
+
+PLUGIN_12 = Path("JSFX/Freqphaser 1.2")
+_CUTS = (200.0, 1500.0, 7000.0, 10000.0)
+
+
+def _fold_all(bits, phase=0.0):
+    return [dsp.BandSetting(bits, phase, False, fold=True)] * 5
+
+
+def _lr_power(injection, removal):
+    """Output power of an L-only and an R-only unit source (Mid = +-Side = 1/2)."""
+    side_kept = 1.0 - removal
+    out = {}
+    for name, sign in (("L", 1.0), ("R", -1.0)):
+        mid = 0.5 + injection * 0.5 * sign
+        side = 0.5 * sign * side_kept
+        out[name] = abs(mid + side) ** 2 + abs(mid - side) ** 2
+    return out
+
+
+def test_fold_mode_at_one_bit_is_full_mono_at_ninety_degrees():
+    injection, removal = dsp.transfer_at(900.0, _CUTS, 24, _fold_all(1.0))
+    assert math.isclose(injection.real, 0.0, abs_tol=1e-12)
+    assert math.isclose(injection.imag, 1.0, abs_tol=1e-12)
+    assert math.isclose(removal, 1.0, abs_tol=1e-12)
+
+
+def test_fold_mode_is_constant_power_at_every_amount():
+    for i in range(21):
+        bits = i * 0.05
+        injection, removal = dsp.transfer_at(900.0, _CUTS, 24, _fold_all(bits))
+        assert math.isclose(abs(injection) ** 2 + (1 - removal) ** 2, 1.0, abs_tol=1e-12), bits
+
+
+def test_fold_mode_never_cancels_either_channel():
+    # 0 and 180 degrees Move cancel one side; Fold must keep L and R equal
+    # and at their original power (1.0) at every amount.
+    for i in range(21):
+        power = _lr_power(*dsp.transfer_at(900.0, _CUTS, 24, _fold_all(i * 0.05)))
+        assert math.isclose(power["L"], 1.0, abs_tol=1e-12), (i, power)
+        assert math.isclose(power["R"], 1.0, abs_tol=1e-12), (i, power)
+
+
+def test_fold_mode_ignores_the_phase_knob():
+    a = dsp.transfer_at(900.0, _CUTS, 24, _fold_all(0.6, phase=0.0))
+    b = dsp.transfer_at(900.0, _CUTS, 24, _fold_all(0.6, phase=137.0))
+    assert a == b
+
+
+def test_fold_mode_stays_constant_power_across_a_crossover():
+    # Band 2 fully folded, band 3 untouched: at the shared crossover each band
+    # weighs 1/2.  Power is folded per frequency, so no -3 dB hole appears.
+    settings = [dsp.BandSetting(0.0, 0.0, False)] * 5
+    settings[1] = dsp.BandSetting(1.0, 0.0, False, fold=True)
+    for freq in (1000.0, 1500.0, 2000.0, 3000.0):
+        injection, removal = dsp.transfer_at(freq, _CUTS, 24, settings)
+        assert math.isclose(abs(injection) ** 2 + (1 - removal) ** 2, 1.0, abs_tol=1e-12), freq
+
+
+def test_realized_fold_mode_kernel_is_constant_power():
+    size = 4096
+    injection, removal = dsp.build_transfer_spectra(size, 48000.0, _CUTS, 24, _fold_all(0.5))
+    inj = dsp.realize_kernel(injection)
+    rem = dsp.realize_kernel(removal)
+    for k in range(40, size // 2 - 40):
+        power = abs(inj[k]) ** 2 + abs(1 - rem[k]) ** 2
+        assert math.isclose(power, 1.0, abs_tol=1e-5), (k, power)
+
+
+def test_freqphaser_12_adds_fold_mode_without_moving_any_parameter():
+    source = PLUGIN_12.read_text()
+    # Move is the default mode in 1.2; Add stays available as an option.
+    gates.assert_width_manifest(
+        source, band_modes="0,2,1{Add,Move,Fold}", band_mode_default="1"
+    )
+    gates.assert_distinct_desc(source, version="1.2")
+    gates.assert_fold_mode_structure(source)
+
+
+def test_freqphaser_12_keeps_every_v11_engine_invariant():
+    source = PLUGIN_12.read_text()
+    gates.assert_page_safe_layout(source)
+    gates.assert_no_nested_ternary_compound_assignments(source)
+    gates.assert_dsp_structure(source)
+    gates.assert_transition_structure(source)
+    gates.assert_gui_structure(source)
+    gates.assert_realtime_safety(source)
+
+
+def test_freqphaser_12_has_ninety_degree_snap_buttons():
+    gates.assert_phase_snap_buttons(PLUGIN_12.read_text())
