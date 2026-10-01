@@ -29,6 +29,12 @@ True brickwall lookahead limiter with switchable Light/HQ modes.
 | Peak Oversampling | 1x/2x/4x/8x | 4x | Inter-sample peak detection |
 | Quality | Light/HQ | Light | Light = low CPU, HQ = cosine-windowed attack |
 
+### RCBitLimiter V2.0 — Soft Lookahead Limiter with Light/HQ
+
+The V1.0 soft limiter on the RCBitBrickwall V4.0 architecture: switchable Light/HQ quality (same `Quality` parameter, slider 9), oversampled peak detection, auto-release, Linked/Dual Mono, PDC. No safety clamp — output may slightly exceed the ceiling on extreme transients. Light mode adds a `Gain Smoothing` control (PurestGain).
+
+To switch every RCBitLimiter V2.0 / RCBitBrickwall V4.0 in a project between Light and HQ, use the ReaScripts `RCBit Quality Toggle V1.0.py` (one hotkey, mixed → HQ) or `RCBit Quality Manager V1.0.py` (a list of every instance with a per-instance switch).
+
 ### RCBitLimiter V1.0 — Soft Lookahead Limiter
 
 Lookahead limiter with PurestGain smoothing. Softer character — gain envelope is smoothed via IIR filter (AirWindows PurestGain technique), so output may slightly exceed ceiling on extreme transients. Good for transparent gain riding.
