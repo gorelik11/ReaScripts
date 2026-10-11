@@ -44,7 +44,7 @@ out_pin:Left
 out_pin:Right
 
 slider1:0<0,8,0.01>Ceiling (Bits below 0 dBFS)
-slider2:0<-16,16,1>Input Gain (Bits)
+slider2:0<-16,16,0.1>Input Gain (Bits)
 slider3:0<-100,100,0.01>Ceiling Micro (% of a Bit)
 slider4:5<0.1,10,0.1>Lookahead (ms)
 slider5:100<1,1000,1>Release (ms)
