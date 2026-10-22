@@ -84,7 +84,7 @@ def test_x86_64_build_matches_installed_plugin_under_rosetta(plugin, params, tmp
 
 
 @pytest.mark.skipif(not os.path.exists(DITHERBOX_2018), reason="2018 Ditherbox not mounted")
-@pytest.mark.parametrize("sr", [44100, 96000])
+@pytest.mark.parametrize("sr", [44100, 48000, 96000])
 @pytest.mark.parametrize("k", range(25))
 def test_ditherbox2018_bit_identical_to_2018_binary(k, sr, tmp_path):
     params = [(0, aw_dither.choice_value(k, 25))]
@@ -94,7 +94,8 @@ def test_ditherbox2018_bit_identical_to_2018_binary(k, sr, tmp_path):
 
 
 @pytest.mark.parametrize("dither,dtype", [("dark", None), ("tpdfwide", None), ("njad", None),
-                                          ("monitoring", None), ("ditherbox", "NJAD"), ("ditherbox", "TPDF")])
+                                          ("monitoring", None), ("ditherbox", "NJAD"), ("ditherbox", "TPDF"),
+                                          ("ditherbox2018", "NJAD"), ("ditherbox2018", "TPDF")])
 @pytest.mark.parametrize("bits", [16, 24])
 def test_file_holds_exactly_the_plugin_output(dither, dtype, bits, tmp_path):
     sr = 44100
@@ -107,8 +108,8 @@ def test_file_holds_exactly_the_plugin_output(dither, dtype, bits, tmp_path):
     dst = tmp_path / f"in_{tag}_{bits}bit.wav"
     assert sf.info(dst).subtype == ("PCM_16" if bits == 16 else "PCM_24")
     got = sf.read(dst, dtype="int32")[0] >> (32 - bits)
-    plugin = aw_dither.DITHERS[dither][0]
-    expect = run_awproc(plugin, sr, aw_dither.plugin_params(dither, bits, dtype), x) * 2.0 ** (bits - 1)
+    plugin, x86 = aw_dither.DITHERS[dither]
+    expect = run_awproc(plugin, sr, aw_dither.plugin_params(dither, bits, dtype), x, x86=x86) * 2.0 ** (bits - 1)
     assert np.array_equal(got, expect)
 
 
