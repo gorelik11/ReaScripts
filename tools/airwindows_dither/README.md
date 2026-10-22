@@ -1,7 +1,8 @@
 # aw_dither — Airwindows dithers without a DAW
 
 Dithers audio files to 16 or 24 bit with Airwindows Dark, TPDFWide,
-NotJustAnotherDither, Monitoring (Out16/Out24) and Ditherbox (2022 build, and
+NotJustAnotherDither, SpatializeDither, VinylDither, TapeDither, Monitoring
+(Out16/Out24) and Ditherbox (2022 build, and
 the 2018 Intel build as `ditherbox2018`).
 
 ```
@@ -34,7 +35,7 @@ checked to lie on the integer grid before it is written as PCM.
   noise, in REAPER as well. `--ditherbox-noise installed` (default) reproduces
   that; `seeded` gives the noise the author intended.
 - Plugins seeded from `rand()` (Dark at digital silence only, TPDFWide, NJAD,
-  Monitoring, Ditherbox2018) get `--seed`; REAPER's seed varies per instance.
+  Spatialize/Vinyl/TapeDither, Monitoring, Ditherbox2018) get `--seed`; REAPER's seed varies per instance.
 - In REAPER, Airwindows state carries over between renders/playback (the first
   samples can differ from a fresh instance). Here every file starts fresh.
 - BWF/bext metadata is not carried over.

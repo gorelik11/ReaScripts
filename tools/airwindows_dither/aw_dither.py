@@ -36,6 +36,9 @@ DITHERS = {
     "dark": ("Dark", False),
     "tpdfwide": ("TPDFWide", False),
     "njad": ("NotJustAnotherDither", False),
+    "spatialize": ("SpatializeDither", False),
+    "vinyl": ("VinylDither", False),
+    "tape": ("TapeDither", False),
     "monitoring": ("Monitoring", False),
     "ditherbox": ("Ditherbox", False),
     "ditherbox2018": ("Ditherbox2018", True),
@@ -49,7 +52,7 @@ def choice_value(index, count):
 
 def plugin_params(dither, bits, dtype=None):
     """[(index, value)] that set `dither` up for `bits`-bit output."""
-    if dither in ("dark", "tpdfwide", "njad"):
+    if dither in ("dark", "tpdfwide", "njad", "spatialize", "vinyl", "tape"):
         return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0)]  # Quant, DeRez off
     if dither == "monitoring":
         return [(0, choice_value(1 if bits == 16 else 0, 17))]  # Out16 / Out24

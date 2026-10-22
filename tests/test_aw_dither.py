@@ -59,7 +59,7 @@ def bit_equal(a, b):
 
 def installed_cases():
     cases = []
-    for plugin in ["Dark", "TPDFWide", "NotJustAnotherDither"]:
+    for plugin in ["Dark", "TPDFWide", "NotJustAnotherDither", "SpatializeDither", "VinylDither", "TapeDither"]:
         cases += [(plugin, [(0, 0.0), (1, 0.0)]), (plugin, [(0, 1.0), (1, 0.0)])]
     cases += [("Ditherbox", [(0, aw_dither.choice_value(k, 25))]) for k in range(25)]
     cases += [("Monitoring", [(0, aw_dither.choice_value(k, 17))]) for k in range(17)]
@@ -94,6 +94,7 @@ def test_ditherbox2018_bit_identical_to_2018_binary(k, sr, tmp_path):
 
 
 @pytest.mark.parametrize("dither,dtype", [("dark", None), ("tpdfwide", None), ("njad", None),
+                                          ("spatialize", None), ("vinyl", None), ("tape", None),
                                           ("monitoring", None), ("ditherbox", "NJAD"), ("ditherbox", "TPDF"),
                                           ("ditherbox2018", "NJAD"), ("ditherbox2018", "TPDF")])
 @pytest.mark.parametrize("bits", [16, 24])
