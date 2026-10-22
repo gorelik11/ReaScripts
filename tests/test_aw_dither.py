@@ -163,3 +163,39 @@ def test_mono_and_three_channel_files(tmp_path):
         lone = data[:, -1:]
         expect = run_awproc("Dark", sr, aw_dither.plugin_params("dark", 16), np.concatenate([lone, lone], axis=1))
         assert np.array_equal(got[:, -1], expect[:, 0] * 32768.0)
+
+
+def test_existing_output_is_left_alone_unless_overwrite(tmp_path):
+    src = tmp_path / "in.wav"
+    sf.write(src, music(44100, 0.3), 44100, subtype="DOUBLE")
+    dst = tmp_path / "in_dark_16bit.wav"
+    dst.write_bytes(b"keep me")
+    argv = [str(src), "--dither", "dark", "--bits", "16"]
+    assert aw_dither.main(argv) == 1
+    assert dst.read_bytes() == b"keep me"
+    assert aw_dither.main(argv + ["--overwrite"]) == 0
+    assert sf.info(dst).subtype == "PCM_16"
+
+
+@pytest.mark.parametrize("dither,dtype,bits", [("dark", None, 24), ("spatialize", None, 16),
+                                               ("ditherbox", "NJAD", 16), ("monitoring", None, 24)])
+def test_verify_against_installed_plugin(dither, dtype, bits, tmp_path):
+    sr = 48000
+    src = tmp_path / "in.wav"
+    sf.write(src, music(sr, 0.5), sr, subtype="DOUBLE")
+    dst = tmp_path / "out.wav"
+    aw_dither.dither_file(str(src), str(dst), dither, bits, dtype)
+    assert aw_dither.verify_file(str(src), str(dst), dither, bits, dtype).endswith(".vst")
+
+
+def test_verify_catches_a_changed_sample(tmp_path):
+    sr = 44100
+    src = tmp_path / "in.wav"
+    sf.write(src, music(sr, 0.5), sr, subtype="DOUBLE")
+    dst = tmp_path / "out.wav"
+    aw_dither.dither_file(str(src), str(dst), "dark", 16)
+    data = sf.read(dst, dtype="int16")[0]
+    data[1000, 1] += 1
+    sf.write(dst, data, sr, subtype="PCM_16")
+    with pytest.raises(ValueError, match="differs from"):
+        aw_dither.verify_file(str(src), str(dst), "dark", 16)

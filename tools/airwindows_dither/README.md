@@ -11,6 +11,20 @@ the 2018 Intel build as `ditherbox2018`).
 ~/.venvs/madmom/bin/python aw_dither.py *.wav --dither ditherbox --type NJAD --bits 16 -o out/
 ```
 
+`--verify` re-runs each input through the installed plugin binary and checks
+the written file sample for sample. An existing output is skipped unless
+`--overwrite` is given.
+
+## Install (Finder Quick Action)
+
+`./install.sh` builds, copies the tool to
+`~/Library/Application Support/aw_dither/` and creates the Quick Action
+**Airwindows Dither…** for audio files (Finder: right-click > Quick Actions).
+It asks for the dither, bit depth and Ditherbox type, remembers the last
+choice, writes next to each file with `--verify`, and reports in a
+notification (log: `last_run.log` in the install folder). Re-run `install.sh`
+after changing the tool.
+
 The DSP is the unmodified MIT Airwindows source in `vendor/`, run through each
 plugin's `processDoubleReplacing`. Input is read as float64; the output is
 checked to lie on the integer grid before it is written as PCM.
