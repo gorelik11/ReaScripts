@@ -19,9 +19,9 @@
 #include "audioeffectx.h"
 
 #ifdef AW_WITH_2018
-#define AW_PLUGINS(X) X(Dark) X(Ditherbox) X(Monitoring) X(TPDFWide) X(NotJustAnotherDither) X(SpatializeDither) X(VinylDither) X(TapeDither) X(Ditherbox2018)
+#define AW_PLUGINS(X) X(Dark) X(Ditherbox) X(Monitoring) X(TPDFWide) X(NotJustAnotherDither) X(SpatializeDither) X(VinylDither) X(TapeDither) X(StudioTan) X(Ditherbox2018)
 #else
-#define AW_PLUGINS(X) X(Dark) X(Ditherbox) X(Monitoring) X(TPDFWide) X(NotJustAnotherDither) X(SpatializeDither) X(VinylDither) X(TapeDither)
+#define AW_PLUGINS(X) X(Dark) X(Ditherbox) X(Monitoring) X(TPDFWide) X(NotJustAnotherDither) X(SpatializeDither) X(VinylDither) X(TapeDither) X(StudioTan)
 #endif
 
 // The plugin classes share method names but no common interface, so each

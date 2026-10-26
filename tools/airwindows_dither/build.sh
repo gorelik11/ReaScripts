@@ -13,7 +13,7 @@ CXX="${CXX:-clang++}"
 for arch in arm64 x86_64; do
 	out=build/$arch
 	mkdir -p $out
-	plugins="Dark Ditherbox Monitoring TPDFWide NotJustAnotherDither SpatializeDither VinylDither TapeDither"
+	plugins="Dark Ditherbox Monitoring TPDFWide NotJustAnotherDither SpatializeDither VinylDither TapeDither StudioTan"
 	defs=""
 	if [ $arch = x86_64 ]; then plugins="$plugins Ditherbox2018"; defs="-DAW_WITH_2018"; fi
 	FLAGS="-arch $arch -O2 -ffp-contract=off -fno-fast-math -std=c++11 -w -Ishim"

@@ -45,6 +45,7 @@ DITHERS = {
     "vinyl": ("VinylDither", False),
     "tape": ("TapeDither", False),
     "monitoring": ("Monitoring", False),
+    "studiotan": ("StudioTan", False),
     "ditherbox": ("Ditherbox", False),
     "ditherbox2018": ("Ditherbox2018", True),
 }
@@ -64,6 +65,8 @@ def plugin_params(dither, bits, dtype=None):
         return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0)]  # Quant, DeRez off
     if dither == "monitoring":
         return [(0, choice_value(1 if bits == 16 else 0, 17))]  # Out16 / Out24
+    if dither == "studiotan":
+        return [(0, choice_value(3 if bits == 16 else 0, 6))]  # ST 16 / ST 24
     if dtype not in DITHERBOX_TYPES:
         raise ValueError(f"--type must be one of {', '.join(DITHERBOX_TYPES)}")
     index = DITHERBOX_TYPES.index(dtype) + (0 if bits == 16 else 11)

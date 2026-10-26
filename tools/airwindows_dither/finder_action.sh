@@ -9,8 +9,8 @@ LAST="$HERE/last_choice"
 LOG="$HERE/last_run.log"
 
 names=(Dark SpatializeDither TPDFWide NotJustAnotherDither VinylDither TapeDither
-	"Monitoring (Out16/Out24)" Ditherbox "Ditherbox 2018")
-keys=(dark spatialize tpdfwide njad vinyl tape monitoring ditherbox ditherbox2018)
+	"Monitoring (Out16/Out24)" StudioTan Ditherbox "Ditherbox 2018")
+keys=(dark spatialize tpdfwide njad vinyl tape monitoring studiotan ditherbox ditherbox2018)
 types=(NJAD TPDF Trunc Flat Paul DbPaul Tape HiGloss Vinyl Spatial Natural)
 
 # pick <prompt> <default> <items...>  -> chosen item, or nothing on Cancel
