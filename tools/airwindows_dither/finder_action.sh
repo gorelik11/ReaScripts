@@ -44,7 +44,8 @@ dither="$AW_DITHER"
 if [[ -z $dither ]]; then
 	name=$(pick "Dither:" "${last[1]:-Dark}" "${names[@]}")
 	[[ -n $name ]] || exit 0
-	dither=${keys[${names[(i)$name]}]}
+	dither=${keys[${names[(ie)$name]}]}
+	[[ -n $dither ]] || { alert "Unknown choice: $name"; exit 1; }
 fi
 bits="$AW_BITS"
 if [[ -z $bits ]]; then
