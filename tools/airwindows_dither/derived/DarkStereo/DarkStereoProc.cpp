@@ -16,6 +16,15 @@
  *  below C = 0.5; C = 0.55 brings the overall L/R error correlation to ~0.
  *  (A penalty on the error band-passed at 900 Hz was tried: it fed back into
  *  a +6..12 dB resonance there.)
+ *
+ *  Known limit (2026-10-28, master 1 Artur): the flips land mostly in the
+ *  highs; Dark's mid-band error is a deterministic shadow of the (mostly
+ *  centred) music and stays correlated (+0.53 -> +0.30). Decorrelation then
+ *  comes and goes with the material: the error's mid-band width wanders at
+ *  0.5..10 Hz more than Dark's (0.200 vs 0.157), heard as tape-like
+ *  floating. Tried and dropped: steering lambda from the running L/R
+ *  correlation (wander 0.187), different slew depths per channel (mid
+ *  correlation barely moves, L/R voicing splits by up to 5 dB).
  * ======================================== */
 
 #ifndef __DarkStereo_H
