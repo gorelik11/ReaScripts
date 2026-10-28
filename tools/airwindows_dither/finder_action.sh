@@ -79,4 +79,6 @@ if (( rc != 0 && ok + skipped < $# )); then
 else
 	notify "$summary"
 fi
-exit $rc
+# Automator turns any non-zero exit into a blank "Run Shell Script" error;
+# the outcome is already reported above.
+exit 0
