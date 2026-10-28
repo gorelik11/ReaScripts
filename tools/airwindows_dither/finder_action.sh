@@ -8,9 +8,9 @@ PY="${AW_PYTHON:-$HOME/.venvs/madmom/bin/python}"
 LAST="$HERE/last_choice"
 LOG="$HERE/last_run.log"
 
-names=(Dark SpatializeDither TPDFWide NotJustAnotherDither VinylDither TapeDither
+names=(Dark "DarkStereo (prototype)" SpatializeDither TPDFWide NotJustAnotherDither VinylDither TapeDither
 	"Monitoring (Out16/Out24)" StudioTan Ditherbox "Ditherbox 2018")
-keys=(dark spatialize tpdfwide njad vinyl tape monitoring studiotan ditherbox ditherbox2018)
+keys=(dark darkstereo spatialize tpdfwide njad vinyl tape monitoring studiotan ditherbox ditherbox2018)
 types=(NJAD TPDF Trunc Flat Paul DbPaul Tape HiGloss Vinyl Spatial Natural)
 
 # pick <prompt> <default> <items...>  -> chosen item, or nothing on Cancel
@@ -59,15 +59,18 @@ if [[ $dither == ditherbox* && -z $dtype ]]; then
 fi
 [[ -n $name ]] && print -l "$name" "$b" "${dtype:-${last[3]}}" > "$LAST"
 
-args=(--dither "$dither" --bits "$bits" --verify)
+args=(--dither "$dither" --bits "$bits")
+# DarkStereo is ours: there is no installed plugin to verify against
+[[ $dither != darkstereo ]] && args+=(--verify)
 [[ -n $dtype ]] && args+=(--type "$dtype")
 "$PY" "$HERE/aw_dither.py" "$@" "${args[@]}" >"$LOG" 2>&1
 rc=$?
 
-ok=$(grep -c 'bit-identical to' "$LOG")
+ok=$(grep -c '^/' "$LOG")
 skipped=$(grep -c '^exists, skipped' "$LOG")
 clipped=$(grep -c 'clipped at full scale' "$LOG")
-summary="$dither${dtype:+ $dtype} ${bits} bit: $ok of $# done, bit-identical"
+summary="$dither${dtype:+ $dtype} ${bits} bit: $ok of $# done"
+[[ $dither != darkstereo ]] && summary+=", bit-identical"
 (( clipped )) && summary+=", $clipped with clipping"
 (( skipped )) && summary+=", $skipped skipped (output exists)"
 if (( rc != 0 && ok + skipped < $# )); then
