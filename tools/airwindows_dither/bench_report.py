@@ -8,7 +8,7 @@ import sys
 
 NAMES = {"dark": "Dark", "njad": "NotJustAnotherDither", "tpdfwide": "TPDFWide", "studiotan": "StudioTan",
          "spatialize": "SpatializeDither", "vinyl": "VinylDither", "tape": "TapeDither",
-         "darkstereo": "DarkStereo 0.55 (прототип)", "tpdf": "TPDF (reference)", "round": "Rounding, no dither"}
+         "darkstereo": "DarkStereo 0.55 (прототип)", "paul": "PaulDither", "paulwide": "PaulWide", "tpdf": "TPDF (reference)", "round": "Rounding, no dither"}
 # Dima's own description of each dither (2026-10-28), shown beside the numbers
 HEARD = {
     "dark": "Темноватый, смягчает верх, благородный. Заметно сужает стереобазу.",

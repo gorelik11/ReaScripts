@@ -59,11 +59,13 @@ def bit_equal(a, b):
 
 def installed_cases():
     cases = []
-    for plugin in ["Dark", "TPDFWide", "NotJustAnotherDither", "SpatializeDither", "VinylDither", "TapeDither"]:
+    for plugin in ["Dark", "TPDFWide", "NotJustAnotherDither", "SpatializeDither", "VinylDither", "TapeDither",
+                   "PaulDither", "PaulWide"]:
         cases += [(plugin, [(0, 0.0), (1, 0.0)]), (plugin, [(0, 1.0), (1, 0.0)])]
     cases += [("Ditherbox", [(0, aw_dither.choice_value(k, 25))]) for k in range(25)]
     cases += [("Monitoring", [(0, aw_dither.choice_value(k, 17))]) for k in range(17)]
     cases += [("StudioTan", [(0, aw_dither.choice_value(k, 6))]) for k in range(6)]
+    cases += [("DoublePaul", [])]
     return cases
 
 
@@ -96,7 +98,7 @@ def test_ditherbox2018_bit_identical_to_2018_binary(k, sr, tmp_path):
 
 @pytest.mark.parametrize("dither,dtype", [("dark", None), ("tpdfwide", None), ("njad", None),
                                           ("spatialize", None), ("vinyl", None), ("tape", None),
-                                          ("monitoring", None), ("studiotan", None), ("ditherbox", "NJAD"), ("ditherbox", "TPDF"),
+                                          ("monitoring", None), ("studiotan", None), ("paul", None), ("paulwide", None), ("ditherbox", "NJAD"), ("ditherbox", "TPDF"),
                                           ("ditherbox2018", "NJAD"), ("ditherbox2018", "TPDF")])
 @pytest.mark.parametrize("bits", [16, 24])
 def test_file_holds_exactly_the_plugin_output(dither, dtype, bits, tmp_path):
@@ -219,3 +221,12 @@ def test_darkstereo_decorrelates_and_stays_on_grid():
     aw_dither.to_integer(ours, 16)  # raises if off the grid
     corr = lambda y: np.corrcoef(*(y - x).T)[0, 1]
     assert abs(corr(ours)) < abs(corr(dark)) - 0.1
+
+
+def test_installed_doublepaul_truncates():
+    # its noise state is never initialised: zeroed memory gives no noise, just floor()
+    x = music(48000, 0.5)
+    y = run_awproc("DoublePaul", 48000, aw_dither.plugin_params("doublepaul", 24), x)
+    assert np.array_equal(y, np.floor(x * 2.0 ** 23) / 2.0 ** 23)
+    seeded = run_awproc("DoublePaul", 48000, [], x, prefill=-1)
+    assert not np.array_equal(seeded, y)

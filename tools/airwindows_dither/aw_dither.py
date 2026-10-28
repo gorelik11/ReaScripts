@@ -46,6 +46,9 @@ DITHERS = {
     "tape": ("TapeDither", False),
     "monitoring": ("Monitoring", False),
     "studiotan": ("StudioTan", False),
+    "paul": ("PaulDither", False),
+    "paulwide": ("PaulWide", False),
+    "doublepaul": ("DoublePaul", False),  # 24 bit only; noise state never initialised (see --noise)
     "darkstereo": ("DarkStereo", False),  # ours, derived from Dark: no installed plugin to verify against
     "ditherbox": ("Ditherbox", False),
     "ditherbox2018": ("Ditherbox2018", True),
@@ -62,12 +65,16 @@ def choice_value(index, count):
 
 def plugin_params(dither, bits, dtype=None, stereo=0.55):
     """[(index, value)] that set `dither` up for `bits`-bit output."""
-    if dither in ("dark", "tpdfwide", "njad", "spatialize", "vinyl", "tape"):
+    if dither in ("dark", "tpdfwide", "njad", "spatialize", "vinyl", "tape", "paul", "paulwide"):
         return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0)]  # Quant, DeRez off
     if dither == "darkstereo":
         return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0), (2, stereo)]
     if dither == "monitoring":
         return [(0, choice_value(1 if bits == 16 else 0, 17))]  # Out16 / Out24
+    if dither == "doublepaul":
+        if bits != 24:
+            raise ValueError("DoublePaul is 24 bit only")
+        return []
     if dither == "studiotan":
         return [(0, choice_value(3 if bits == 16 else 0, 6))]  # ST 16 / ST 24
     if dtype not in DITHERBOX_TYPES:
@@ -222,17 +229,20 @@ def main(argv=None):
     ap.add_argument("--verify", action="store_true",
                     help="check each file sample for sample against the installed plugin binary")
     ap.add_argument("--seed", type=int, default=1, help="dither noise seed (default 1)")
-    ap.add_argument("--ditherbox-noise", choices=["installed", "seeded"], default="installed",
-                    help="Ditherbox never initialises its noise state: 'installed' = zero state, "
-                         "as the installed plugin gets it (noise-based types then add no noise); "
-                         "'seeded' = noise from --seed")
+    ap.add_argument("--noise", "--ditherbox-noise", dest="ditherbox_noise", choices=["installed", "seeded"],
+                    default="installed",
+                    help="Ditherbox and DoublePaul never initialise their noise state: 'installed' = zero "
+                         "state, as the installed plugin gets it (Ditherbox's noise types then add no noise, "
+                         "DoublePaul truncates); 'seeded' = the noise the author intended, from --seed")
     args = ap.parse_args(argv)
     if args.dither.startswith("ditherbox") and not args.dtype:
         ap.error("--type is required for Ditherbox")
+    if args.dither == "doublepaul" and args.bits != 24:
+        ap.error("DoublePaul is 24 bit only")
     if args.verify and args.dither == "darkstereo":
         ap.error("--verify: darkstereo has no installed plugin to compare with")
     if args.verify and args.ditherbox_noise == "seeded":
-        ap.error("--verify needs --ditherbox-noise installed (the installed plugin has no seeded noise)")
+        ap.error("--verify needs --noise installed (the installed plugin has no seeded noise)")
     prefill = 0 if args.ditherbox_noise == "installed" else -1
     tag = args.dither + (f"-{args.dtype}" if args.dtype else "") + (f"-{args.stereo:g}" if args.dither == "darkstereo" else "")
     failed = 0

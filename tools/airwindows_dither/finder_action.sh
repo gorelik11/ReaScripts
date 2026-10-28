@@ -8,9 +8,9 @@ PY="${AW_PYTHON:-$HOME/.venvs/madmom/bin/python}"
 LAST="$HERE/last_choice"
 LOG="$HERE/last_run.log"
 
-names=(Dark SpatializeDither TPDFWide NotJustAnotherDither VinylDither TapeDither
+names=(Dark SpatializeDither TPDFWide NotJustAnotherDither VinylDither TapeDither PaulDither PaulWide
 	"Monitoring (Out16/Out24)" StudioTan Ditherbox "Ditherbox 2018")
-keys=(dark spatialize tpdfwide njad vinyl tape monitoring studiotan ditherbox ditherbox2018)
+keys=(dark spatialize tpdfwide njad vinyl tape paul paulwide monitoring studiotan ditherbox ditherbox2018)
 types=(NJAD TPDF Trunc Flat Paul DbPaul Tape HiGloss Vinyl Spatial Natural)
 
 # pick <prompt> <default> <items...>  -> chosen item, or nothing on Cancel

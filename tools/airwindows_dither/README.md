@@ -1,7 +1,7 @@
 # aw_dither — Airwindows dithers without a DAW
 
 Dithers audio files to 16 or 24 bit with Airwindows Dark, TPDFWide,
-NotJustAnotherDither, SpatializeDither, VinylDither, TapeDither, StudioTan (ST mode), Monitoring
+NotJustAnotherDither, SpatializeDither, VinylDither, TapeDither, StudioTan (ST mode), PaulDither, PaulWide, DoublePaul, Monitoring
 (Out16/Out24) and Ditherbox (2022 build, and
 the 2018 Intel build as `ditherbox2018`).
 
@@ -44,6 +44,13 @@ checked to lie on the integer grid before it is written as PCM.
 
 ## Behaviour to know
 
+- **DoublePaul (installed) is plain truncation.** Like Ditherbox it never
+  initialises its noise state; with zeroed memory its 9-tap Paul dither is
+  silent and the output is exactly `floor(x)` at 24 bit (a -1/2 LSB offset and
+  truncation distortion). `--noise seeded` gives the intended dither. It is
+  not in the Finder menu.
+- PaulDither / PaulWide: Paul Frindle's "subtract the previous dither sample"
+  high-passed TPDF; both seeded properly, bit-identical to the installed builds.
 - **Ditherbox (2022) adds no noise.** It never initialises its noise state, and
   the installed plugin gets zeroed memory, so Flat/TPDF/Paul/etc. run without
   noise, in REAPER as well. `--ditherbox-noise installed` (default) reproduces
