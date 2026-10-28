@@ -13,14 +13,14 @@ CXX="${CXX:-clang++}"
 for arch in arm64 x86_64; do
 	out=build/$arch
 	mkdir -p $out
-	plugins="Dark Ditherbox Monitoring TPDFWide NotJustAnotherDither SpatializeDither VinylDither TapeDither StudioTan"
+	plugins="Dark Ditherbox Monitoring TPDFWide NotJustAnotherDither SpatializeDither VinylDither TapeDither StudioTan DarkStereo"
 	defs=""
 	if [ $arch = x86_64 ]; then plugins="$plugins Ditherbox2018"; defs="-DAW_WITH_2018"; fi
 	FLAGS="-arch $arch -O2 -ffp-contract=off -fno-fast-math -std=c++11 -w -Ishim"
 	for p in $plugins; do
 		extra=""
 		[ $p = Ditherbox2018 ] && extra="-fwrapv -include legacy_math.h"
-		"$CXX" $FLAGS -Ivendor/$p -DAW_PLUGIN=$p $extra -c aw_plugin_tu.cpp -o $out/$p.o
+		"$CXX" $FLAGS -Ivendor/$p -Iderived/$p -DAW_PLUGIN=$p $extra -c aw_plugin_tu.cpp -o $out/$p.o
 	done
 	"$CXX" $FLAGS $defs -c awproc.cpp -o $out/awproc.o
 	"$CXX" -arch $arch -o build/awproc-$arch $out/*.o

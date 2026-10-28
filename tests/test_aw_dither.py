@@ -200,3 +200,22 @@ def test_verify_catches_a_changed_sample(tmp_path):
     sf.write(dst, data, sr, subtype="PCM_16")
     with pytest.raises(ValueError, match="differs from"):
         aw_dither.verify_file(str(src), str(dst), "dark", 16)
+
+
+@pytest.mark.parametrize("sr", [44100, 96000])
+@pytest.mark.parametrize("bits", [16, 24])
+def test_darkstereo_at_zero_is_dark(bits, sr):
+    x = music(sr, 1.0)
+    dark = run_awproc("Dark", sr, aw_dither.plugin_params("dark", bits), x)
+    assert bit_equal(run_awproc("DarkStereo", sr, aw_dither.plugin_params("darkstereo", bits, stereo=0.0), x), dark)
+
+
+def test_darkstereo_decorrelates_and_stays_on_grid():
+    sr = 48000
+    x = music(sr, 2.0)
+    x[:, 1] = x[:, 0] * 0.9 + x[:, 1] * 0.1  # mostly centred, like a mix
+    dark = run_awproc("Dark", sr, aw_dither.plugin_params("dark", 16), x)
+    ours = run_awproc("DarkStereo", sr, aw_dither.plugin_params("darkstereo", 16), x)
+    aw_dither.to_integer(ours, 16)  # raises if off the grid
+    corr = lambda y: np.corrcoef(*(y - x).T)[0, 1]
+    assert abs(corr(ours)) < abs(corr(dark)) - 0.1

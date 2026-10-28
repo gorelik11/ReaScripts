@@ -8,7 +8,7 @@ import sys
 
 NAMES = {"dark": "Dark", "njad": "NotJustAnotherDither", "tpdfwide": "TPDFWide", "studiotan": "StudioTan",
          "spatialize": "SpatializeDither", "vinyl": "VinylDither", "tape": "TapeDither",
-         "tpdf": "TPDF (reference)", "round": "Rounding, no dither"}
+         "darkstereo": "DarkStereo 0.55 (прототип)", "tpdf": "TPDF (reference)", "round": "Rounding, no dither"}
 # Dima's own description of each dither (2026-10-28), shown beside the numbers
 HEARD = {
     "dark": "Темноватый, смягчает верх, благородный. Заметно сужает стереобазу.",
@@ -16,6 +16,7 @@ HEARD = {
     "tpdfwide": "Расширяет стереобазу, но ~1 кГц проседает.",
     "studiotan": "Совсем не по-дизерному: всё на месте, но немного синтетично.",
     "spatialize": "",
+    "darkstereo": "Прототип: Dark с развязкой каналов. Ещё не слушали.",
     "vinyl": "Звучит как винил; сужает стереобазу снизу.",
     "tape": "Что-то вроде сатурации на верхах, они немного проседают.",
 }

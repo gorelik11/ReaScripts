@@ -31,7 +31,7 @@ from scipy import signal
 
 import aw_dither
 
-DITHERS = ["dark", "njad", "tpdfwide", "studiotan", "spatialize", "vinyl", "tape"]
+DITHERS = ["dark", "njad", "tpdfwide", "studiotan", "spatialize", "vinyl", "tape"]  # darkstereo on request
 REFERENCES = ["tpdf", "round"]  # plain TPDF +-1 LSB, and rounding with no dither
 NOISE_GAIN = {16: 2 ** 8, 24: 2 ** 16}
 NPERSEG = 16384
@@ -52,9 +52,9 @@ def reference_output(x, bits, kind, seed=1):
     return np.floor(x * scale + d + 0.5) / scale
 
 
-def plugin_output(x, sr, dither, bits, seed=1):
+def plugin_output(x, sr, dither, bits, seed=1, stereo=0.55):
     plugin, x86 = aw_dither.DITHERS[dither]
-    cmd = aw_dither.awproc_command(plugin, x86, sr, aw_dither.plugin_params(dither, bits), seed, 0)
+    cmd = aw_dither.awproc_command(plugin, x86, sr, aw_dither.plugin_params(dither, bits, stereo=stereo), seed, 0)
     blocks = (x[s:s + aw_dither.BLOCK_FRAMES] for s in range(0, len(x), aw_dither.BLOCK_FRAMES))
     return np.concatenate(list(aw_dither.process_blocks(blocks, cmd)))
 
@@ -142,6 +142,10 @@ def main(argv=None):
     report = {"input": args.input, "samplerate": sr, "seconds": len(x) / sr,
               "peak_dbfs": float(20 * np.log10(np.abs(x).max())), "bands_hz": centres.tolist(), "runs": {}}
     out_json = os.path.join(args.outdir, "bench.json")
+    if os.path.exists(out_json):  # add to an earlier run of the same input
+        earlier = json.load(open(out_json))
+        if earlier["input"] == args.input:
+            report["runs"] = earlier["runs"]
     for bits in args.bits:
         for d in args.dithers:
             dith = os.path.join(args.outdir, f"{stem}_{d}_{bits}bit.wav")

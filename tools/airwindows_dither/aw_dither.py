@@ -46,6 +46,7 @@ DITHERS = {
     "tape": ("TapeDither", False),
     "monitoring": ("Monitoring", False),
     "studiotan": ("StudioTan", False),
+    "darkstereo": ("DarkStereo", False),  # ours, derived from Dark: no installed plugin to verify against
     "ditherbox": ("Ditherbox", False),
     "ditherbox2018": ("Ditherbox2018", True),
 }
@@ -59,10 +60,12 @@ def choice_value(index, count):
     return float(np.float32((index + 0.5) / count))
 
 
-def plugin_params(dither, bits, dtype=None):
+def plugin_params(dither, bits, dtype=None, stereo=0.55):
     """[(index, value)] that set `dither` up for `bits`-bit output."""
     if dither in ("dark", "tpdfwide", "njad", "spatialize", "vinyl", "tape"):
         return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0)]  # Quant, DeRez off
+    if dither == "darkstereo":
+        return [(0, 0.0 if bits == 16 else 1.0), (1, 0.0), (2, stereo)]
     if dither == "monitoring":
         return [(0, choice_value(1 if bits == 16 else 0, 17))]  # Out16 / Out24
     if dither == "studiotan":
@@ -152,11 +155,11 @@ def stereo_pairs(channels):
     return [(c, min(c + 1, channels - 1)) for c in range(0, channels, 2)]
 
 
-def dither_file(src, dst, dither, bits, dtype=None, seed=1, prefill=0):
+def dither_file(src, dst, dither, bits, dtype=None, seed=1, prefill=0, stereo=0.55):
     """Dither one file; returns the number of samples clipped at full scale."""
     plugin, x86 = DITHERS[dither]
     info = sf.info(src)
-    cmd = awproc_command(plugin, x86, info.samplerate, plugin_params(dither, bits, dtype), seed, prefill)
+    cmd = awproc_command(plugin, x86, info.samplerate, plugin_params(dither, bits, dtype, stereo), seed, prefill)
     # Each stereo pair gets its own plugin instance, as a host would; all pairs
     # stream side by side.
     streams = [process_blocks(pair_blocks(src, l, r), cmd) for l, r in stereo_pairs(info.channels)]
@@ -212,6 +215,8 @@ def main(argv=None):
     ap.add_argument("--dither", required=True, choices=sorted(DITHERS))
     ap.add_argument("--bits", type=int, required=True, choices=[16, 24])
     ap.add_argument("--type", dest="dtype", choices=DITHERBOX_TYPES, help="Ditherbox type")
+    ap.add_argument("--stereo", type=float, default=0.55,
+                    help="darkstereo: L/R decorrelation, 0 = Dark exactly; nothing changes below ~0.5 (default 0.55)")
     ap.add_argument("-o", "--outdir", help="output folder (default: next to each input)")
     ap.add_argument("--overwrite", action="store_true", help="replace existing output files")
     ap.add_argument("--verify", action="store_true",
@@ -224,10 +229,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.dither.startswith("ditherbox") and not args.dtype:
         ap.error("--type is required for Ditherbox")
+    if args.verify and args.dither == "darkstereo":
+        ap.error("--verify: darkstereo has no installed plugin to compare with")
     if args.verify and args.ditherbox_noise == "seeded":
         ap.error("--verify needs --ditherbox-noise installed (the installed plugin has no seeded noise)")
     prefill = 0 if args.ditherbox_noise == "installed" else -1
-    tag = args.dither + (f"-{args.dtype}" if args.dtype else "")
+    tag = args.dither + (f"-{args.dtype}" if args.dtype else "") + (f"-{args.stereo:g}" if args.dither == "darkstereo" else "")
     failed = 0
     for src in args.inputs:
         stem = os.path.splitext(os.path.basename(src))[0]
@@ -238,7 +245,7 @@ def main(argv=None):
             print(f"exists, skipped: {dst}", file=sys.stderr)
             failed += 1
             continue
-        clipped = dither_file(src, dst, args.dither, args.bits, args.dtype, args.seed, prefill)
+        clipped = dither_file(src, dst, args.dither, args.bits, args.dtype, args.seed, prefill, args.stereo)
         note = f"  ({clipped} samples clipped at full scale)" if clipped else ""
         if args.verify:
             bundle = verify_file(src, dst, args.dither, args.bits, args.dtype, args.seed)
