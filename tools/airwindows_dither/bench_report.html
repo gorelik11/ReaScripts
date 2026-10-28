@@ -1,0 +1,244 @@
+<title>Карта дизеров</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+/* Layout: a measurement sheet. One column of text, wide panels for the band maps. */
+:root {
+  --bg: #f6f6f3; --panel: #fcfcfb; --ink: #16171a; --ink-2: #4d4f55; --muted: #85878d;
+  --rule: #dfe0dc; --axis: #c3c4bf; --accent: #2f5fd0;
+  --mid: #ecece8;
+  --b1: #cde2fb; --b2: #9ec5f4; --b3: #6da7ec; --b4: #3987e5; --b5: #256abf; --b6: #184f95;
+  --r1: #f7d3cd; --r2: #f0aea4; --r3: #e8877a; --r4: #e05f52; --r5: #c2443a; --r6: #93302a;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111214; --panel: #191a1d; --ink: #eceef2; --ink-2: #b9bcc4; --muted: #888b93;
+  --rule: #2a2c31; --axis: #3a3d43; --accent: #7aa2f7; --mid: #2e3035;
+  --b1: #1d3557; --b2: #1f4b84; --b3: #2b63ad; --b4: #3d7fd6; --b5: #6aa1ea; --b6: #a8c8f5;
+  --r1: #4a2522; --r2: #6e2f29; --r3: #9a3b32; --r4: #c75245; --r5: #e27d6f; --r6: #f2b1a6;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #111214; --panel: #191a1d; --ink: #eceef2; --ink-2: #b9bcc4; --muted: #888b93;
+  --rule: #2a2c31; --axis: #3a3d43; --accent: #7aa2f7; --mid: #2e3035;
+  --b1: #1d3557; --b2: #1f4b84; --b3: #2b63ad; --b4: #3d7fd6; --b5: #6aa1ea; --b6: #a8c8f5;
+  --r1: #4a2522; --r2: #6e2f29; --r3: #9a3b32; --r4: #c75245; --r5: #e27d6f; --r6: #f2b1a6;
+  color-scheme: dark; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 40px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font: 600 clamp(32px, 5vw, 48px)/1.05 var(--display); margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 22px/1.2 var(--display); margin: 0; text-wrap: balance; }
+.lede { color: var(--ink-2); max-width: 68ch; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; font: 13px/1.4 var(--mono); color: var(--ink-2); }
+.meta b { color: var(--ink); font-weight: 500; }
+section { display: grid; gap: 14px; min-width: 0; }
+.note { color: var(--ink-2); max-width: 70ch; margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 8px; overflow: hidden; width: max-content; }
+.seg button { font: 500 13px/1 var(--mono); padding: 9px 16px; border: 0; background: transparent; color: var(--ink-2); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; position: sticky; top: env(safe-area-inset-top, 0px);
+  background: var(--bg); padding-block: 10px; z-index: 5; border-bottom: 1px solid var(--rule); }
+.controls span { font-size: 13px; color: var(--muted); }
+.findings { display: grid; gap: 12px; max-width: 76ch; }
+.findings p { margin: 0; }
+.findings b { font-weight: 500; }
+.scroll { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { font: 500 11px/1.3 var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--axis); vertical-align: bottom; }
+th:first-child, td:first-child, th.l, td.l { text-align: left; }
+td { padding: 9px 10px; border-bottom: 1px solid var(--rule); text-align: right; font-variant-numeric: tabular-nums; vertical-align: top; }
+td.num { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+td.name { font-weight: 500; white-space: nowrap; }
+td.heard { color: var(--ink-2); font-style: italic; min-width: 220px; max-width: 320px; }
+tr.ref td { color: var(--muted); }
+tr.ref td.name { font-weight: 400; }
+.chip { display: inline-block; font: 500 11px/1 var(--mono); padding: 3px 6px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
+.chip.mono { background: var(--r1); color: var(--ink); }
+.chip.wide { background: var(--b1); color: var(--ink); }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 18px 14px; display: grid; gap: 12px; min-width: 0; }
+.panel .scroll svg { display: block; }
+.legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font: 12px/1.3 var(--mono); color: var(--ink-2); }
+.legend .bar { display: flex; gap: 2px; }
+.legend .bar i { width: 22px; height: 12px; display: block; border-radius: 2px; }
+.cell { stroke: var(--panel); stroke-width: 2; }
+.cell:hover { stroke: var(--ink); stroke-width: 1.5; }
+svg text { fill: var(--ink-2); font: 11px var(--mono); }
+svg text.row { fill: var(--ink); font: 500 12.5px var(--body); }
+svg text.row.ref { fill: var(--muted); font-weight: 400; }
+#tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--bg); font: 12px/1.35 var(--mono); padding: 7px 9px; border-radius: 6px; z-index: 20; max-width: 260px; }
+.files { display: grid; gap: 8px; }
+.files code { font: 13px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; display: block; overflow-x: auto; white-space: pre; }
+.method { font-size: 13.5px; color: var(--ink-2); display: grid; gap: 6px; max-width: 76ch; }
+.method p { margin: 0; }
+@media (prefers-reduced-motion: no-preference) { .cell { transition: fill .25s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Стенд дизеров Airwindows · ошибка = выход − вход</div>
+    <h1 id="h1">Карта дизеров</h1>
+    <p class="lede">Что каждый дизер добавляет к мастеру и где. Это карта побочных эффектов, а не рейтинг: цифры стоят рядом с тем, как вы описали эти дизеры на слух.</p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Разрядность">
+      <button id="b16" aria-pressed="true">16 бит</button><button id="b24" aria-pressed="false">24 бит</button>
+    </div>
+    <span>Все таблицы и карты ниже переключаются вместе.</span>
+  </div>
+
+  <section>
+    <h2>Что показали замеры</h2>
+    <div class="findings"><!--FINDINGS--></div>
+  </section>
+
+  <section>
+    <h2>Сводка</h2>
+    <div class="scroll"><table id="summary"></table></div>
+    <p class="note">Корреляция L/R: +1 — ошибка одинакова в обоих каналах и уходит в центр (сужает), 0 — каналы независимы, минус — противофаза (расширяет). Модуляция — насколько уровень ошибки гуляет вместе с музыкой (разброс 5–95 % по окнам 50 мс). Белизна: 1 — ровный белый шум, ближе к 0 — сильно окрашенный.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Уровень ошибки по полосам, относительно TPDF</h2>
+    <p class="note">Третьоктавные полосы. Красное громче обычного TPDF-дизера в этой полосе, синее тише.</p>
+    <div class="scroll"><svg id="mapLevel"></svg></div>
+    <div class="legend" id="legLevel"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Стерео ошибки по полосам: корреляция L/R</h2>
+    <p class="note">Красное — ошибка общая для каналов (сужает образ в этой полосе), синее — противофазная (расширяет), серое — независимая.</p>
+    <div class="scroll"><svg id="mapCorr"></svg></div>
+    <div class="legend" id="legCorr"></div>
+  </section>
+
+  <section>
+    <h2>Файлы для прослушивания</h2>
+    <div class="files" id="files"></div>
+  </section>
+
+  <section class="method">
+    <h2>Как измерено</h2>
+    <p>Каждый дизер — неизменённый исходник Airwindows, совпадающий с установленным VST бит в бит. Ошибка e = выход − вход в float64, в единицах младшего разряда целевой разрядности. Спектры — Уэлч, окно 16384, суммы по третьоктавам 20 Гц – 20 кГц, оба канала вместе.</p>
+    <p>TPDF — эталонный треугольный дизер ±1 LSB без формирования шума; округление — квантование без дизера. StudioTan смотрит на сэмпл вперёд и задерживает выход на 1 сэмпл; перед сравнением он выровнен.</p>
+  </section>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+const DATA = /*DATA*/null;
+const R = DATA.report, NAMES = DATA.names, HEARD = DATA.heard;
+const ORDER = ["dark", "njad", "tpdfwide", "studiotan", "spatialize", "vinyl", "tape"];
+const REFS = ["tpdf", "round"];
+let bits = 16;
+
+const fmt = (v, d = 1, sign = false) => (sign && v > 0 ? "+" : "") + v.toFixed(d).replace("-", "−");
+const hz = f => f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 0 : (f % 1000 ? 1 : 0)).replace(/\.0$/, "") + "k" : Math.round(f).toString();
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+document.getElementById("meta").innerHTML = [
+  ["файл", R.input.split("/").pop()], ["частота", (R.samplerate / 1000) + " кГц"],
+  ["длина", Math.floor(R.seconds / 60) + ":" + String(Math.round(R.seconds % 60)).padStart(2, "0")],
+  ["пик", fmt(R.peak_dbfs, 2) + " dBFS"]].map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join("");
+
+function run(key) { return R.runs[key + "_" + bits]; }
+
+function summary() {
+  const ref = run("tpdf");
+  const head = `<tr><th>Дизер</th><th>Ошибка, dBFS</th><th>к TPDF, dB</th><th>Корр. L/R</th><th>Модуляция, dB</th><th>Белизна</th><th class="l">Как вы его слышите</th></tr>`;
+  const row = (k, isRef) => {
+    const m = run(k); if (!m) return "";
+    const c = m.corr_total;
+    const chip = isRef ? "" : c > 0.1 ? `<span class="chip mono">в центр</span>` : c < -0.1 ? `<span class="chip wide">шире</span>` : "";
+    const lat = m.latency_samples ? ` <span class="chip" style="border:1px solid var(--axis)">+${m.latency_samples} сэмпл</span>` : "";
+    return `<tr class="${isRef ? "ref" : ""}"><td class="name">${NAMES[k]}${lat}</td>
+      <td class="num">${fmt(m.rms_dbfs)}</td><td class="num">${fmt(m.rms_dbfs - ref.rms_dbfs, 1, true)}</td>
+      <td class="num">${fmt(c, 2, true)}${chip}</td><td class="num">${fmt(m.modulation_db)}</td>
+      <td class="num">${fmt(m.flatness, 2)}</td><td class="l heard">${isRef ? "" : (HEARD[k] || "—")}</td></tr>`;
+  };
+  document.getElementById("summary").innerHTML = head + ORDER.map(k => row(k, false)).join("") + REFS.map(k => row(k, true)).join("");
+}
+
+function stepColor(v, edges) {
+  // edges: ascending positive thresholds for 6 steps; sign picks the arm
+  const a = Math.abs(v); let i = 0;
+  while (i < edges.length && a >= edges[i]) i++;
+  if (i === 0) return "var(--mid)";
+  return `var(--${v > 0 ? "r" : "b"}${i})`;
+}
+
+function heatmap(id, value, edges, unit, digits) {
+  const svg = document.getElementById(id);
+  const bands = R.bands_hz, cw = 24, ch = 26, lw = 168, top = 8, gap = 10;
+  const rows = ORDER.concat(REFS);
+  const W = lw + bands.length * cw + 8, H = top + rows.length * ch + gap + 30;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  let out = "";
+  rows.forEach((k, r) => {
+    const m = run(k); if (!m) return;
+    const y = top + r * ch + (REFS.includes(k) ? gap : 0);
+    out += `<text class="row${REFS.includes(k) ? " ref" : ""}" x="0" y="${y + ch / 2 + 4}">${NAMES[k]}</text>`;
+    bands.forEach((f, b) => {
+      const v = value(m, b, k);
+      if (v === null || !isFinite(v)) return;
+      out += `<rect class="cell" x="${lw + b * cw}" y="${y}" width="${cw}" height="${ch}" rx="3" style="fill:${stepColor(v, edges)}"
+        data-t="${NAMES[k]} · ${hz(f)} Гц · ${fmt(v, digits, true)}${unit}"></rect>`;
+    });
+  });
+  const ty = top + rows.length * ch + gap + 18;
+  bands.forEach((f, b) => {
+    if ([31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000].some(t => Math.abs(f / t - 1) < 0.03))
+      out += `<text x="${lw + b * cw + cw / 2}" y="${ty}" text-anchor="middle">${hz(f)}</text>`;
+  });
+  svg.innerHTML = out;
+}
+
+function legend(id, edges, unit, digits, lo, hi) {
+  const cells = [6, 5, 4, 3, 2, 1].map(i => `<i style="background:var(--b${i})"></i>`).join("") +
+    `<i style="background:var(--mid)"></i>` + [1, 2, 3, 4, 5, 6].map(i => `<i style="background:var(--r${i})"></i>`).join("");
+  document.getElementById(id).innerHTML =
+    `<span>${lo}</span><span>${fmt(-edges[5], digits)}${unit}</span><span class="bar">${cells}</span><span>${fmt(edges[5], digits, true)}${unit}</span><span>${hi}</span>`;
+}
+
+const LEVEL_EDGES = [1, 2, 4, 6, 9, 12];
+const CORR_EDGES = [0.05, 0.15, 0.3, 0.45, 0.6, 0.8];
+function render() {
+  summary();
+  const ref = run("tpdf").band_power;
+  heatmap("mapLevel", (m, b) => 10 * Math.log10(m.band_power[b] / ref[b]), LEVEL_EDGES, " dB", 1);
+  heatmap("mapCorr", (m, b) => m.band_corr[b], CORR_EDGES, "", 2);
+  legend("legLevel", LEVEL_EDGES, " dB", 0, "тише TPDF", "громче TPDF");
+  legend("legCorr", CORR_EDGES, "", 1, "расширяет", "сужает");
+  const dir = R.input.replace(/\/[^/]*$/, "") + "/dither_bench " + R.input.split("/").pop().replace(/\.wav$/i, "");
+  const gain = bits === 16 ? "+48.2dB" : "+96.3dB";
+  document.getElementById("files").innerHTML =
+    `<p class="note">Папка рядом с мастером. Для каждого дизера там лежит сам файл и «шум» — только ошибка, поднятая ровно на ${gain} (степень двойки), чтобы её было слышно отдельно от музыки.</p>
+     <code>${dir}/</code>
+     <code>${R.input.split("/").pop().replace(/\.wav$/i, "")}_dark_${bits}bit.wav\nnoise_dark_${bits}bit_${gain}.wav</code>`;
+}
+
+for (const b of [16, 24]) document.getElementById("b" + b).addEventListener("click", () => {
+  bits = b;
+  document.getElementById("b16").setAttribute("aria-pressed", b === 16);
+  document.getElementById("b24").setAttribute("aria-pressed", b === 24);
+  render();
+});
+
+const tip = document.getElementById("tip");
+document.addEventListener("pointermove", e => {
+  const t = e.target.closest && e.target.closest("rect[data-t]");
+  if (!t) { tip.hidden = true; return; }
+  tip.textContent = t.dataset.t; tip.hidden = false;
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (e.clientY + 16) + "px";
+});
+render();
+</script>
